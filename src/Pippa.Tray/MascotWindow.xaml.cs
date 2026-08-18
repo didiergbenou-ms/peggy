@@ -30,7 +30,7 @@ public partial class MascotWindow : Window
 
         _blink.Tick += (_, _) => Blink(_rng.NextDouble() < 0.35);
         _flap.Tick += (_, _) => { if (_state is PippaState.NewDigest) FlapBurst(2); };
-        _hop.Tick += (_, _) => { if (_state == PippaState.Idle) Hop(); };
+        _hop.Tick += (_, _) => { if (_state == PippaState.NewDigest) Hop(); };
         _blink.Start();
         _flap.Start();
         _hop.Start();
@@ -177,12 +177,12 @@ public partial class MascotWindow : Window
                 break;
             case PippaState.NewDigest:
                 AnimateHead(0);
-                Perk();
                 Envelope.Visibility = Visibility.Visible;
                 Sparkles.Visibility = Visibility.Visible;
                 PopIn(Envelope);
                 PopIn(Sparkles);
                 FlapBurst(4);
+                Hop();
                 break;
         }
     }
@@ -257,8 +257,9 @@ public partial class MascotWindow : Window
         hop.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.Zero)));
         hop.KeyFrames.Add(new EasingDoubleKeyFrame(-26, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.18))) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } });
         hop.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.48))) { EasingFunction = new BounceEase { EasingMode = EasingMode.EaseOut, Bounces = 1, Bounciness = 3 } });
-        hop.Completed += (_, _) => { if (_state == PippaState.Idle) Bob(-7, 0.7); };
+        hop.Completed += (_, _) => { if (_state == PippaState.NewDigest) Bob(-7, 0.7); };
         BodyTranslate.BeginAnimation(TranslateTransform.YProperty, hop);
+        FlapBurst(2);
     }
 
     private void Bob(double toY, double seconds)
