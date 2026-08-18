@@ -56,7 +56,11 @@
         <Ellipse Canvas.Left="52" Canvas.Top="132" Width="64" Height="80" Fill="{StaticResource BellyBrush}"/>
         <!-- body sheen -->
         <Ellipse Canvas.Left="48" Canvas.Top="104" Width="30" Height="52" Fill="#16FFFFFF"/>
-        <!-- wing (flaps) -->
+        <!-- left wing (flaps) -->
+        <Ellipse Canvas.Left="41" Canvas.Top="120" Width="34" Height="74" Fill="#6b4526" RenderTransformOrigin="0.5,0.12">
+          <Ellipse.RenderTransform><RotateTransform x:Name="WingRotateL" Angle="0"/></Ellipse.RenderTransform>
+        </Ellipse>
+        <!-- right wing (flaps) -->
         <Ellipse Canvas.Left="105" Canvas.Top="120" Width="34" Height="74" Fill="#6b4526" RenderTransformOrigin="0.5,0.12">
           <Ellipse.RenderTransform><RotateTransform x:Name="WingRotate" Angle="0"/></Ellipse.RenderTransform>
         </Ellipse>

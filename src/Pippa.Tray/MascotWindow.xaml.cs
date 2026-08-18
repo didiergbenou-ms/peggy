@@ -226,17 +226,23 @@ public partial class MascotWindow : Window
 
     private void FlapBurst(int flaps)
     {
-        var a = new DoubleAnimation(0, -36, TimeSpan.FromSeconds(0.1))
+        var r = new DoubleAnimation(0, -36, TimeSpan.FromSeconds(0.1))
         { AutoReverse = true, RepeatBehavior = new RepeatBehavior(flaps), EasingFunction = new SineEase() };
-        WingRotate.BeginAnimation(RotateTransform.AngleProperty, a);
+        var l = new DoubleAnimation(0, 36, TimeSpan.FromSeconds(0.1))
+        { AutoReverse = true, RepeatBehavior = new RepeatBehavior(flaps), EasingFunction = new SineEase() };
+        WingRotate.BeginAnimation(RotateTransform.AngleProperty, r);
+        WingRotateL.BeginAnimation(RotateTransform.AngleProperty, l);
     }
 
     private void ContinuousFlap(double seconds)
     {
         int flaps = Math.Max(3, (int)(seconds / 0.14));
-        var a = new DoubleAnimation(-2, -44, TimeSpan.FromSeconds(0.07))
+        var r = new DoubleAnimation(-2, -44, TimeSpan.FromSeconds(0.07))
         { AutoReverse = true, RepeatBehavior = new RepeatBehavior(flaps), EasingFunction = new SineEase() };
-        WingRotate.BeginAnimation(RotateTransform.AngleProperty, a);
+        var l = new DoubleAnimation(2, 44, TimeSpan.FromSeconds(0.07))
+        { AutoReverse = true, RepeatBehavior = new RepeatBehavior(flaps), EasingFunction = new SineEase() };
+        WingRotate.BeginAnimation(RotateTransform.AngleProperty, r);
+        WingRotateL.BeginAnimation(RotateTransform.AngleProperty, l);
     }
 
     private void Hop()
