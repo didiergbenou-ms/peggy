@@ -29,7 +29,7 @@ public partial class MascotWindow : Window
         MouseLeftButtonDown += (_, _) => { try { DragMove(); } catch { } };
 
         _blink.Tick += (_, _) => Blink(_rng.NextDouble() < 0.35);
-        _flap.Tick += (_, _) => { if (_state is PippaState.Idle or PippaState.NewDigest) FlapBurst(2); };
+        _flap.Tick += (_, _) => { if (_state is PippaState.NewDigest) FlapBurst(2); };
         _hop.Tick += (_, _) => { if (_state == PippaState.Idle) Hop(); };
         _blink.Start();
         _flap.Start();
@@ -259,7 +259,6 @@ public partial class MascotWindow : Window
         hop.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.48))) { EasingFunction = new BounceEase { EasingMode = EasingMode.EaseOut, Bounces = 1, Bounciness = 3 } });
         hop.Completed += (_, _) => { if (_state == PippaState.Idle) Bob(-7, 0.7); };
         BodyTranslate.BeginAnimation(TranslateTransform.YProperty, hop);
-        FlapBurst(2);
     }
 
     private void Bob(double toY, double seconds)
