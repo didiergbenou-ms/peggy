@@ -98,18 +98,6 @@
           <Path Stroke="#5b93b8" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Data="M7,68 Q27,96 7,124" Opacity="0.3"/>
         </Canvas>
 
-        <!-- new-digest envelope beside her -->
-        <Canvas x:Name="Envelope" Width="190" Height="230" Visibility="Collapsed">
-          <Rectangle Canvas.Left="142" Canvas.Top="126" Width="46" Height="33" RadiusX="4" RadiusY="4" Fill="White" Stroke="#d9c3a8" StrokeThickness="2"/>
-          <Path Data="M142,128 L165,147 L188,128" Stroke="#d9c3a8" StrokeThickness="2"/>
-        </Canvas>
-
-        <!-- new-digest sparkles -->
-        <Canvas x:Name="Sparkles" Width="190" Height="230" Visibility="Collapsed">
-          <Path Fill="#f6c445" Data="M30,34 l4,10 10,4 -10,4 -4,10 -4,-10 -10,-4 10,-4 z"/>
-          <Path Fill="#f6c445" Data="M164,58 l3,8 8,3 -8,3 -3,8 -3,-8 -8,-3 8,-3 z"/>
-        </Canvas>
-
         <!-- thinking thought-bubble -->
         <Canvas x:Name="Thinking" Width="190" Height="230" Visibility="Collapsed">
           <Ellipse Canvas.Left="116" Canvas.Top="48" Width="9" Height="9" Fill="White"/>

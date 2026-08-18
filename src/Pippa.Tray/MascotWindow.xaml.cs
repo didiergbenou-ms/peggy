@@ -153,8 +153,6 @@ public partial class MascotWindow : Window
     {
         _state = state;
         Ripples.Visibility = Visibility.Collapsed;
-        Envelope.Visibility = Visibility.Collapsed;
-        Sparkles.Visibility = Visibility.Collapsed;
         StopThinking();
 
         switch (state)
@@ -177,10 +175,6 @@ public partial class MascotWindow : Window
                 break;
             case PippaState.NewDigest:
                 AnimateHead(0);
-                Envelope.Visibility = Visibility.Visible;
-                Sparkles.Visibility = Visibility.Visible;
-                PopIn(Envelope);
-                PopIn(Sparkles);
                 FlapBurst(4);
                 Hop();
                 break;
