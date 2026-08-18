@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using ModelContextProtocol.Server;
+using Pippa.Core;
 
 namespace Pippa.Mcp;
 

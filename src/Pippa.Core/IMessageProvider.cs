@@ -1,4 +1,4 @@
-namespace Pippa.Mcp;
+namespace Pippa.Core;
 
 /// <summary>
 /// Abstraction over the user's message sources (Outlook + Teams).

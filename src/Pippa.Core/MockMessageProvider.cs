@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace Pippa.Mcp;
+namespace Pippa.Core;
 
 /// <summary>In-memory sample data so the slice runs with zero external dependencies.</summary>
 public sealed class MockMessageProvider : IMessageProvider

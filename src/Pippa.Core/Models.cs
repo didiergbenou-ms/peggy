@@ -1,4 +1,4 @@
-namespace Pippa.Mcp;
+namespace Pippa.Core;
 
 /// <summary>Where a message came from.</summary>
 public enum MessageSource
