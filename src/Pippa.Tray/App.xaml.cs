@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 using Pippa.Core;
@@ -41,6 +42,16 @@ public partial class App : Application
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("Check inbox now", null, (_, _) => RunCheck(force: true));
         menu.Items.Add("Show / hide Pippa", null, (_, _) => ToggleMascot());
+
+        var test = new Forms.ToolStripMenuItem("Test animations");
+        test.DropDownItems.Add("Play all", null, (_, _) => PlayAllAnimations());
+        test.DropDownItems.Add("Idle", null, (_, _) => ShowState(PippaState.Idle, "Idle - just perching"));
+        test.DropDownItems.Add("Listening", null, (_, _) => ShowState(PippaState.Listening, "Listening..."));
+        test.DropDownItems.Add("Thinking", null, (_, _) => ShowState(PippaState.Thinking, null));
+        test.DropDownItems.Add("New digest", null, (_, _) => ShowState(PippaState.NewDigest, "New digest! Here's what needs you."));
+        test.DropDownItems.Add("Fly out then in", null, (_, _) => FlyDemo());
+        menu.Items.Add(test);
+
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Quit Pippa", null, (_, _) => QuitApp());
         _tray.ContextMenuStrip = menu;
@@ -129,6 +140,59 @@ public partial class App : Application
     {
         if (!_mascot.IsVisible) _mascot.ShowAnimated();
         _bubble.Say(text, _mascot.HeadAnchor());
+    }
+
+    private void ShowState(PippaState state, string? bubble)
+    {
+        if (!_mascot.IsVisible) _mascot.ShowAnimated();
+        _mascot.SetState(state);
+        if (bubble is not null) _bubble.Say(bubble, _mascot.HeadAnchor(), 5);
+        else _bubble.HideNow();
+    }
+
+    private async void FlyDemo()
+    {
+        _bubble.HideNow();
+        if (!_mascot.IsVisible) { _mascot.ShowAnimated(); return; }
+        _mascot.HideAnimated();
+        await Task.Delay(1300);
+        _mascot.ShowAnimated();
+    }
+
+    /// <summary>Play every state and the fly-out/fly-in in sequence, for review.</summary>
+    private async void PlayAllAnimations()
+    {
+        if (!_mascot.IsVisible) _mascot.ShowAnimated();
+        await Task.Delay(400);
+
+        _mascot.SetState(PippaState.Idle);
+        _bubble.Say("Idle - bob, blink, hop and flap", _mascot.HeadAnchor(), 3);
+        await Task.Delay(3200);
+
+        _mascot.SetState(PippaState.Listening);
+        _bubble.Say("Listening - head tilt and ripples", _mascot.HeadAnchor(), 3);
+        await Task.Delay(3200);
+
+        _bubble.HideNow();
+        _mascot.SetState(PippaState.Thinking);
+        await Task.Delay(3500);
+
+        _mascot.SetState(PippaState.NewDigest);
+        _bubble.Say("New digest - envelope and sparkles!", _mascot.HeadAnchor(), 4);
+        await Task.Delay(4200);
+
+        _mascot.SetState(PippaState.Idle);
+        _bubble.Say("Now watch me fly!", _mascot.HeadAnchor(), 2);
+        await Task.Delay(1900);
+
+        _bubble.HideNow();
+        _mascot.HideAnimated();     // lift up, then peel away
+        await Task.Delay(1300);
+        _mascot.ShowAnimated();     // swoop in, land on the taskbar
+        await Task.Delay(1400);
+
+        _mascot.SetState(PippaState.Idle);
+        _bubble.Say("That's all my moves!", _mascot.HeadAnchor(), 4);
     }
 
     private void ToggleMascot()
