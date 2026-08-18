@@ -1,0 +1,112 @@
+<Window x:Class="Pippa.Tray.MascotWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pippa" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" Topmost="True" ShowInTaskbar="False"
+        ResizeMode="NoResize" SizeToContent="WidthAndHeight">
+  <Viewbox Width="140" Stretch="Uniform">
+    <Canvas x:Name="RootCanvas" Width="250" Height="268" RenderTransformOrigin="0.5,1.0">
+      <Canvas.RenderTransform>
+        <ScaleTransform x:Name="RootScale" ScaleX="1" ScaleY="1"/>
+      </Canvas.RenderTransform>
+
+      <Canvas x:Name="BirdCanvas" Canvas.Left="30" Canvas.Top="18" Width="190" Height="230">
+        <Canvas.RenderTransform>
+          <TranslateTransform x:Name="BodyTranslate" X="0" Y="0"/>
+        </Canvas.RenderTransform>
+        <Canvas.Effect>
+          <DropShadowEffect BlurRadius="16" ShadowDepth="5" Direction="270" Opacity="0.32" Color="#000000"/>
+        </Canvas.Effect>
+        <Canvas.Resources>
+          <LinearGradientBrush x:Key="BodyBrush" StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Color="#9d6c48" Offset="0"/>
+            <GradientStop Color="#77482c" Offset="1"/>
+          </LinearGradientBrush>
+          <LinearGradientBrush x:Key="BellyBrush" StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Color="#f4864f" Offset="0"/>
+            <GradientStop Color="#d55a39" Offset="1"/>
+          </LinearGradientBrush>
+          <LinearGradientBrush x:Key="BeakBrush" StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Color="#f9b64d" Offset="0"/>
+            <GradientStop Color="#ef972b" Offset="1"/>
+          </LinearGradientBrush>
+        </Canvas.Resources>
+
+        <!-- tail (wiggles) -->
+        <Path Fill="#6f4630" Data="M60,150 L46,112 L86,146 Z" RenderTransformOrigin="0.75,0.95">
+          <Path.RenderTransform><RotateTransform x:Name="TailRotate" Angle="0"/></Path.RenderTransform>
+        </Path>
+
+        <!-- crest feathers (wiggle) -->
+        <Canvas x:Name="CrestCanvas" Width="190" Height="230">
+          <Canvas.RenderTransform>
+            <RotateTransform x:Name="CrestRotate" CenterX="90" CenterY="60" Angle="0"/>
+          </Canvas.RenderTransform>
+          <Path Fill="#6f4630" Data="M90,36 C84,50 84,56 90,62 C96,56 96,50 90,36 Z"/>
+          <Path Fill="#784d31" Data="M78,42 C74,53 76,58 82,61 C85,55 83,48 78,42 Z"/>
+          <Path Fill="#784d31" Data="M102,42 C106,53 104,58 98,61 C95,55 97,48 102,42 Z"/>
+        </Canvas>
+
+        <!-- body -->
+        <Ellipse Canvas.Left="38" Canvas.Top="98" Width="104" Height="120" Fill="{StaticResource BodyBrush}"/>
+        <!-- belly -->
+        <Ellipse Canvas.Left="52" Canvas.Top="132" Width="64" Height="80" Fill="{StaticResource BellyBrush}"/>
+        <!-- body sheen -->
+        <Ellipse Canvas.Left="48" Canvas.Top="104" Width="30" Height="52" Fill="#16FFFFFF"/>
+        <!-- wing (flaps) -->
+        <Ellipse Canvas.Left="105" Canvas.Top="120" Width="34" Height="74" Fill="#6b4526" RenderTransformOrigin="0.5,0.12">
+          <Ellipse.RenderTransform><RotateTransform x:Name="WingRotate" Angle="0"/></Ellipse.RenderTransform>
+        </Ellipse>
+        <!-- feet -->
+        <Path Stroke="#e79a3c" StrokeThickness="5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+              Data="M80,206 L80,218 M80,218 L73,224 M80,218 L87,224 M104,206 L104,218 M104,218 L97,224 M104,218 L111,224"/>
+
+        <!-- head -->
+        <Canvas x:Name="HeadCanvas" Width="190" Height="230">
+          <Canvas.RenderTransform>
+            <RotateTransform x:Name="HeadRotate" CenterX="90" CenterY="150" Angle="0"/>
+          </Canvas.RenderTransform>
+          <Ellipse Canvas.Left="50" Canvas.Top="56" Width="80" Height="80" Fill="{StaticResource BodyBrush}"/>
+          <!-- head sheen -->
+          <Ellipse Canvas.Left="58" Canvas.Top="60" Width="34" Height="26" Fill="#20FFFFFF"/>
+          <!-- cheeks -->
+          <Ellipse Canvas.Left="58" Canvas.Top="102" Width="18" Height="13" Fill="#e2694a" Opacity="0.45"/>
+          <Ellipse Canvas.Left="104" Canvas.Top="102" Width="18" Height="13" Fill="#e2694a" Opacity="0.45"/>
+          <!-- eyes (blink) -->
+          <Canvas x:Name="EyesCanvas" Width="190" Height="230">
+            <Canvas.RenderTransform>
+              <ScaleTransform x:Name="EyeScale" CenterX="90" CenterY="92" ScaleY="1"/>
+            </Canvas.RenderTransform>
+            <Ellipse Canvas.Left="65" Canvas.Top="80" Width="22" Height="23" Fill="White"/>
+            <Ellipse Canvas.Left="93" Canvas.Top="80" Width="22" Height="23" Fill="White"/>
+            <Ellipse Canvas.Left="72" Canvas.Top="86" Width="11" Height="11" Fill="#2b2b2b"/>
+            <Ellipse Canvas.Left="98" Canvas.Top="86" Width="11" Height="11" Fill="#2b2b2b"/>
+            <Ellipse Canvas.Left="75" Canvas.Top="87" Width="4" Height="4" Fill="White"/>
+            <Ellipse Canvas.Left="101" Canvas.Top="87" Width="4" Height="4" Fill="White"/>
+          </Canvas>
+          <!-- beak -->
+          <Path Fill="{StaticResource BeakBrush}" Data="M82,106 L98,106 L90,119 Z"/>
+        </Canvas>
+
+        <!-- listening ripples -->
+        <Canvas x:Name="Ripples" Width="190" Height="230" Visibility="Collapsed">
+          <Path Stroke="#5b93b8" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Data="M26,82 Q36,96 26,110" Opacity="0.9"/>
+          <Path Stroke="#5b93b8" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Data="M16,74 Q32,96 16,118" Opacity="0.55"/>
+          <Path Stroke="#5b93b8" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Data="M7,68 Q27,96 7,124" Opacity="0.3"/>
+        </Canvas>
+
+        <!-- new-digest envelope beside her -->
+        <Canvas x:Name="Envelope" Width="190" Height="230" Visibility="Collapsed">
+          <Rectangle Canvas.Left="142" Canvas.Top="126" Width="46" Height="33" RadiusX="4" RadiusY="4" Fill="White" Stroke="#d9c3a8" StrokeThickness="2"/>
+          <Path Data="M142,128 L165,147 L188,128" Stroke="#d9c3a8" StrokeThickness="2"/>
+        </Canvas>
+
+        <!-- new-digest sparkles -->
+        <Canvas x:Name="Sparkles" Width="190" Height="230" Visibility="Collapsed">
+          <Path Fill="#f6c445" Data="M30,34 l4,10 10,4 -10,4 -4,10 -4,-10 -10,-4 10,-4 z"/>
+          <Path Fill="#f6c445" Data="M164,58 l3,8 8,3 -8,3 -3,8 -3,-8 -8,-3 8,-3 z"/>
+        </Canvas>
+      </Canvas>
+    </Canvas>
+  </Viewbox>
+</Window>
