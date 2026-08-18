@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Windows;
+using System.Windows.Threading;
 using Forms = System.Windows.Forms;
 
 namespace Pippa.Tray;
@@ -9,9 +10,12 @@ public partial class App : Application
 {
     private Forms.NotifyIcon _tray = null!;
     private MascotWindow _mascot = null!;
+    private SpeechBubbleWindow _bubble = null!;
 
     private void OnStartup(object sender, StartupEventArgs e)
     {
+        _bubble = new SpeechBubbleWindow();
+
         _mascot = new MascotWindow();
         _mascot.SetState(PippaState.Idle);
         _mascot.ShowAnimated();
@@ -26,35 +30,63 @@ public partial class App : Application
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("Show / hide Pippa", null, (_, _) => ToggleMascot());
         menu.Items.Add("Simulate: new digest", null, (_, _) => Digest());
-        menu.Items.Add("Simulate: listening", null, (_, _) => _mascot.SetState(PippaState.Listening));
-        menu.Items.Add("Simulate: thinking", null, (_, _) => _mascot.SetState(PippaState.Thinking));
+        menu.Items.Add("Simulate: listening", null, (_, _) => Listen());
+        menu.Items.Add("Simulate: thinking", null, (_, _) => Think());
         menu.Items.Add("Simulate: idle", null, (_, _) => _mascot.SetState(PippaState.Idle));
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Quit Pippa", null, (_, _) => QuitApp());
         _tray.ContextMenuStrip = menu;
         _tray.DoubleClick += (_, _) => ToggleMascot();
 
-        _tray.ShowBalloonTip(4000, "Pippa",
-            "Hi! I'm Pippa. I'll perch here and keep an eye on your inbox.", Forms.ToolTipIcon.Info);
+        // Pippa greets you with her own speech bubble once she has landed.
+        var hello = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.3) };
+        hello.Tick += (_, _) => { hello.Stop(); Say("Hi! I'm Pippa. I'll perch here and keep an eye on your inbox."); };
+        hello.Start();
+    }
+
+    private void Say(string text)
+    {
+        if (!_mascot.IsVisible) _mascot.ShowAnimated();
+        _bubble.Say(text, _mascot.HeadAnchor());
     }
 
     private void Digest()
     {
         if (!_mascot.IsVisible) _mascot.ShowAnimated();
         _mascot.SetState(PippaState.NewDigest);
-        _tray.ShowBalloonTip(6000, "Pippa - morning digest",
-            "3 things worth a look: Aisha needs Q3 numbers, Marco wants mascot feedback, and your password expires soon.",
-            Forms.ToolTipIcon.Info);
+        Say("3 things worth a look: Aisha needs Q3 numbers, Marco wants mascot feedback, and your password expires soon.");
+    }
+
+    private void Listen()
+    {
+        if (!_mascot.IsVisible) _mascot.ShowAnimated();
+        _mascot.SetState(PippaState.Listening);
+        Say("I'm listening...");
+    }
+
+    private void Think()
+    {
+        if (!_mascot.IsVisible) _mascot.ShowAnimated();
+        _mascot.SetState(PippaState.Thinking);
+        _bubble.HideNow();
     }
 
     private void ToggleMascot()
     {
-        if (_mascot.IsVisible) _mascot.HideAnimated();
-        else _mascot.ShowAnimated();
+        if (_mascot.IsVisible)
+        {
+            _bubble.HideNow();
+            _mascot.HideAnimated();
+        }
+        else
+        {
+            _mascot.ShowAnimated();
+        }
     }
 
     private void QuitApp()
     {
+        _bubble.HideNow();
         _tray.Visible = false;
         _tray.Dispose();
         Shutdown();

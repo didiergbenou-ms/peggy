@@ -55,7 +55,10 @@ public partial class MascotWindow : Window
         Top = r.Y;
     }
 
-    /// <summary>Fly Pippa in from the right, wings flapping.</summary>
+    /// <summary>Screen point (DIP) just above Pippa's head, for speech-bubble anchoring.</summary>
+    public Point HeadAnchor() => new(Left + ActualWidth * 0.52, Top + ActualHeight * 0.12);
+
+    /// <summary>Fly Pippa in from the upper right with an undulating, flapping descent.</summary>
     public void ShowAnimated()
     {
         BeginAnimation(OpacityProperty, null);
@@ -66,32 +69,64 @@ public partial class MascotWindow : Window
         var r = Rest();
         BeginAnimation(LeftProperty, null);
         BeginAnimation(TopProperty, null);
-        Left = r.X + 480;
-        Top = r.Y - 24;
+        double sx = r.X + 560, sy = r.Y - 170;
+        Left = sx;
+        Top = sy;
+        const double dur = 1.0;
 
-        var lx = new DoubleAnimation(Left, r.X, TimeSpan.FromSeconds(0.62))
+        var lx = new DoubleAnimation(sx, r.X, TimeSpan.FromSeconds(dur))
         { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } };
-        var ty = new DoubleAnimation(Top, r.Y, TimeSpan.FromSeconds(0.62))
-        { EasingFunction = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.3 } };
+
+        var ty = new DoubleAnimationUsingKeyFrames();
+        ty.KeyFrames.Add(new LinearDoubleKeyFrame(sy, KeyTime.FromPercent(0)));
+        ty.KeyFrames.Add(new EasingDoubleKeyFrame(r.Y - 80, KeyTime.FromPercent(0.32)) { EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut } });
+        ty.KeyFrames.Add(new EasingDoubleKeyFrame(r.Y - 100, KeyTime.FromPercent(0.55)) { EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut } });
+        ty.KeyFrames.Add(new EasingDoubleKeyFrame(r.Y, KeyTime.FromPercent(1.0)) { EasingFunction = new BounceEase { EasingMode = EasingMode.EaseOut, Bounces = 1, Bounciness = 4 } });
+        ty.Completed += (_, _) =>
+        {
+            BeginAnimation(LeftProperty, null);
+            BeginAnimation(TopProperty, null);
+            Left = r.X;
+            Top = r.Y;
+            BodyTilt.BeginAnimation(RotateTransform.AngleProperty, null);
+            BodyTilt.Angle = 0;
+        };
+
         BeginAnimation(LeftProperty, lx);
         BeginAnimation(TopProperty, ty);
-        BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromSeconds(0.22)));
-        FlapBurst(5);
+        BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromSeconds(0.2)));
+
+        var tilt = new DoubleAnimationUsingKeyFrames();
+        tilt.KeyFrames.Add(new LinearDoubleKeyFrame(-15, KeyTime.FromPercent(0)));
+        tilt.KeyFrames.Add(new EasingDoubleKeyFrame(-9, KeyTime.FromPercent(0.5)));
+        tilt.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromPercent(1.0)) { EasingFunction = new SineEase { EasingMode = EasingMode.EaseOut } });
+        BodyTilt.BeginAnimation(RotateTransform.AngleProperty, tilt);
+
+        ContinuousFlap(dur);
     }
 
-    /// <summary>Fly Pippa up and away to the right, then hide.</summary>
+    /// <summary>Fly Pippa up and away to the right, wings flapping, then hide.</summary>
     public void HideAnimated()
     {
         var r = Rest();
-        var lx = new DoubleAnimation(Left, r.X + 500, TimeSpan.FromSeconds(0.5))
+        const double dur = 0.9;
+        double ex = r.X + 560, ey = r.Y - 240;
+
+        var lx = new DoubleAnimation(Left, ex, TimeSpan.FromSeconds(dur))
         { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } };
-        var ty = new DoubleAnimation(Top, r.Y - 90, TimeSpan.FromSeconds(0.5))
-        { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } };
+
+        var ty = new DoubleAnimationUsingKeyFrames();
+        ty.KeyFrames.Add(new LinearDoubleKeyFrame(Top, KeyTime.FromPercent(0)));
+        ty.KeyFrames.Add(new EasingDoubleKeyFrame(r.Y - 20, KeyTime.FromPercent(0.22)) { EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut } });
+        ty.KeyFrames.Add(new EasingDoubleKeyFrame(r.Y - 130, KeyTime.FromPercent(0.6)) { EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut } });
+        ty.KeyFrames.Add(new EasingDoubleKeyFrame(ey, KeyTime.FromPercent(1.0)) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } });
         BeginAnimation(LeftProperty, lx);
         BeginAnimation(TopProperty, ty);
-        FlapBurst(6);
 
-        var fade = new DoubleAnimation(1, 0, TimeSpan.FromSeconds(0.5));
+        BodyTilt.BeginAnimation(RotateTransform.AngleProperty, new DoubleAnimation(0, -16, TimeSpan.FromSeconds(0.3)));
+        ContinuousFlap(dur);
+
+        var fade = new DoubleAnimation(1, 0, TimeSpan.FromSeconds(0.55)) { BeginTime = TimeSpan.FromSeconds(0.35) };
         fade.Completed += (_, _) =>
         {
             Hide();
@@ -99,6 +134,8 @@ public partial class MascotWindow : Window
             Opacity = 1;
             BeginAnimation(LeftProperty, null);
             BeginAnimation(TopProperty, null);
+            BodyTilt.BeginAnimation(RotateTransform.AngleProperty, null);
+            BodyTilt.Angle = 0;
             var rr = Rest();
             Left = rr.X;
             Top = rr.Y;
@@ -113,6 +150,7 @@ public partial class MascotWindow : Window
         Ripples.Visibility = Visibility.Collapsed;
         Envelope.Visibility = Visibility.Collapsed;
         Sparkles.Visibility = Visibility.Collapsed;
+        StopThinking();
 
         switch (state)
         {
@@ -127,8 +165,10 @@ public partial class MascotWindow : Window
                 PulseRipples();
                 break;
             case PippaState.Thinking:
-                AnimateHead(0);
-                Bob(-3, 0.45);
+                AnimateHead(-8);
+                Bob(-3, 0.7);
+                Thinking.Visibility = Visibility.Visible;
+                StartThinking();
                 break;
             case PippaState.NewDigest:
                 AnimateHead(0);
@@ -139,6 +179,34 @@ public partial class MascotWindow : Window
                 PopIn(Sparkles);
                 FlapBurst(4);
                 break;
+        }
+    }
+
+    private void StartThinking()
+    {
+        AnimateDot(Dot1, 0.0);
+        AnimateDot(Dot2, 0.18);
+        AnimateDot(Dot3, 0.36);
+    }
+
+    private static void AnimateDot(UIElement dot, double beginSeconds)
+    {
+        var a = new DoubleAnimation(0.25, 1.0, TimeSpan.FromSeconds(0.42))
+        {
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            BeginTime = TimeSpan.FromSeconds(beginSeconds)
+        };
+        dot.BeginAnimation(UIElement.OpacityProperty, a);
+    }
+
+    private void StopThinking()
+    {
+        Thinking.Visibility = Visibility.Collapsed;
+        foreach (var d in new UIElement[] { Dot1, Dot2, Dot3 })
+        {
+            d.BeginAnimation(UIElement.OpacityProperty, null);
+            d.Opacity = 1;
         }
     }
 
@@ -163,15 +231,21 @@ public partial class MascotWindow : Window
         WingRotate.BeginAnimation(RotateTransform.AngleProperty, a);
     }
 
+    private void ContinuousFlap(double seconds)
+    {
+        int flaps = Math.Max(3, (int)(seconds / 0.14));
+        var a = new DoubleAnimation(-2, -44, TimeSpan.FromSeconds(0.07))
+        { AutoReverse = true, RepeatBehavior = new RepeatBehavior(flaps), EasingFunction = new SineEase() };
+        WingRotate.BeginAnimation(RotateTransform.AngleProperty, a);
+    }
+
     private void Hop()
     {
         BodyTranslate.BeginAnimation(TranslateTransform.YProperty, null);
         var hop = new DoubleAnimationUsingKeyFrames();
         hop.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.Zero)));
-        hop.KeyFrames.Add(new EasingDoubleKeyFrame(-26, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.18)))
-        { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } });
-        hop.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.48)))
-        { EasingFunction = new BounceEase { EasingMode = EasingMode.EaseOut, Bounces = 1, Bounciness = 3 } });
+        hop.KeyFrames.Add(new EasingDoubleKeyFrame(-26, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.18))) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } });
+        hop.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.48))) { EasingFunction = new BounceEase { EasingMode = EasingMode.EaseOut, Bounces = 1, Bounciness = 3 } });
         hop.Completed += (_, _) => { if (_state == PippaState.Idle) Bob(-7, 0.7); };
         BodyTranslate.BeginAnimation(TranslateTransform.YProperty, hop);
         FlapBurst(2);

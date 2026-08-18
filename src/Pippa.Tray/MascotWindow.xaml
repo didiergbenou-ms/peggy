@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Pippa" WindowStyle="None" AllowsTransparency="True"
         Background="Transparent" Topmost="True" ShowInTaskbar="False"
-        ResizeMode="NoResize" SizeToContent="WidthAndHeight">
+        ShowActivated="False" ResizeMode="NoResize" SizeToContent="WidthAndHeight">
   <Viewbox Width="140" Stretch="Uniform">
     <Canvas x:Name="RootCanvas" Width="250" Height="268" RenderTransformOrigin="0.5,1.0">
       <Canvas.RenderTransform>
@@ -12,7 +12,10 @@
 
       <Canvas x:Name="BirdCanvas" Canvas.Left="30" Canvas.Top="18" Width="190" Height="230">
         <Canvas.RenderTransform>
-          <TranslateTransform x:Name="BodyTranslate" X="0" Y="0"/>
+          <TransformGroup>
+            <RotateTransform x:Name="BodyTilt" CenterX="95" CenterY="155" Angle="0"/>
+            <TranslateTransform x:Name="BodyTranslate" X="0" Y="0"/>
+          </TransformGroup>
         </Canvas.RenderTransform>
         <Canvas.Effect>
           <DropShadowEffect BlurRadius="16" ShadowDepth="5" Direction="270" Opacity="0.32" Color="#000000"/>
@@ -67,12 +70,9 @@
             <RotateTransform x:Name="HeadRotate" CenterX="90" CenterY="150" Angle="0"/>
           </Canvas.RenderTransform>
           <Ellipse Canvas.Left="50" Canvas.Top="56" Width="80" Height="80" Fill="{StaticResource BodyBrush}"/>
-          <!-- head sheen -->
           <Ellipse Canvas.Left="58" Canvas.Top="60" Width="34" Height="26" Fill="#20FFFFFF"/>
-          <!-- cheeks -->
           <Ellipse Canvas.Left="58" Canvas.Top="102" Width="18" Height="13" Fill="#e2694a" Opacity="0.45"/>
           <Ellipse Canvas.Left="104" Canvas.Top="102" Width="18" Height="13" Fill="#e2694a" Opacity="0.45"/>
-          <!-- eyes (blink) -->
           <Canvas x:Name="EyesCanvas" Width="190" Height="230">
             <Canvas.RenderTransform>
               <ScaleTransform x:Name="EyeScale" CenterX="90" CenterY="92" ScaleY="1"/>
@@ -84,7 +84,6 @@
             <Ellipse Canvas.Left="75" Canvas.Top="87" Width="4" Height="4" Fill="White"/>
             <Ellipse Canvas.Left="101" Canvas.Top="87" Width="4" Height="4" Fill="White"/>
           </Canvas>
-          <!-- beak -->
           <Path Fill="{StaticResource BeakBrush}" Data="M82,106 L98,106 L90,119 Z"/>
         </Canvas>
 
@@ -105,6 +104,18 @@
         <Canvas x:Name="Sparkles" Width="190" Height="230" Visibility="Collapsed">
           <Path Fill="#f6c445" Data="M30,34 l4,10 10,4 -10,4 -4,10 -4,-10 -10,-4 10,-4 z"/>
           <Path Fill="#f6c445" Data="M164,58 l3,8 8,3 -8,3 -3,8 -3,-8 -8,-3 8,-3 z"/>
+        </Canvas>
+
+        <!-- thinking thought-bubble -->
+        <Canvas x:Name="Thinking" Width="190" Height="230" Visibility="Collapsed">
+          <Ellipse Canvas.Left="116" Canvas.Top="48" Width="9" Height="9" Fill="White"/>
+          <Ellipse Canvas.Left="126" Canvas.Top="38" Width="12" Height="12" Fill="White"/>
+          <Ellipse Canvas.Left="122" Canvas.Top="10" Width="64" Height="34" Fill="White"/>
+          <Ellipse Canvas.Left="130" Canvas.Top="4" Width="34" Height="30" Fill="White"/>
+          <Ellipse Canvas.Left="156" Canvas.Top="8" Width="30" Height="26" Fill="White"/>
+          <Ellipse x:Name="Dot1" Canvas.Left="135" Canvas.Top="22" Width="8" Height="8" Fill="#8a6f5a"/>
+          <Ellipse x:Name="Dot2" Canvas.Left="149" Canvas.Top="22" Width="8" Height="8" Fill="#8a6f5a"/>
+          <Ellipse x:Name="Dot3" Canvas.Left="163" Canvas.Top="22" Width="8" Height="8" Fill="#8a6f5a"/>
         </Canvas>
       </Canvas>
     </Canvas>
