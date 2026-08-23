@@ -1,170 +1,690 @@
 # Peggy
 
-Peggy is a friendly animated bird who watches Outlook email and Microsoft Teams
-and alerts you only when something deserves attention, powered by GitHub
-Copilot. Her original perch, listening, thinking, and new-digest animations are
-preserved. Scheduled sleep and wake extend that motion set without scaling or
-distorting her silhouette.
+Peggy is a local-first Windows desktop assistant for Microsoft 365. She watches
+Outlook and Microsoft Teams, uses GitHub Copilot to decide what deserves
+attention, presents source-linked alerts, and can prepare or execute a bounded
+set of work actions only after explicit approval.
 
-This repo contains the **v1 live loop**: a Windows tray host, an animated mascot,
-and a custom Model Context Protocol (MCP) server that lets GitHub Copilot inspect
-the user's Microsoft 365 messages.
+Peggy appears as an animated desktop bird with a tray menu, alert center, and
+optional English voice conversation. Raw microphone audio and speech models
+remain in a separate local process.
 
-## Architecture (v1)
+> **Current platform:** Windows x64, .NET 10, Microsoft Scout WorkIQ, and the
+> GitHub Copilot CLI.
 
-- **GitHub Copilot** - strict monitoring classification remains isolated in
-  headless `copilot -p` runs. Voice conversations use one warmed, persistent
-  official .NET Copilot SDK session with streaming text deltas and the same
-  bounded assistant tools.
-- **Peggy MCP server** (`src/Peggy.Mcp`, this repo) - a .NET stdio MCP server
-  exposing bounded read tools plus proposal-only `prepare_action`.
-- **Peggy tray host** (`src/Peggy.Tray`) - hybrid 5-minute pre-filter,
-  one resumable Copilot session on a pinned model, AI-credit history, speech
-  bubbles, and Peggy's animated states.
-- **Peggy speech host** (`src/Peggy.Speech.Host`) - isolated English-only
-  sherpa-onnx process using NeMo FastConformer for live partial text, Parakeet
-  TDT for the accurate final transcript, Silero VAD with 450 ms endpointing,
-  Kitten TTS Nano for real-time CPU speech, and NAudio WASAPI. It stays warm throughout a conversation
-  and is terminated when the conversation ends so all native memory is
-  released.
-- **WorkIQ provider** (`src/Peggy.Core`) - prompt-guided Teams discovery,
-  structured Microsoft 365 verification, and confirmation-gated writes through
-  the locally installed WorkIQ CLI/MCP server.
+## Contents
 
-On first launch, set `PEGGY_WORKIQ_ACCOUNT` to the Microsoft 365 account Peggy
-should use. Peggy pins that account inside DPAPI-encrypted local state and
-rejects a different configured or authenticated account. Outlook monitoring
-covers Inbox plus `Inbox/Cases/Active` and all descendants by default.
-The assistant compares each Teams chat's last-message preview with the user's
-`lastMessageReadDateTime`, then fetches bounded history only for unread chats.
-Incremental monitoring enumerates the user's chats and requests messages by
-`lastModifiedDateTime`, so edits to older messages are not missed. Message
-activity is still based on `createdDateTime` or a real `lastEditedDateTime`;
-reaction, importance, and other metadata-only changes to old messages do not
-re-enter the monitoring window. Teams source links must identify a specific
-`/l/message/` item, never only a generic chat.
-Broad Teams channel discovery uses a strict WorkIQ prompt over the five-minute
-window. Only explicitly watchlisted channels use Graph delta scans, avoiding a
-full crawl of every joined channel.
-Each process startup begins a fresh five-minute monitoring window and ignores
-older downtime backlog while retaining known channel participation.
-Live Microsoft 365 writes are executed only after the assistant shows and speaks the
-exact action preview. Non-destructive actions require click or immediate voice
-approval. Destructive actions require a separate exact typed phrase. Every
-attempt is locally audited and the result is verified before the assistant
-reports success. Every alert labels why Peggy flagged it and identifies Outlook
-or Teams as its source. Prompt discovery must resolve and verify a cited source
-URL before an alert can be created; unresolved candidates are withheld and
-retried with a visible monitoring warning. **Open in Outlook/Teams** therefore
-always launches the saved source. Context stays hidden while privacy masking is
-active unless the user explicitly confirms **Reveal details**, which reveals
-the card for one minute. No cloud relay or webhook is needed.
+- [Highlights](#highlights)
+- [Architecture](#architecture)
+- [Monitoring behavior](#monitoring-behavior)
+- [Safety and privacy model](#safety-and-privacy-model)
+- [Prerequisites](#prerequisites)
+- [Quick start](#quick-start)
+- [Using Peggy](#using-peggy)
+- [Settings](#settings)
+- [Supported actions](#supported-actions)
+- [Local speech](#local-speech)
+- [Build and publish](#build-and-publish)
+- [Testing](#testing)
+- [Configuration reference](#configuration-reference)
+- [MCP tools](#mcp-tools)
+- [Local files and state](#local-files-and-state)
+- [Project layout](#project-layout)
+- [Running with sample data](#running-with-sample-data)
+- [Troubleshooting](#troubleshooting)
+- [Current limitations](#current-limitations)
+- [Third-party software](#third-party-software)
+
+## Highlights
+
+- Monitors unread Outlook mail and Teams chat activity every five minutes.
+- Starts each process with a fresh five-minute lookback instead of replaying a
+  large downtime backlog.
+- Uses strict, source-grounded Copilot classification to create Critical,
+  Attention, and Awareness alerts.
+- Opens alerts in the exact Outlook or Teams source when a verified link is
+  available.
+- Supports prompt-guided Teams channel discovery and explicit full-channel
+  watchlists.
+- Provides a warmed, persistent Copilot conversation with streamed responses.
+- Runs English speech recognition and synthesis locally with sherpa-onnx.
+- Requires an exact action preview and explicit approval before every write.
+- Requires a second typed confirmation for destructive actions.
+- Pins one Microsoft 365 identity and rejects a different authenticated account.
+- Stores state with Windows DPAPI for the current user.
+- Tracks local AI-credit usage and keeps a 30-day local action audit.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    M365[Outlook, Teams, Calendar, To Do] --> WIQ[Microsoft Scout WorkIQ]
+    WIQ --> Core[Peggy.Core]
+
+    Tray[Peggy.Tray] --> Core
+    Tray --> CLI[GitHub Copilot CLI<br/>isolated monitoring runs]
+    Tray --> SDK[GitHub Copilot SDK<br/>persistent conversation]
+
+    CLI --> MCP[Peggy.Mcp]
+    SDK --> MCP
+    MCP --> Core
+
+    Tray --> Speech[Peggy.Speech.Host]
+    Mic[Microphone] --> Speech
+    Speech --> Speaker[Speaker]
+```
+
+### Components
+
+| Component | Responsibility |
+| --- | --- |
+| `Peggy.Tray` | WPF mascot, tray menu, alert center, conversation UI, monitoring scheduler, privacy masking, and approval flow |
+| `Peggy.Core` | Microsoft 365 provider, encrypted state, monitoring cursors, action policy, source verification, and shared models |
+| `Peggy.Mcp` | Bounded MCP read tools and the proposal-only `prepare_action` tool |
+| `Peggy.Speech.Host` | Isolated x64 process for microphone capture, VAD, speech recognition, and text-to-speech |
+| `Peggy.Core.Tests` | Executable smoke and regression suite covering core, desktop, assistant, action, and speech behavior |
+
+### Copilot execution modes
+
+Peggy uses two Copilot paths:
+
+1. **Monitoring:** short, isolated `copilot -p` runs classify focused batches of
+   messages. Private focus, context, action, and usage files are passed through
+   temporary local paths rather than command-line arguments.
+2. **Conversation:** one warmed official .NET Copilot SDK session streams text
+   deltas and uses the same bounded Peggy MCP tools.
+
+Temporary private files include process ownership in their names. Normal
+cleanup removes them after each operation, and startup cleanup removes files
+whose owning process has exited.
+
+## Monitoring behavior
+
+### Schedule and polling
+
+- Automatic monitoring runs every five minutes.
+- The default awake window is **07:00-19:00 local time**.
+- Outside that window Peggy sleeps and automatic checks pause.
+- **Check now** and **Talk to Peggy** remain available while sleeping.
+- Waking or restarting establishes a new five-minute lookback.
+- Three consecutive monitoring failures mark monitoring as interrupted and
+  surface remediation in the Alert Center.
+
+### Outlook
+
+Peggy monitors:
+
+- Inbox.
+- `Inbox\Cases\Active`.
+- Every descendant of those folders.
+- Any additional Inbox-relative folders configured in Settings.
+
+Outlook cursors use message activity boundaries and delta links where
+available. Source references are verified before they are attached to alerts.
+
+### Teams chats
+
+Peggy enumerates the signed-in user's chats and requests changed messages using
+`lastModifiedDateTime`. Alert activity uses the message creation time or a real
+`lastEditedDateTime`, so an edit to an older message is detected while
+reaction-only or importance-only metadata changes do not re-enter the alert
+window.
+
+Unread views compare chat activity with the caller's
+`lastMessageReadDateTime`. Teams links must identify a specific
+`/l/message/` item rather than only a generic chat.
+
+### Teams channels
+
+- Broad channel discovery uses a constrained WorkIQ prompt for the current
+  monitoring window.
+- Prompt results must resolve to a cited, compatible Teams source before Peggy
+  creates an alert.
+- Channels selected in the full-channel watchlist use structured Graph delta
+  scans.
+- Known channel participation is retained across monitoring-window rebases.
+
+### Alert lifecycle
+
+Each alert records its source, reason, tier, activity time, message IDs, and
+material-change hash. Alerts can be:
+
+- Resolved.
+- Dismissed.
+- Snoozed for one hour.
+- Reclassified between Critical, Attention, and Awareness.
+- Used as focused context for a Peggy conversation.
+
+Feedback such as **Less like this** and **Always alert** is retained locally and
+included in later classification runs.
+
+## Safety and privacy model
+
+### Account pinning
+
+`PEGGY_WORKIQ_ACCOUNT` is required before first launch. Peggy stores that
+identity in encrypted state and validates the authenticated WorkIQ profile
+before structured reads, prompts, or writes.
+
+The configured value may match either the mailbox address or user principal
+name. Peggy resolves the canonical Outlook address after validation. A
+different configured or authenticated identity is rejected.
+
+### Approval boundary
+
+Copilot cannot directly write to Microsoft 365. The MCP `prepare_action` tool
+only validates and stages one proposal. The tray host:
+
+1. Normalizes and validates the proposed fields.
+2. Displays and speaks the exact operation.
+3. Requests approval.
+4. Executes the write through WorkIQ only after approval.
+5. Reads the result back and verifies it.
+6. Records the outcome in the encrypted local audit.
+
+| Action class | Required approval |
+| --- | --- |
+| Non-destructive writes | Click approval or an immediate natural-language voice approval |
+| Cancel calendar event | Exact typed confirmation |
+| Delete Outlook message | Exact typed confirmation |
+| Delete Microsoft To Do task | Exact typed confirmation |
+
+Approvals are bound to the exact staged action ID. Interrupting a turn,
+switching alerts, cancelling, or replacing a proposal clears stale approval
+state.
+
+### Local data protection
+
+- Persistent state is encrypted with Windows DPAPI using
+  `DataProtectionScope.CurrentUser`.
+- Raw microphone audio remains inside `peggy-speech-host.exe`.
+- Live partial transcripts remain local.
+- Only the reviewed final transcript can be sent to Copilot or WorkIQ.
+- Locking the Windows session ends voice activity, hides private UI, and masks
+  alert content.
+- Private temporary scope files are deleted after use and recovered after a
+  crashed process.
+- No cloud relay or webhook is required.
+
+### Source trust
+
+Message bodies, prompt results, and quoted alert details are treated as data,
+not instructions. Alert links must pass source-specific validation before
+Peggy opens or persists them.
 
 ## Prerequisites
 
-1. Microsoft Scout with WorkIQ installed and signed in.
-2. GitHub Copilot CLI available on `PATH`.
-3. .NET 10 SDK.
-4. Set the Microsoft 365 account before first launch:
+1. **Windows x64.**
+2. **.NET 10 SDK** for development, or the .NET 10 Desktop Runtime for a
+   framework-dependent published build.
+3. **GitHub Copilot CLI** installed, authenticated, and available on `PATH`.
+4. **Microsoft Scout with WorkIQ** installed and signed in.
+5. Acceptance of the WorkIQ pre-release terms when required:
 
    ```powershell
-   $env:PEGGY_WORKIQ_ACCOUNT = "you@example.com"
+   workiq accept-eula
    ```
 
-5. Local English speech models installed with:
+6. `curl.exe` and `tar.exe` for the speech-model installer.
+7. A microphone and audio output device for voice features.
 
-   ```powershell
-   .\scripts\Install-SpeechModels.ps1
-   ```
+Peggy resolves WorkIQ in this order:
 
-   The installer downloads only pinned official sherpa-onnx release assets,
-   verifies their SHA-256 digests, and places about 803 MiB under
-   `%LOCALAPPDATA%\Peggy\models`.
+1. `PEGGY_WORKIQ_PATH`.
+2. `workiq.exe` on `PATH`.
+3. The Microsoft Scout installation.
+4. `%USERPROFILE%\.scout\bin\workiq.cmd`.
 
-## Build
+## Quick start
+
+Open PowerShell in the repository root.
+
+### 1. Pin the Microsoft 365 account
+
+Set the value for the current shell and persist it for future Windows sessions:
 
 ```powershell
-dotnet build src/Peggy.Tray/Peggy.Tray.csproj
+$account = "you@example.com"
+$env:PEGGY_WORKIQ_ACCOUNT = $account
+[Environment]::SetEnvironmentVariable(
+    "PEGGY_WORKIQ_ACCOUNT",
+    $account,
+    "User"
+)
 ```
 
-The tray project also builds and packages the complete MCP server it launches
-for Copilot and the isolated speech host. `dotnet publish` places them under
-`Peggy.Mcp` and `Peggy.Speech.Host` in the publish output.
+Use the account currently authenticated in Microsoft Scout. Do not point the
+same encrypted state file at different accounts.
 
-The assistant never falls back to `System.Speech`, Windows Speech Recognizer, or an
-installed Windows voice. If the local models or speech host are unavailable,
-voice is disabled with an explicit error while the rest of the assistant continues.
-Every recognized turn is shown in an editable **I heard...** card before the
-text can be sent to Copilot or WorkIQ. Ordinary turns auto-send after a visible
-one-second undo window; editing or **Cancel auto-send** pauses the timer.
-Action-approval transcripts always require explicit review. Live partial text
-appears locally while speaking and is never sent; Parakeet's final transcript
-is the only version eligible for auto-send.
-The persistent Copilot session is warmed at app startup. As response deltas
-arrive, complete sentences are queued to Kitten, so Peggy can begin speaking
-before Copilot finishes the full answer. Voice answers default to one short
-sentence. Pressing the microphone during Thinking or Speaking aborts
-that turn and returns Peggy to listening.
-Use **Unload voice models** from the tray at any time; ending a conversation
-does the same automatically.
+### 2. Install local speech models
 
-Automatic monitoring is enabled from 07:00 until 19:00 local time by default.
-Outside that window Peggy uses a sleeping animation and
-monitoring pauses without changing the manual pause setting. The wake and sleep
-times can be changed or disabled in Settings. **Check now** and voice
-conversations remain available while Peggy is sleeping. At wake,
-monitoring resumes from a fresh five-minute lookback rather than processing the
-whole overnight backlog.
+```powershell
+.\scripts\Install-SpeechModels.ps1
+```
 
-For defense in depth, run the following once from an elevated PowerShell
-window after building or installing the application:
+The installer downloads about 803 MiB of pinned official sherpa-onnx assets,
+verifies every SHA-256 digest, and installs them under:
+
+```text
+%LOCALAPPDATA%\Peggy\models
+```
+
+Voice is optional. To run without the models, start Peggy and disable local
+speech in Settings.
+
+### 3. Build and run
+
+```powershell
+dotnet restore .\src\Peggy.Tray\Peggy.Tray.csproj
+dotnet run --project .\src\Peggy.Tray\Peggy.Tray.csproj -c Release
+```
+
+The tray project automatically builds and packages the MCP server and speech
+host beside the tray executable.
+
+### 4. Add the optional speech-host firewall rule
+
+From an elevated PowerShell window:
 
 ```powershell
 .\scripts\Protect-SpeechHost.ps1
 ```
 
-This creates a verified outbound firewall block for only
-`peggy-speech-host.exe`. The host has no network features, raw audio never
-leaves that process, and only the approved transcript can later be sent to
-Copilot or WorkIQ. A private sherpa-onnx build linked against ONNX Runtime
-built with `--no_telemetry` remains the strongest way to remove ONNX Runtime
-telemetry events at build time; the managed `OrtEnv` switch cannot control the
-environment embedded inside sherpa-onnx.
-The script detects standard, RID-specific, and publish Release layouts. Pass
-`-HostPath` when protecting a host installed elsewhere.
-
-WorkIQ is the default provider. To run with sample data instead:
+The script finds the newest standard, RID-specific, or publish Release host and
+replaces the named outbound-block rule. If Peggy is installed elsewhere:
 
 ```powershell
-$env:PEGGY_MESSAGE_PROVIDER = "mock"
-dotnet run --project src\Peggy.Tray\Peggy.Tray.csproj
+.\scripts\Protect-SpeechHost.ps1 `
+    -HostPath "C:\Apps\Peggy\Peggy.Speech.Host\peggy-speech-host.exe"
 ```
 
-Optional settings:
+Rerun the script if the executable moves.
 
-| Variable | Purpose |
+## Using Peggy
+
+Peggy runs as a single-instance tray application. Double-clicking the tray icon
+opens the Alert Center.
+
+### Tray menu
+
+| Command | Behavior |
 | --- | --- |
-| `PEGGY_MESSAGE_PROVIDER` | `workiq` (default) or `mock` |
-| `PEGGY_STATE_PATH` | Optional encrypted-state path override for isolated testing |
-| `PEGGY_WORKIQ_PATH` | Explicit path to `workiq.exe` or Scout's `workiq.cmd` |
-| `PEGGY_WORKIQ_ACCOUNT` | Microsoft 365 account to pin on first launch; later values must match encrypted state |
-| `PEGGY_OUTLOOK_FOLDERS` | Additional Inbox-relative folder paths, separated by semicolons; descendants are included |
-| `PEGGY_COPILOT_MODEL` | Override the saved Copilot model for the process; defaults to `gpt-5.4` |
-| `PEGGY_SPEECH_MODELS` | Override the local English speech model directory |
-| `PEGGY_SPEECH_HOST_PATH` | Override the isolated speech-host executable path |
-| `PEGGY_LOG_PATH` | Optional diagnostic log path override for isolated testing |
+| **Open alerts** | Opens active Critical, Attention, and Awareness alerts |
+| **Talk to Peggy** | Starts a local voice conversation |
+| **Unload voice models** | Ends voice activity and releases native model memory |
+| **Check now** | Runs a monitoring check even while scheduled sleep is active |
+| **Pause monitoring** | Toggles manual monitoring pause |
+| **AI credits today** | Shows recent local Copilot credit entries |
+| **Settings** | Opens model, source, voice, schedule, startup, and watchlist settings |
+| **Show or hide Peggy** | Toggles the desktop mascot |
+| **Test animations** | Plays individual or all mascot states |
+| **Quit Peggy** | Stops monitoring, closes Copilot, unloads speech, and exits |
 
-## Tools
+### Alert Center
 
-| Tool          | Description                                            |
-| ------------- | ------------------------------------------------------ |
-| `list_unread` | Unread messages across email + Teams, newest first |
-| `get_thread` | Bounded conversation context for a thread id |
-| `list_upcoming_events` | Bounded upcoming calendar events |
-| `list_tasks` | Bounded Microsoft To Do tasks |
-| `ask_workiq` | Prompt-guided discovery across Microsoft 365 |
-| `get_turn_context` | Private per-turn context supplied by the tray |
-| `prepare_action` | Validate and stage one action for explicit approval |
+The Alert Center shows:
 
-`prepare_action` never performs a write. Only the tray host can execute the
-staged action after the confirmation requirements above are satisfied.
+- The alert tier and source.
+- A concise summary.
+- Why Peggy flagged the item.
+- The verified **Open in Outlook** or **Open in Teams** action.
+- Resolve, dismiss, snooze, feedback, tier correction, context, and
+  conversation controls.
+
+When privacy masking is active, details remain hidden until
+**Reveal details** is explicitly confirmed. A reveal expires after one minute.
+
+### Voice conversation
+
+1. Select **Talk to Peggy**, or start a conversation from an alert.
+2. Peggy loads the local models and listens.
+3. Live partial text appears locally.
+4. The final transcript appears in an editable **I heard...** card.
+5. Ordinary requests auto-send after a visible one-second undo window.
+6. Editing the text or selecting **Cancel auto-send** pauses automatic send.
+7. Approval transcripts never auto-send; they require explicit review.
+
+Pressing the microphone while Peggy is thinking or speaking interrupts the
+current turn and returns to listening. Ending a conversation unloads every
+speech model.
+
+## Settings
+
+Settings are persisted atomically with the rest of Peggy's encrypted state.
+Runtime services are staged before activation so a failed configuration does
+not leave a partially applied identity, model, or source scope.
+
+| Setting | Notes |
+| --- | --- |
+| Pinned Copilot model | Defaults to `gpt-5.4`; changing it starts a fresh Copilot session |
+| Additional Outlook folders | One Inbox-relative path per line; descendants are included |
+| Enable local speech | Enables or disables the isolated English speech host |
+| Speech model directory | Defaults to `%LOCALAPPDATA%\Peggy\models` |
+| Voice | Bella, Luna, Rosie, or Kiki |
+| CPU threads | 1, 2, 4, or 8 |
+| Microphone gain | 4x, 8x, 12x, or 16x |
+| Monitoring schedule | Local 24-hour wake and sleep times |
+| Start at Windows sign-in | Manages the current user's `Run` registry entry |
+| Pause monitoring | Persists a manual pause independently of scheduled sleep |
+| Full-channel watchlist | Selects joined Teams channels for structured delta monitoring |
+
+## Supported actions
+
+Peggy can prepare these bounded actions:
+
+| Area | Actions |
+| --- | --- |
+| Outlook | Mark a message read, create an email draft, send email, create a reply draft, send a reply, delete a message |
+| Teams | Send a chat message or channel-thread reply |
+| Calendar | Create an event, update an event, cancel an event |
+| Microsoft To Do | Create, update, complete, or delete a task in the default `Tasks` list |
+
+Limits enforced before approval include:
+
+- At most 50 normalized recipients.
+- Subject length up to 300 characters.
+- Body length up to 10,000 characters.
+- Valid event start/end ordering.
+- ISO 8601 UTC timestamps for MCP calendar proposals.
+- `YYYY-MM-DD` task due dates.
+- No explicit recipient override for Outlook replies.
+- One action proposal per Copilot turn.
+
+## Local speech
+
+Peggy never falls back to `System.Speech`, Windows Speech Recognizer, or an
+installed Windows voice.
+
+| Model | Role |
+| --- | --- |
+| NeMo streaming FastConformer CTC | Low-latency partial transcription |
+| NeMo Parakeet TDT | Accurate final transcription |
+| Silero VAD v5 | Voice activity detection and endpointing |
+| Kitten TTS Nano | Local real-time English text-to-speech |
+| NAudio WASAPI | Windows microphone and playback transport |
+
+The speech host:
+
+- Runs as a separate x64 process.
+- Uses 450 ms endpointing.
+- Receives model, thread, voice, speed, and gain settings through its process
+  environment.
+- Stays warm during a conversation.
+- Is terminated when the conversation ends or models are unloaded.
+- Has no application network features.
+
+### Reinstalling incomplete models
+
+The installer refuses to treat a partial model directory as complete. Repair it
+with:
+
+```powershell
+.\scripts\Install-SpeechModels.ps1 -Force
+```
+
+To install in another directory:
+
+```powershell
+.\scripts\Install-SpeechModels.ps1 `
+    -Destination "D:\Peggy\models"
+```
+
+Then select that directory in Settings or set `PEGGY_SPEECH_MODELS`.
+
+## Build and publish
+
+Exit a running Peggy instance before rebuilding so loaded assemblies are not
+locked.
+
+### Development build
+
+```powershell
+dotnet build .\src\Peggy.Tray\Peggy.Tray.csproj -c Release
+```
+
+Output:
+
+```text
+src\Peggy.Tray\bin\Release\net10.0-windows\
+```
+
+### RID-specific x64 build
+
+```powershell
+dotnet build .\src\Peggy.Tray\Peggy.Tray.csproj `
+    -c Release `
+    -r win-x64
+```
+
+Output:
+
+```text
+src\Peggy.Tray\bin\Release\net10.0-windows\win-x64\
+```
+
+### Framework-dependent publish
+
+```powershell
+dotnet publish .\src\Peggy.Tray\Peggy.Tray.csproj `
+    -c Release `
+    --self-contained false
+```
+
+Output:
+
+```text
+src\Peggy.Tray\bin\Release\net10.0-windows\publish\
+```
+
+### RID-specific publish
+
+```powershell
+dotnet publish .\src\Peggy.Tray\Peggy.Tray.csproj `
+    -c Release `
+    -r win-x64 `
+    --self-contained false
+```
+
+The publish directory contains:
+
+```text
+peggy-tray.exe
+Peggy.Mcp\
+  peggy-mcp.exe
+Peggy.Speech.Host\
+  peggy-speech-host.exe
+```
+
+Both helper projects are published automatically by the tray project's MSBuild
+targets.
+
+## Testing
+
+The test project is an executable smoke suite rather than a test-runner package.
+It covers:
+
+- Encrypted state and retention.
+- Monitoring cursors, pagination, and Teams edits.
+- WorkIQ retries, identity pinning, and source verification.
+- Approval policy and verified action execution.
+- MCP focus and proposal boundaries.
+- WPF alert, settings, conversation, privacy, and mascot behavior.
+- Local speech protocol, cancellation, and unloading.
+- Temporary private-file crash recovery.
+
+Run the complete isolated suite:
+
+```powershell
+dotnet run --project .\src\Peggy.Core.Tests\Peggy.Core.Tests.csproj `
+    -c Release
+```
+
+Successful output ends with:
+
+```text
+All Peggy Core smoke tests passed.
+```
+
+Optional live switches use the configured Microsoft 365 or Copilot account:
+
+| Switch | Purpose |
+| --- | --- |
+| `--live` | Exercises live Microsoft 365 read surfaces |
+| `--live-channels` | Exercises live Teams channel reads |
+| `--live-unread` | Exercises live unread-message retrieval |
+| `--live-copilot` | Exercises a live Copilot conversation |
+
+Example:
+
+```powershell
+dotnet run --project .\src\Peggy.Core.Tests\Peggy.Core.Tests.csproj `
+    -c Release `
+    -- --live-unread
+```
+
+The automated action suite uses a fake WorkIQ transport and does not perform
+external writes.
+
+## Configuration reference
+
+### User-facing overrides
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `PEGGY_WORKIQ_ACCOUNT` | Required Microsoft 365 mailbox or UPN to pin | None |
+| `PEGGY_WORKIQ_PATH` | Explicit `workiq.exe` or compatible wrapper path | Auto-detected |
+| `PEGGY_MESSAGE_PROVIDER` | `workiq` or `mock` | `workiq` |
+| `PEGGY_COPILOT_MODEL` | Process-level Copilot model override | Saved setting, initially `gpt-5.4` |
+| `PEGGY_STATE_PATH` | Alternate DPAPI-encrypted state path | `%LOCALAPPDATA%\Peggy\state.dat` |
+| `PEGGY_SPEECH_MODELS` | Alternate local speech-model directory | `%LOCALAPPDATA%\Peggy\models` |
+| `PEGGY_SPEECH_HOST_PATH` | Explicit packaged speech-host executable | Auto-detected |
+| `PEGGY_LOG_PATH` | Diagnostic log path | `%TEMP%\peggy.log` |
+
+### Source-scope overrides
+
+The tray normally derives these values from Settings and passes them to its
+child processes:
+
+| Variable | Format |
+| --- | --- |
+| `PEGGY_OUTLOOK_FOLDERS` | Semicolon-separated Inbox-relative paths |
+| `PEGGY_TEAMS_WATCHLIST` | JSON array of team/channel watch objects |
+
+### Internal bridge variables
+
+`PEGGY_FOCUS_FILE`, `PEGGY_CONTEXT_FILE`, `PEGGY_ACTION_FILE`, and the
+`PEGGY_SPEECH_*` runtime variables are managed by Peggy. They are not intended
+as end-user configuration.
+
+## MCP tools
+
+| Tool | Purpose |
+| --- | --- |
+| `list_unread` | Lists bounded unread Outlook and Teams messages, newest first |
+| `get_thread` | Retrieves bounded context for an opaque thread ID |
+| `list_upcoming_events` | Lists up to 50 events over a 1-30 day window |
+| `list_tasks` | Lists up to 50 tasks from the pinned account's default Tasks list |
+| `ask_workiq` | Performs broad grounded discovery across Microsoft 365 |
+| `get_turn_context` | Reads the private JSON context for the current turn |
+| `prepare_action` | Validates and stages exactly one proposal; never executes it |
+
+When monitoring provides a focused message batch, `list_unread` and
+`get_thread` are constrained to that batch.
+
+## Local files and state
+
+| Location | Contents |
+| --- | --- |
+| `%LOCALAPPDATA%\Peggy\state.dat` | DPAPI-encrypted settings, cursors, alerts, feedback, seen IDs, credits, and audit |
+| `%LOCALAPPDATA%\Peggy\models` | Verified local speech models and `speech-models.json` manifest |
+| `%TEMP%\peggy.log` | Minimal diagnostic lifecycle log unless overridden |
+| `%TEMP%\peggy-*.json` | Short-lived private Copilot/MCP scope and usage files |
+| `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | Optional `Peggy` startup entry |
+
+Audit entries older than 30 days and stale operational markers are pruned when
+state is normalized.
+
+## Project layout
+
+```text
+peggy\
+  README.md
+  THIRD-PARTY-NOTICES.txt
+  scripts\
+    Install-SpeechModels.ps1
+    Protect-SpeechHost.ps1
+  src\
+    Peggy.Core\
+    Peggy.Core.Tests\
+    Peggy.Mcp\
+    Peggy.Speech.Host\
+    Peggy.Tray\
+```
+
+Key implementation files:
+
+| File | Purpose |
+| --- | --- |
+| `src\Peggy.Core\WorkIqMessageProvider.cs` | Microsoft 365 reads, cursors, writes, and verification |
+| `src\Peggy.Core\EncryptedStateStore.cs` | DPAPI persistence and retention |
+| `src\Peggy.Core\WorkActionPolicy.cs` | Proposal validation and exact approval descriptions |
+| `src\Peggy.Tray\App.xaml.cs` | Application lifecycle, monitoring, tray, settings, and alerts |
+| `src\Peggy.Tray\ConversationController.cs` | Voice-turn and approval state machine |
+| `src\Peggy.Tray\CopilotRunner.cs` | Isolated Copilot CLI monitoring operations |
+| `src\Peggy.Tray\PersistentCopilotConversation.cs` | Persistent Copilot SDK conversation |
+| `src\Peggy.Tray\LocalSpeechService.cs` | Speech-host lifecycle and protocol |
+| `src\Peggy.Speech.Host\SpeechRuntime.cs` | sherpa-onnx model loading and audio pipeline |
+
+## Running with sample data
+
+Mock mode exercises the UI without Microsoft 365 reads:
+
+```powershell
+$env:PEGGY_WORKIQ_ACCOUNT = "test-account@example.invalid"
+$env:PEGGY_MESSAGE_PROVIDER = "mock"
+dotnet run --project .\src\Peggy.Tray\Peggy.Tray.csproj -c Release
+```
+
+Remove the process override to return to WorkIQ:
+
+```powershell
+Remove-Item Env:\PEGGY_MESSAGE_PROVIDER
+```
+
+## Troubleshooting
+
+| Symptom | Resolution |
+| --- | --- |
+| `Set PEGGY_WORKIQ_ACCOUNT...` | Set the account before first launch and restart Peggy |
+| Authenticated account does not match | Sign Microsoft Scout into the pinned identity; do not reuse the same state file for another account |
+| WorkIQ not found | Install/sign in to Microsoft Scout or set `PEGGY_WORKIQ_PATH` |
+| WorkIQ terms error | Review the terms and run `workiq accept-eula` |
+| Monitoring interrupted | Open the Alert Center for remediation; Peggy keeps retrying after three consecutive failures |
+| Speech models missing | Run `.\scripts\Install-SpeechModels.ps1` |
+| Incomplete model directory | Rerun the installer with `-Force` |
+| Speech host missing | Rebuild/publish `Peggy.Tray` or set `PEGGY_SPEECH_HOST_PATH` |
+| Voice input is too quiet | Increase **Mic gain** in Settings |
+| Voice is unavailable but monitoring works | Verify the model directory and packaged `Peggy.Speech.Host` output |
+| Firewall script cannot find the host | Build in Release mode or pass the exact executable with `-HostPath` |
+| Build reports a locked Peggy assembly | Use **Quit Peggy**, then rebuild |
+| Settings are overridden | Remove the corresponding process environment override, especially `PEGGY_COPILOT_MODEL` |
+| Need isolated test state | Set `PEGGY_STATE_PATH` to a new file before launch |
+| Need diagnostics | Inspect `%TEMP%\peggy.log` or the path in `PEGGY_LOG_PATH` |
+
+## Current limitations
+
+- Windows x64 only.
+- English-only local speech.
+- Framework-dependent publish by default.
+- Microsoft To Do actions target only the default `Tasks` list.
+- Monitoring is polling-based, not real-time.
+- Broad channel discovery depends on grounded WorkIQ prompt results.
+- The outbound speech-host firewall rule is an optional administrator step.
+- ONNX Runtime telemetry behavior ultimately depends on the native runtime
+  packaged by sherpa-onnx. A private native build using `--no_telemetry` is the
+  strongest removal option.
+
+## Third-party software
+
+Dependency and model attribution is documented in
+[`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt).
