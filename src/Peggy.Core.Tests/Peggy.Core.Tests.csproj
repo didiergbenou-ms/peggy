@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Peggy.Core\Peggy.Core.csproj" />
+    <ProjectReference Include="..\Peggy.Mcp\Peggy.Mcp.csproj" />
+    <ProjectReference Include="..\Peggy.Tray\Peggy.Tray.csproj" />
+  </ItemGroup>
+</Project>

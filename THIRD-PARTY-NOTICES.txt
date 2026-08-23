@@ -1,0 +1,38 @@
+Peggy local speech third-party notices
+
+sherpa-onnx
+Copyright the Next-gen Kaldi development team and contributors.
+License: Apache License 2.0
+Source: https://github.com/k2-fsa/sherpa-onnx
+
+ONNX Runtime
+Copyright Microsoft Corporation and contributors.
+License: MIT
+Source: https://github.com/microsoft/onnxruntime
+Distributed as a native dependency of sherpa-onnx.
+
+NAudio
+Copyright Mark Heath and contributors.
+License: MIT
+Source: https://github.com/naudio/NAudio
+
+NVIDIA NeMo Parakeet TDT 0.6B v2 model
+License: Creative Commons Attribution 4.0 International
+Model conversion and release:
+https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models
+
+NVIDIA NeMo Streaming FastConformer CTC English model
+License: Creative Commons Attribution 4.0 International
+Model conversion and release:
+https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models
+
+Kitten TTS Nano 0.8 English model
+License: Apache License 2.0
+Model conversion and release:
+https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models
+
+Silero VAD
+Copyright Silero Team and contributors.
+License: MIT
+Model conversion and release:
+https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models

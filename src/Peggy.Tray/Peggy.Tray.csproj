@@ -1,0 +1,70 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>Peggy.Tray</RootNamespace>
+    <AssemblyName>peggy-tray</AssemblyName>
+    <AssemblyTitle>Peggy</AssemblyTitle>
+    <Product>Peggy</Product>
+    <Description>Local-first Microsoft 365 desktop assistant</Description>
+    <CopilotSkipCliDownload>true</CopilotSkipCliDownload>
+    <NoWarn>$(NoWarn);GHCP001</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="GitHub.Copilot.SDK" Version="1.0.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Peggy.Core\Peggy.Core.csproj" />
+    <ProjectReference Include="..\Peggy.Mcp\Peggy.Mcp.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Peggy.Speech.Host\Peggy.Speech.Host.csproj"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <Target Name="CopyPeggyMcpOutput" AfterTargets="Build">
+    <ItemGroup>
+      <PeggyMcpBuildFiles Include="..\Peggy.Mcp\bin\$(Configuration)\net10.0\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PeggyMcpBuildFiles)"
+          DestinationFiles="@(PeggyMcpBuildFiles->'$(OutDir)Peggy.Mcp\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyPeggySpeechHostOutput" AfterTargets="Build">
+    <PropertyGroup>
+      <PeggySpeechHostBuildDir>..\Peggy.Speech.Host\bin\$(Configuration)\net10.0-windows\</PeggySpeechHostBuildDir>
+      <PeggySpeechHostBuildDir Condition="'$(RuntimeIdentifier)' != ''">..\Peggy.Speech.Host\bin\$(Configuration)\net10.0-windows\$(RuntimeIdentifier)\</PeggySpeechHostBuildDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <PeggySpeechHostBuildFiles Include="$(PeggySpeechHostBuildDir)**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PeggySpeechHostBuildFiles)"
+          DestinationFiles="@(PeggySpeechHostBuildFiles->'$(OutDir)Peggy.Speech.Host\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="PublishPeggyMcp" AfterTargets="Publish">
+    <PropertyGroup>
+      <PeggyMcpPublishDir>$([System.IO.Path]::GetFullPath('$(PublishDir)Peggy.Mcp\', '$(MSBuildProjectDirectory)'))</PeggyMcpPublishDir>
+    </PropertyGroup>
+    <MSBuild Projects="..\Peggy.Mcp\Peggy.Mcp.csproj"
+             Targets="Publish"
+             Properties="Configuration=$(Configuration);TargetFramework=net10.0;PublishDir=$(PeggyMcpPublishDir);SelfContained=false" />
+  </Target>
+
+  <Target Name="PublishPeggySpeechHost" AfterTargets="Publish">
+    <PropertyGroup>
+      <PeggySpeechHostPublishDir>$([System.IO.Path]::GetFullPath('$(PublishDir)Peggy.Speech.Host\', '$(MSBuildProjectDirectory)'))</PeggySpeechHostPublishDir>
+    </PropertyGroup>
+    <MSBuild Projects="..\Peggy.Speech.Host\Peggy.Speech.Host.csproj"
+             Targets="Publish"
+             Properties="Configuration=$(Configuration);TargetFramework=net10.0-windows;PublishDir=$(PeggySpeechHostPublishDir);SelfContained=false" />
+  </Target>
+
+</Project>
