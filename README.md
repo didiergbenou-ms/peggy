@@ -12,14 +12,15 @@ remain in a separate local process.
 > **Current platform:** Windows x64, .NET 10, Microsoft Scout WorkIQ, and the
 > GitHub Copilot CLI.
 
-![Peggy says hi and introduces herself as a local-first Microsoft 365 assistant](docs/images/peggy-hi.png)
+![Peggy says hi above a Windows taskbar while showing Idle, Listening, Thinking, New Digest, Sleeping, and Waking postures](docs/images/peggy-hi.png)
 
 ## Contents
 
 - [Highlights](#highlights)
 - [Architecture](#architecture)
 - [Monitoring behavior](#monitoring-behavior)
-- [Safety and privacy model](#safety-and-privacy-model)
+- [Privacy](#privacy)
+- [Safety model](#safety-model)
 - [Prerequisites](#prerequisites)
 - [Quick start](#quick-start)
 - [Using Peggy](#using-peggy)
@@ -58,11 +59,10 @@ remain in a separate local process.
 
 ## Architecture
 
-The diagram shows Peggy's runtime processes, technology choices, data flows,
-trust boundaries, local persistence, speech isolation, and the approval-only
-Microsoft 365 write path.
+The diagram intentionally shows only Peggy's main runtime boundaries and
+service relationships. Implementation details remain in the sections below.
 
-![Peggy high-level architecture showing Windows, Copilot, MCP, local speech, WorkIQ, Microsoft Graph, and Microsoft 365 components](docs/images/peggy-architecture.png)
+![Peggy high-level architecture showing You, Peggy Desktop, Local Services, GitHub Copilot, WorkIQ, and Microsoft 365](docs/images/peggy-architecture.png)
 
 [Edit the architecture diagram in Excalidraw](docs/diagrams/peggy-architecture.excalidraw).
 
@@ -150,7 +150,88 @@ material-change hash. Alerts can be:
 Feedback such as **Less like this** and **Always alert** is retained locally and
 included in later classification runs.
 
-## Safety and privacy model
+## Privacy
+
+Peggy is local-first, but not fully offline. Local speech, encrypted state, and
+desktop interaction stay on the Windows device. GitHub Copilot and Microsoft
+Scout WorkIQ are cloud services, so Peggy sends them only the content needed
+for the requested monitoring or conversation task.
+
+### Data flow at a glance
+
+| Data | Where it is handled | Can it leave the device? |
+| --- | --- | --- |
+| Raw microphone audio | Isolated `peggy-speech-host.exe` process | No |
+| Live partial speech text | Local conversation preview | No |
+| Accepted final transcript | Peggy, then Copilot or WorkIQ | Yes, after the undo window or explicit review |
+| Outlook, Teams, calendar, file, and task content | WorkIQ and focused Copilot context | Yes, when needed for monitoring, discovery, or conversation |
+| Settings, cursors, alerts, feedback, credits, and audit | DPAPI-encrypted local state | No |
+| Focus, context, action, and usage files | PID-owned temporary files under `%TEMP%` | The files stay local; selected contents can be sent through Copilot or WorkIQ |
+| Diagnostic lifecycle events | `%TEMP%\peggy.log` unless overridden | No; message bodies are not logged |
+
+### Voice privacy
+
+- Microphone capture, voice activity detection, speech recognition, and
+  text-to-speech run in the separate local speech process.
+- Raw audio is never sent to GitHub Copilot, WorkIQ, or Microsoft 365.
+- Live partial transcripts remain local and are never eligible for send.
+- The accurate final transcript appears in an editable preview first.
+- Ordinary requests have a visible one-second undo window.
+- Editing the transcript or selecting **Cancel auto-send** pauses sending.
+- Action approval transcripts always require explicit review.
+- Ending the conversation or selecting **Unload voice models** terminates the
+  speech process and releases native model memory.
+
+### Cloud processing
+
+- **GitHub Copilot** receives focused message context for alert classification,
+  accepted conversation text, and the bounded context needed to answer.
+- **Microsoft Scout WorkIQ** accesses Microsoft 365 under the pinned delegated
+  account for structured reads, grounded discovery, and approved actions.
+- **Microsoft 365** remains the system of record for Outlook, Teams, Calendar,
+  files, and To Do data.
+- Peggy does not use a cloud relay, custom webhook, or background data export.
+- Copilot cannot write directly to Microsoft 365.
+
+Cloud processing remains subject to the policies, retention, and compliance
+controls of the connected GitHub and Microsoft 365 services.
+
+### Local storage and retention
+
+- Persistent state is encrypted with Windows DPAPI using
+  `DataProtectionScope.CurrentUser`.
+- State is bound to the current Windows user and the pinned Microsoft 365
+  account.
+- Action audit entries are retained locally for 30 days.
+- Temporary private files are deleted after normal operations.
+- Temporary file names include the owning process ID. A later Peggy process
+  removes files left by a crashed owner.
+- Speech models are stored separately under
+  `%LOCALAPPDATA%\Peggy\models` and contain no mailbox content.
+
+To erase Peggy's persistent local state, quit Peggy and delete:
+
+```text
+%LOCALAPPDATA%\Peggy\state.dat
+```
+
+This removes settings, account pinning, cursors, alerts, feedback, credits, and
+audit history. It does not remove the separately installed speech models.
+
+### Privacy controls
+
+| Control | Effect |
+| --- | --- |
+| **Pause monitoring** | Stops automatic Microsoft 365 checks |
+| Monitoring schedule | Limits automatic checks to configured local hours |
+| Disable local speech | Prevents voice conversations from loading |
+| **Unload voice models** | Ends speech activity and releases model memory |
+| Lock Windows | Ends voice activity, hides private UI, and masks alert content |
+| **Reveal details** | Temporarily reveals masked alert content for one minute |
+| **Quit Peggy** | Stops monitoring, Copilot sessions, and local speech |
+| Speech-host firewall rule | Optionally blocks outbound network access for only the speech process |
+
+## Safety model
 
 ### Account pinning
 
@@ -184,19 +265,6 @@ only validates and stages one proposal. The tray host:
 Approvals are bound to the exact staged action ID. Interrupting a turn,
 switching alerts, cancelling, or replacing a proposal clears stale approval
 state.
-
-### Local data protection
-
-- Persistent state is encrypted with Windows DPAPI using
-  `DataProtectionScope.CurrentUser`.
-- Raw microphone audio remains inside `peggy-speech-host.exe`.
-- Live partial transcripts remain local.
-- Only the reviewed final transcript can be sent to Copilot or WorkIQ.
-- Locking the Windows session ends voice activity, hides private UI, and masks
-  alert content.
-- Private temporary scope files are deleted after use and recovered after a
-  crashed process.
-- No cloud relay or webhook is required.
 
 ### Source trust
 
