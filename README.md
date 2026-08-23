@@ -12,6 +12,8 @@ remain in a separate local process.
 > **Current platform:** Windows x64, .NET 10, Microsoft Scout WorkIQ, and the
 > GitHub Copilot CLI.
 
+![Peggy says hi and introduces herself as a local-first Microsoft 365 assistant](docs/images/peggy-hi.png)
+
 ## Contents
 
 - [Highlights](#highlights)
@@ -56,23 +58,13 @@ remain in a separate local process.
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    M365[Outlook, Teams, Calendar, To Do] --> WIQ[Microsoft Scout WorkIQ]
-    WIQ --> Core[Peggy.Core]
+The diagram shows Peggy's runtime processes, technology choices, data flows,
+trust boundaries, local persistence, speech isolation, and the approval-only
+Microsoft 365 write path.
 
-    Tray[Peggy.Tray] --> Core
-    Tray --> CLI[GitHub Copilot CLI<br/>isolated monitoring runs]
-    Tray --> SDK[GitHub Copilot SDK<br/>persistent conversation]
+![Peggy high-level architecture showing Windows, Copilot, MCP, local speech, WorkIQ, Microsoft Graph, and Microsoft 365 components](docs/images/peggy-architecture.png)
 
-    CLI --> MCP[Peggy.Mcp]
-    SDK --> MCP
-    MCP --> Core
-
-    Tray --> Speech[Peggy.Speech.Host]
-    Mic[Microphone] --> Speech
-    Speech --> Speaker[Speaker]
-```
+[Edit the architecture diagram in Excalidraw](docs/diagrams/peggy-architecture.excalidraw).
 
 ### Components
 
@@ -226,7 +218,8 @@ Peggy opens or persists them.
    ```
 
 6. `curl.exe` and `tar.exe` for the speech-model installer.
-7. A microphone and audio output device for voice features.
+7. **Classic Outlook desktop** for Microsoft To Do task reads and actions.
+8. A microphone and audio output device for voice features.
 
 Peggy resolves WorkIQ in this order:
 
