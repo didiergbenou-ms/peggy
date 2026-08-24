@@ -12,7 +12,7 @@ remain in a separate local process.
 > **Current platform:** Windows x64, .NET 10, Microsoft Scout WorkIQ, and the
 > GitHub Copilot CLI.
 
-![Animated Peggy stands on a Windows taskbar while cycling through Idle, Listening, Thinking, New Digest, Sleeping, and Waking](docs/images/peggy-hi.gif)
+![Animated Peggy stands at the right edge above a Windows taskbar while cycling through Idle, Listening, Thinking, New Digest, Sleeping, and Waking](docs/images/peggy-hi.gif)
 
 ## Contents
 
