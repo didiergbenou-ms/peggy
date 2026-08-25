@@ -9,7 +9,7 @@ Peggy appears as an animated desktop bird with a tray menu, alert center, and
 optional English voice conversation. Raw microphone audio and speech models
 remain in a separate local process.
 
-> **Current platform:** Windows x64, .NET 10, Microsoft Scout WorkIQ, and the
+> **Current platform:** Windows x64, .NET 10, standalone Microsoft WorkIQ, and the
 > GitHub Copilot CLI.
 
 ![Animated Peggy stands at the right edge above a Windows taskbar while cycling through Idle, Listening, Thinking, New Digest, Sleeping, and Waking](docs/images/peggy-hi.gif)
@@ -153,9 +153,9 @@ included in later classification runs.
 ## Privacy
 
 Peggy is local-first, but not fully offline. Local speech, encrypted state, and
-desktop interaction stay on the Windows device. GitHub Copilot and Microsoft
-Scout WorkIQ are cloud services, so Peggy sends them only the content needed
-for the requested monitoring or conversation task.
+desktop interaction stay on the Windows device. GitHub Copilot and standalone
+Microsoft WorkIQ connect to cloud services, so Peggy sends them only the
+content needed for the requested monitoring or conversation task.
 
 ### Data flow at a glance
 
@@ -186,7 +186,7 @@ for the requested monitoring or conversation task.
 
 - **GitHub Copilot** receives focused message context for alert classification,
   accepted conversation text, and the bounded context needed to answer.
-- **Microsoft Scout WorkIQ** accesses Microsoft 365 under the pinned delegated
+- **Microsoft WorkIQ** accesses Microsoft 365 under the pinned delegated
   account for structured reads, grounded discovery, and approved actions.
 - **Microsoft 365** remains the system of record for Outlook, Teams, Calendar,
   files, and To Do data.
@@ -235,13 +235,15 @@ audit history. It does not remove the separately installed speech models.
 
 ### Account pinning
 
-`PEGGY_WORKIQ_ACCOUNT` is required before first launch. Peggy stores that
-identity in encrypted state and validates the authenticated WorkIQ profile
-before structured reads, prompts, or writes.
+On first launch, Peggy asks which Microsoft 365 account to use. It completes
+WorkIQ sign-in and consent, verifies the authenticated profile, then stores the
+verified identity in encrypted state before structured reads, prompts, or
+writes can begin.
 
-The configured value may match either the mailbox address or user principal
-name. Peggy resolves the canonical Outlook address after validation. A
-different configured or authenticated identity is rejected.
+The entered value may match either the mailbox address or user principal name.
+Peggy resolves the canonical Outlook address after validation. A different
+authenticated identity is rejected. Later reauthentication is available from
+Settings and the tray menu.
 
 ### Approval boundary
 
@@ -278,44 +280,37 @@ Peggy opens or persists them.
 2. **.NET 10 SDK** for development, or the .NET 10 Desktop Runtime for a
    framework-dependent published build.
 3. **GitHub Copilot CLI** installed, authenticated, and available on `PATH`.
-4. **Microsoft Scout with WorkIQ** installed and signed in.
-5. Acceptance of the WorkIQ pre-release terms when required:
+4. **Node.js 18 or later with npm** for standalone WorkIQ installation.
+5. A **Work IQ usage-based billing plan** with the user assigned.
+6. **Administrative consent** for the Work IQ application in the Microsoft
+   Entra tenant.
+7. `curl.exe` and `tar.exe` for the speech-model installer.
+8. **Classic Outlook desktop** for Microsoft To Do task reads and actions.
+9. A microphone and audio output device for voice features.
 
-   ```powershell
-   workiq accept-eula
-   ```
+See the official
+[Microsoft Work IQ CLI documentation](https://learn.microsoft.com/microsoft-365/copilot/extensibility/work-iq/cli)
+for billing, tenant consent, support, and platform requirements.
 
-6. `curl.exe` and `tar.exe` for the speech-model installer.
-7. **Classic Outlook desktop** for Microsoft To Do task reads and actions.
-8. A microphone and audio output device for voice features.
-
-Peggy resolves WorkIQ in this order:
+Peggy resolves standalone WorkIQ in this order:
 
 1. `PEGGY_WORKIQ_PATH`.
-2. `workiq.exe` on `PATH`.
-3. The Microsoft Scout installation.
-4. `%USERPROFILE%\.scout\bin\workiq.cmd`.
+2. `workiq.exe` or the global npm wrapper on `PATH`.
+3. `%APPDATA%\npm\node_modules\@microsoft\workiq\bin\win-x64\workiq.exe`.
 
 ## Quick start
 
 Open PowerShell in the repository root.
 
-### 1. Pin the Microsoft 365 account
+### 1. Install standalone WorkIQ
 
-Set the value for the current shell and persist it for future Windows sessions:
+Peggy can run this installation from its first-run window. To install it
+yourself:
 
 ```powershell
-$account = "you@example.com"
-$env:PEGGY_WORKIQ_ACCOUNT = $account
-[Environment]::SetEnvironmentVariable(
-    "PEGGY_WORKIQ_ACCOUNT",
-    $account,
-    "User"
-)
+npm install -g @microsoft/workiq
+workiq version
 ```
-
-Use the account currently authenticated in Microsoft Scout. Do not point the
-same encrypted state file at different accounts.
 
 ### 2. Install local speech models
 
@@ -343,7 +338,25 @@ dotnet run --project .\src\Peggy.Tray\Peggy.Tray.csproj -c Release
 The tray project automatically builds and packages the MCP server and speech
 host beside the tray executable.
 
-### 4. Add the optional speech-host firewall rule
+### 4. Connect Microsoft 365
+
+On first launch, Peggy opens **Connect Microsoft 365**:
+
+1. Install standalone WorkIQ if it is not already available.
+2. Review and accept the WorkIQ EULA.
+3. Enter the Microsoft 365 email address Peggy should use.
+4. Select **Sign in** and complete Microsoft sign-in and permission consent in
+   the browser.
+5. Peggy reads `/me`, verifies the selected identity, and pins the canonical
+   account in DPAPI-encrypted state.
+
+If the tenant has not granted the required WorkIQ permissions, an administrator
+must complete tenant consent before verification can succeed.
+
+Use **Microsoft 365 sign-in** from the tray or **Sign in again** in Settings to
+refresh authentication for the pinned account.
+
+### 5. Add the optional speech-host firewall rule
 
 From an elevated PowerShell window:
 
@@ -376,6 +389,7 @@ opens the Alert Center.
 | **Check now** | Runs a monitoring check even while scheduled sleep is active |
 | **Pause monitoring** | Toggles manual monitoring pause |
 | **AI credits today** | Shows recent local Copilot credit entries |
+| **Microsoft 365 sign-in** | Reauthenticates the pinned account through standalone WorkIQ |
 | **Settings** | Opens model, source, voice, schedule, startup, and watchlist settings |
 | **Show or hide Peggy** | Toggles the desktop mascot |
 | **Test animations** | Plays individual or all mascot states |
@@ -417,6 +431,7 @@ not leave a partially applied identity, model, or source scope.
 
 | Setting | Notes |
 | --- | --- |
+| Microsoft 365 connection | Shows the pinned account and opens standalone WorkIQ reauthentication |
 | Pinned Copilot model | Defaults to `gpt-5.4`; changing it starts a fresh Copilot session |
 | Additional Outlook folders | One Inbox-relative path per line; descendants are included |
 | Enable local speech | Enables or disables the isolated English speech host |
@@ -612,7 +627,7 @@ external writes.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `PEGGY_WORKIQ_ACCOUNT` | Required Microsoft 365 mailbox or UPN to pin | None |
+| `PEGGY_WORKIQ_ACCOUNT` | Optional account override for automation or migration | Encrypted account selected during first-run sign-in |
 | `PEGGY_WORKIQ_PATH` | Explicit `workiq.exe` or compatible wrapper path | Auto-detected |
 | `PEGGY_MESSAGE_PROVIDER` | `workiq` or `mock` | `workiq` |
 | `PEGGY_COPILOT_MODEL` | Process-level Copilot model override | Saved setting, initially `gpt-5.4` |
@@ -701,7 +716,6 @@ Key implementation files:
 Mock mode exercises the UI without Microsoft 365 reads:
 
 ```powershell
-$env:PEGGY_WORKIQ_ACCOUNT = "test-account@example.invalid"
 $env:PEGGY_MESSAGE_PROVIDER = "mock"
 dotnet run --project .\src\Peggy.Tray\Peggy.Tray.csproj -c Release
 ```
@@ -716,10 +730,11 @@ Remove-Item Env:\PEGGY_MESSAGE_PROVIDER
 
 | Symptom | Resolution |
 | --- | --- |
-| `Set PEGGY_WORKIQ_ACCOUNT...` | Set the account before first launch and restart Peggy |
-| Authenticated account does not match | Sign Microsoft Scout into the pinned identity; do not reuse the same state file for another account |
-| WorkIQ not found | Install/sign in to Microsoft Scout or set `PEGGY_WORKIQ_PATH` |
+| Connect Microsoft 365 appears | Install standalone WorkIQ if needed, review the EULA, then sign in and grant consent |
+| Authenticated account does not match | Use **Microsoft 365 sign-in** and authenticate as the pinned identity; clear encrypted state before intentionally switching accounts |
+| WorkIQ not found | Select **Install WorkIQ with npm**, run `npm install -g @microsoft/workiq`, or set `PEGGY_WORKIQ_PATH` |
 | WorkIQ terms error | Review the terms and run `workiq accept-eula` |
+| WorkIQ consent fails | Ask a Microsoft Entra administrator to grant the Work IQ application permissions required by your tenant |
 | Monitoring interrupted | Open the Alert Center for remediation; Peggy keeps retrying after three consecutive failures |
 | Speech models missing | Run `.\scripts\Install-SpeechModels.ps1` |
 | Incomplete model directory | Rerun the installer with `-Force` |

@@ -681,7 +681,7 @@ internal sealed class WorkIqClient
                 StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                "WorkIQ's pre-release terms have not been accepted. " +
+                "The WorkIQ EULA has not been accepted. " +
                 "Run 'workiq accept-eula' and review " +
                 "https://github.com/microsoft/work-iq/tree/main/EULA.");
         }
@@ -743,7 +743,7 @@ internal sealed class WorkIqClient
         }
     }
 
-    private static string ResolveExecutable()
+    internal static string ResolveExecutable()
     {
         var configured = Environment.GetEnvironmentVariable("PEGGY_WORKIQ_PATH");
         if (!string.IsNullOrWhiteSpace(configured))
@@ -756,10 +756,20 @@ internal sealed class WorkIqClient
         {
             try
             {
-                var candidate = Path.Combine(directory.Trim().Trim('"'), "workiq.exe");
+                var normalizedDirectory = directory.Trim().Trim('"');
+                var candidate = Path.Combine(
+                    normalizedDirectory,
+                    "workiq.exe");
                 if (File.Exists(candidate))
                 {
                     return candidate;
+                }
+
+                var wrappedExecutable = TryResolveFromWrapper(
+                    Path.Combine(normalizedDirectory, "workiq.cmd"));
+                if (wrappedExecutable is not null)
+                {
+                    return wrappedExecutable;
                 }
             }
             catch (ArgumentException)
@@ -768,41 +778,41 @@ internal sealed class WorkIqClient
             }
         }
 
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var scoutExecutable = Path.Combine(
-            localAppData,
-            "Programs",
-            "Clawpilot",
-            "Microsoft Scout",
-            "resources",
-            "app.asar.unpacked",
+        var npmExecutable = Path.Combine(
+            Environment.GetFolderPath(
+                Environment.SpecialFolder.ApplicationData),
+            "npm",
             "node_modules",
             "@microsoft",
             "workiq",
             "bin",
             "win-x64",
             "workiq.exe");
-        if (File.Exists(scoutExecutable))
+        if (File.Exists(npmExecutable))
         {
-            return scoutExecutable;
-        }
-
-        var wrapper = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".scout",
-            "bin",
-            "workiq.cmd");
-        var wrappedExecutable = TryResolveFromWrapper(wrapper);
-        if (wrappedExecutable is not null)
-        {
-            return wrappedExecutable;
+            return npmExecutable;
         }
 
         throw new FileNotFoundException(
-            "WorkIQ was not found. Install or sign in to Microsoft Scout, or set PEGGY_WORKIQ_PATH.");
+            "Standalone Microsoft WorkIQ was not found. Install it with " +
+            "'npm install -g @microsoft/workiq' or set PEGGY_WORKIQ_PATH.");
     }
 
-    private static string ResolveConfiguredPath(string configuredPath)
+    internal static bool TryResolveExecutable(out string executablePath)
+    {
+        try
+        {
+            executablePath = ResolveExecutable();
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            executablePath = string.Empty;
+            return false;
+        }
+    }
+
+    internal static string ResolveConfiguredPath(string configuredPath)
     {
         var path = Environment.ExpandEnvironmentVariables(configuredPath.Trim().Trim('"'));
         if (File.Exists(path) &&
@@ -822,11 +832,29 @@ internal sealed class WorkIqClient
             $"The configured WorkIQ executable was not found or is not runnable: '{path}'.");
     }
 
-    private static string? TryResolveFromWrapper(string wrapperPath)
+    internal static string? TryResolveFromWrapper(string wrapperPath)
     {
         if (!File.Exists(wrapperPath))
         {
             return null;
+        }
+
+        var wrapperDirectory = Path.GetDirectoryName(
+            Path.GetFullPath(wrapperPath));
+        if (wrapperDirectory is not null)
+        {
+            var npmExecutable = Path.Combine(
+                wrapperDirectory,
+                "node_modules",
+                "@microsoft",
+                "workiq",
+                "bin",
+                "win-x64",
+                "workiq.exe");
+            if (File.Exists(npmExecutable))
+            {
+                return npmExecutable;
+            }
         }
 
         var contents = File.ReadAllText(wrapperPath);

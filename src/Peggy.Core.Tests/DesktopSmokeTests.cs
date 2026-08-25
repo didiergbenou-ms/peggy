@@ -49,6 +49,7 @@ internal static class DesktopSmokeTests
             TestConversationWindow();
             TestImmediateListeningWithoutGreeting();
             TestDeferredConversationApproval();
+            TestWorkIqSignInWindow();
             TestSettingsWindow();
             TestSettingsPreserveUnavailableWatchlist();
             TestMascotAndBubble();
@@ -887,7 +888,10 @@ internal static class DesktopSmokeTests
                 }
             ]
         };
-        var window = new SettingsWindow(initial, new MockMessageProvider());
+        var window = new SettingsWindow(
+            initial,
+            new MockMessageProvider(),
+            "person@example.com");
         window.Loaded += (_, _) =>
             window.Dispatcher.BeginInvoke(
                 new Action(() =>
@@ -954,6 +958,10 @@ internal static class DesktopSmokeTests
             window.SavedSettings is not null,
             "Settings could not be saved.");
         TestAssert.Equal(
+            "Connected as person@example.com",
+            Find<TextBlock>(window, "AccountStatus").Text,
+            "Settings did not show the pinned Microsoft 365 account.");
+        TestAssert.Equal(
             2,
             window.SavedSettings!.AdditionalOutlookFolders.Count,
             "Settings did not normalize Outlook folder paths.");
@@ -974,6 +982,29 @@ internal static class DesktopSmokeTests
             1,
             window.SavedSettings.TeamsChannelWatchlist.Count,
             "Settings could not remove an unavailable watched channel.");
+    }
+
+    private static void TestWorkIqSignInWindow()
+    {
+        var pinned = new WorkIqSignInWindow("person@example.com");
+        TestAssert.True(
+            Find<TextBox>(pinned, "AccountText").Text ==
+                "person@example.com" &&
+            Find<TextBox>(pinned, "AccountText").IsReadOnly &&
+            Find<Button>(pinned, "SignInButton").Content?.ToString() ==
+                "Sign in again" &&
+            Find<CheckBox>(pinned, "EulaCheck").IsChecked != true,
+            "The reauthentication window did not preserve its account and " +
+            "EULA boundary.");
+        pinned.Close();
+
+        var firstRun = new WorkIqSignInWindow();
+        TestAssert.True(
+            !Find<TextBox>(firstRun, "AccountText").IsReadOnly &&
+            Find<Button>(firstRun, "InstallButton").Content?.ToString() ==
+                "Install WorkIQ with npm",
+            "The first-run window did not expose standalone WorkIQ setup.");
+        firstRun.Close();
     }
 
     private static void TestSettingsPreserveUnavailableWatchlist()

@@ -23,6 +23,33 @@
                   HorizontalScrollBarVisibility="Disabled"
                   Margin="0,0,0,14">
       <StackPanel>
+        <GroupBox Header="Microsoft 365 connection"
+                  Padding="10"
+                  Margin="0,0,0,14">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel>
+              <TextBlock x:Name="AccountStatus"
+                         FontWeight="SemiBold"/>
+              <TextBlock
+                  Text="Peggy signs in directly through standalone Microsoft WorkIQ."
+                  TextWrapping="Wrap"
+                  Foreground="#6f625b"
+                  FontSize="11"
+                  Margin="0,3,12,0"/>
+            </StackPanel>
+            <Button Grid.Column="1"
+                    Content="Sign in again"
+                    Width="120"
+                    Padding="9,6"
+                    VerticalAlignment="Center"
+                    Click="SignInAgain_Click"/>
+          </Grid>
+        </GroupBox>
+
         <StackPanel Margin="0,0,0,14">
           <TextBlock Text="Pinned Copilot model" FontWeight="SemiBold"/>
           <TextBox x:Name="ModelText" Margin="0,5,0,0" Padding="8"/>

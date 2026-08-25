@@ -16,6 +16,7 @@ internal static class CoreBehaviorSmokeTests
         TestOpaqueIdentifiers();
         TestProviderFactory();
         TestAccountIdentityResolution();
+        await TestStandaloneWorkIqSetupAsync(directory);
         TestConfiguredStatePath(directory);
         TestWorkIqTransportClassification();
         await TestWorkIqRetryPolicyAsync(directory);
@@ -423,6 +424,138 @@ internal static class CoreBehaviorSmokeTests
                 upn,
                 "other@example.com"),
             "An unrelated authenticated identity was accepted.");
+    }
+
+    private static async Task TestStandaloneWorkIqSetupAsync(
+        string directory)
+    {
+        var npmRoot = Path.Combine(directory, "npm");
+        var executable = Path.Combine(
+            npmRoot,
+            "node_modules",
+            "@microsoft",
+            "workiq",
+            "bin",
+            "win-x64",
+            "workiq.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(executable)!);
+        await File.WriteAllTextAsync(executable, string.Empty);
+        var wrapper = Path.Combine(npmRoot, "workiq.cmd");
+        await File.WriteAllTextAsync(
+            wrapper,
+            "@node \"%~dp0\\node_modules\\@microsoft\\workiq\\bin\\workiq.js\" %*");
+        TestAssert.Equal(
+            Path.GetFullPath(executable),
+            WorkIqClient.ResolveConfiguredPath(wrapper),
+            "The standalone npm WorkIQ wrapper did not resolve its native " +
+            "executable.");
+        TestAssert.True(
+            string.Equals(
+                "person@example.com",
+                WorkIqSetupService.NormalizeAccount(
+                    " PERSON@example.com "),
+                StringComparison.OrdinalIgnoreCase),
+            "Standalone WorkIQ account normalization failed.");
+        TestAssert.Throws<WorkIqSetupException>(
+            () => WorkIqSetupService.NormalizeAccount("not-an-account"),
+            "An invalid standalone WorkIQ account was accepted.");
+
+        var previousAccount = Environment.GetEnvironmentVariable(
+            PeggyDefaults.WorkIqAccountEnvironmentVariable);
+        var previousPath = Environment.GetEnvironmentVariable(
+            "PEGGY_WORKIQ_PATH");
+        var previousScenario = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SCENARIO");
+        var previousLog = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_LOG");
+        var previousMail = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_MAIL");
+        var logPath = Path.Combine(directory, "workiq-setup.log");
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                PeggyDefaults.WorkIqAccountEnvironmentVariable,
+                null);
+            var emptyState = new PeggyStateDocument();
+            EncryptedStateStore.NormalizeAndPrune(
+                emptyState,
+                DateTimeOffset.UtcNow);
+            TestAssert.Equal(
+                string.Empty,
+                emptyState.PinnedAccount,
+                "First-run state required an account before sign-in.");
+
+            var manager = new PeggyStateManager(
+                new EncryptedStateStore(
+                    Path.Combine(directory, "first-run-state.dat")));
+            await manager.InitializeAsync();
+            TestAssert.Equal(
+                string.Empty,
+                manager.State.PinnedAccount,
+                "First-run state initialization pinned an account before " +
+                "verification.");
+            await manager.PinWorkIqAccountAsync("verified@example.com");
+            TestAssert.Equal(
+                "verified@example.com",
+                manager.State.PinnedAccount,
+                "The verified WorkIQ account was not pinned.");
+            await TestAssert.ThrowsAsync<InvalidOperationException>(
+                () => manager.PinWorkIqAccountAsync("other@example.com"),
+                "Peggy allowed an existing account pin to change.");
+
+            Environment.SetEnvironmentVariable(
+                PeggyDefaults.WorkIqAccountEnvironmentVariable,
+                "signin@tenant.example");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_MAIL",
+                "mailbox@example.com");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_WORKIQ_PATH",
+                Environment.ProcessPath);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                "setup");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                logPath);
+            var identity = await new WorkIqSetupService().SignInAsync(
+                "signin@tenant.example");
+            var commands = File.ReadAllLines(logPath);
+            TestAssert.True(
+                identity.Account == "signin@tenant.example" &&
+                identity.Mail == "mailbox@example.com" &&
+                commands.Length == 4 &&
+                commands[0] == "accept-eula" &&
+                commands[1].StartsWith(
+                    "auth login --account signin@tenant.example",
+                    StringComparison.Ordinal) &&
+                commands[2].StartsWith(
+                    "auth consent --account signin@tenant.example",
+                    StringComparison.Ordinal) &&
+                commands[3].StartsWith(
+                    "fetch /me?$select=id,mail,userPrincipalName",
+                    StringComparison.Ordinal),
+                "Standalone WorkIQ sign-in did not perform EULA, login, " +
+                "consent, and account verification in order.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                PeggyDefaults.WorkIqAccountEnvironmentVariable,
+                previousAccount);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_WORKIQ_PATH",
+                previousPath);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                previousScenario);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                previousLog);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_MAIL",
+                previousMail);
+        }
     }
 
     private static void TestConfiguredStatePath(string directory)

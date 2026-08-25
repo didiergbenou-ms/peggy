@@ -37,6 +37,51 @@ public sealed class PeggyStateManager
     public void PrepareMonitoringForWake(DateTimeOffset nowUtc)
         => RebaseMonitoringWindow(State, nowUtc);
 
+    public async Task PinWorkIqAccountAsync(
+        string account,
+        CancellationToken ct = default)
+    {
+        var normalized = account?.Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            throw new ArgumentException(
+                "A verified Microsoft 365 account is required.",
+                nameof(account));
+        }
+
+        await _stateGate.WaitAsync(ct);
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(State.PinnedAccount) &&
+                !string.Equals(
+                    State.PinnedAccount,
+                    normalized,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "Peggy is already pinned to a different Microsoft 365 " +
+                    "account. Clear Peggy's encrypted state before switching " +
+                    "accounts.");
+            }
+
+            var previous = State.PinnedAccount;
+            State.PinnedAccount = normalized;
+            try
+            {
+                await _store.SaveAsync(State, ct);
+            }
+            catch
+            {
+                State.PinnedAccount = previous;
+                throw;
+            }
+        }
+        finally
+        {
+            _stateGate.Release();
+        }
+    }
+
     public async Task ApplySettingsAsync(
         PeggySettings settings,
         bool resetMonitoring,

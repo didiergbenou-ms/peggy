@@ -601,6 +601,25 @@ static void Assert(bool condition, string message)
 
 static bool TryRunFakeWorkIq(string[] arguments)
 {
+    var configuredScenario = Environment.GetEnvironmentVariable(
+        "PEGGY_FAKE_WORKIQ_SCENARIO");
+    if (string.Equals(
+            configuredScenario,
+            "setup",
+            StringComparison.Ordinal) &&
+        arguments.Length > 0 &&
+        (arguments[0] == "accept-eula" ||
+         arguments[0] == "version" ||
+         arguments[0] == "auth"))
+    {
+        WriteFakeWorkIqLog(string.Join(" ", arguments));
+        if (arguments[0] == "version")
+        {
+            Console.WriteLine("1.0.0-test");
+        }
+        return true;
+    }
+
     if (arguments.Length > 0 &&
         string.Equals(
             arguments[0],
@@ -685,6 +704,23 @@ static bool TryRunFakeWorkIq(string[] arguments)
         : null;
     var scenario = Environment.GetEnvironmentVariable(
         "PEGGY_FAKE_WORKIQ_SCENARIO");
+    if (string.Equals(
+            scenario,
+            "setup",
+            StringComparison.Ordinal))
+    {
+        WriteFakeWorkIqLog($"{arguments[0]} {url}");
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            id = "user-me",
+            mail = Environment.GetEnvironmentVariable(
+                       "PEGGY_FAKE_WORKIQ_MAIL") ??
+                   PeggyDefaults.ConfiguredWorkIqAccount,
+            userPrincipalName = PeggyDefaults.ConfiguredWorkIqAccount
+        }));
+        return true;
+    }
+
     if (string.Equals(
             scenario,
             "actions",

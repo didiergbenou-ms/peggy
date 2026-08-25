@@ -2384,7 +2384,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                    "End User License",
                    StringComparison.OrdinalIgnoreCase))
             {
-               return "WorkIQ's pre-release terms must be accepted. Run " +
+               return "The WorkIQ EULA must be accepted. Run " +
                       "'workiq accept-eula' after reviewing " +
                       "https://github.com/microsoft/work-iq/tree/main/EULA. " +
                       "Structured Outlook, chat, and watchlist monitoring remain active.";

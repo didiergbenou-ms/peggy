@@ -158,8 +158,7 @@ public sealed class EncryptedStateStore
         var configuredAccount = PeggyDefaults.ConfiguredWorkIqAccount;
         if (string.IsNullOrWhiteSpace(state.PinnedAccount))
         {
-            state.PinnedAccount =
-                PeggyDefaults.RequireConfiguredWorkIqAccount();
+            state.PinnedAccount = configuredAccount;
         }
         else if (!string.IsNullOrWhiteSpace(configuredAccount) &&
                  !string.Equals(
@@ -246,8 +245,7 @@ public sealed class EncryptedStateStore
     private static PeggyStateDocument CreateDefault()
         => new()
         {
-            PinnedAccount =
-                PeggyDefaults.RequireConfiguredWorkIqAccount(),
+            PinnedAccount = PeggyDefaults.ConfiguredWorkIqAccount,
             CopilotSessionDate = DateOnly.FromDateTime(DateTime.Now),
             CopilotSessionId = Guid.NewGuid().ToString()
         };

@@ -2,13 +2,17 @@ namespace Peggy.Core;
 
 public static class MessageProviderFactory
 {
+    public static bool UsesMockProvider
+        => string.Equals(
+            GetConfiguredMode(),
+            "mock",
+            StringComparison.Ordinal);
+
     public static IMessageProvider Create(
         PeggySettings? settings = null,
         string? account = null)
     {
-        var mode = Environment.GetEnvironmentVariable("PEGGY_MESSAGE_PROVIDER")
-            ?.Trim()
-            .ToLowerInvariant();
+        var mode = GetConfiguredMode();
         return mode switch
         {
             null or "" or "live" or "workiq" =>
@@ -20,4 +24,9 @@ public static class MessageProviderFactory
                 $"Unknown PEGGY_MESSAGE_PROVIDER value '{mode}'. Use 'workiq' or 'mock'.")
         };
     }
+
+    private static string? GetConfiguredMode()
+        => Environment.GetEnvironmentVariable("PEGGY_MESSAGE_PROVIDER")
+            ?.Trim()
+            .ToLowerInvariant();
 }

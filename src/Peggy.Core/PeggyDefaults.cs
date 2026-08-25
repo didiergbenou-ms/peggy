@@ -18,13 +18,6 @@ public static class PeggyDefaults
             ?.Trim()
             ?? string.Empty;
 
-    public static string RequireConfiguredWorkIqAccount()
-        => string.IsNullOrWhiteSpace(ConfiguredWorkIqAccount)
-            ? throw new InvalidOperationException(
-                $"Set {WorkIqAccountEnvironmentVariable} to the Microsoft " +
-                "365 account Peggy should pin before first launch.")
-            : ConfiguredWorkIqAccount;
-
     public static string SpeechModelDirectory
         => Path.Combine(
             Environment.GetFolderPath(

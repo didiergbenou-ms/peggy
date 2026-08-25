@@ -16,6 +16,7 @@ public partial class SettingsWindow : Window
     private readonly HashSet<string> _unavailableChannelKeys =
         new(StringComparer.Ordinal);
     private readonly List<TeamsChannelWatch> _originalWatchlist;
+    private readonly string _pinnedAccount;
     private readonly List<(CheckBox CheckBox, TeamsChannelInfo Channel)> _channelChecks = [];
     private readonly CancellationTokenSource _loadCancellation = new();
     private bool _channelsLoaded;
@@ -23,10 +24,15 @@ public partial class SettingsWindow : Window
 
     public SettingsWindow(
         PeggySettings settings,
-        IMessageProvider provider)
+        IMessageProvider provider,
+        string? pinnedAccount = null)
     {
         InitializeComponent();
         _provider = provider;
+        _pinnedAccount = pinnedAccount?.Trim() ?? string.Empty;
+        AccountStatus.Text = _pinnedAccount.Length == 0
+            ? "Microsoft 365 is not connected."
+            : $"Connected as {_pinnedAccount}";
         ScheduleEnabledCheck.IsChecked =
             settings.MonitoringScheduleEnabled;
         WakeTimeText.Text = MonitoringSchedule.FormatMinute(
@@ -245,6 +251,20 @@ public partial class SettingsWindow : Window
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
         => DialogResult = false;
+
+    private void SignInAgain_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new WorkIqSignInWindow(_pinnedAccount)
+        {
+            Owner = this
+        };
+        if (window.ShowDialog() == true &&
+            !string.IsNullOrWhiteSpace(window.AuthenticatedAccount))
+        {
+            AccountStatus.Text =
+                $"Connected as {window.AuthenticatedAccount}";
+        }
+    }
 
     private void ScheduleEnabledCheck_Changed(
         object sender,

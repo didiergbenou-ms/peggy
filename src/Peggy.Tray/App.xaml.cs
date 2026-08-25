@@ -78,6 +78,11 @@ public partial class App : Application
         try
         {
             await _state.InitializeAsync(_shutdown.Token);
+            if (!await EnsureWorkIqConnectionAsync())
+            {
+                Shutdown();
+                return;
+            }
             _scheduledSleeping = MonitoringSchedule.Evaluate(
                 _state.State.Settings,
                 DateTime.Now).IsSleeping;
@@ -264,6 +269,12 @@ public partial class App : Application
 
         _creditsMenu = new Forms.ToolStripMenuItem("AI credits: 0");
         menu.Items.Add(_creditsMenu);
+        menu.Items.Add(
+            "Microsoft 365 sign-in",
+            null,
+            (_, _) => RunUiAction(
+                ReauthenticateWorkIqAsync,
+                "Microsoft 365 sign-in"));
         menu.Items.Add(
             "Settings",
             null,
@@ -742,7 +753,10 @@ public partial class App : Application
     private async Task ShowSettingsAsync()
     {
         var settings = CloneSettings(_state.State.Settings);
-        var window = new SettingsWindow(settings, _provider)
+        var window = new SettingsWindow(
+            settings,
+            _provider,
+            _state.State.PinnedAccount)
         {
             Owner = _alertCenter.IsVisible
                 ? _alertCenter
@@ -829,6 +843,7 @@ public partial class App : Application
                     rollbackFailures.Add(rollbackFailure);
                 }
             }
+
             try
             {
                 await replacementCopilot.DisposeAsync();
@@ -892,6 +907,63 @@ public partial class App : Application
                 "not fully refresh.",
                 activationFailures);
         }
+    }
+
+    private async Task<bool> EnsureWorkIqConnectionAsync()
+    {
+        if (MessageProviderFactory.UsesMockProvider)
+        {
+            return true;
+        }
+
+        var setup = new WorkIqSetupService();
+        var account = _state.State.PinnedAccount;
+        if (!string.IsNullOrWhiteSpace(account) &&
+            setup.TryGetExecutablePath(out _))
+        {
+            return true;
+        }
+
+        var window = new WorkIqSignInWindow(account, setup);
+        if (window.ShowDialog() != true ||
+            string.IsNullOrWhiteSpace(window.AuthenticatedAccount))
+        {
+            return false;
+        }
+
+        await _state.PinWorkIqAccountAsync(
+            window.AuthenticatedAccount,
+            _shutdown.Token);
+        return true;
+    }
+
+    private async Task ReauthenticateWorkIqAsync()
+    {
+        if (MessageProviderFactory.UsesMockProvider)
+        {
+            throw new InvalidOperationException(
+                "Microsoft 365 sign-in is unavailable while Peggy uses the " +
+                "mock message provider.");
+        }
+
+        var window = new WorkIqSignInWindow(
+            _state.State.PinnedAccount,
+            new WorkIqSetupService())
+        {
+            Owner = _alertCenter.IsVisible
+                ? _alertCenter
+                : null
+        };
+        if (window.ShowDialog() != true ||
+            string.IsNullOrWhiteSpace(window.AuthenticatedAccount))
+        {
+            return;
+        }
+
+        await _state.PinWorkIqAccountAsync(
+            window.AuthenticatedAccount,
+            _shutdown.Token);
+        Say($"Microsoft 365 is connected as {window.AuthenticatedAccount}.");
     }
 
     private async Task OpenAlertContextAsync(string alertId)
@@ -1412,7 +1484,7 @@ public partial class App : Application
            exception.Message.Contains(
                "End User License",
                StringComparison.OrdinalIgnoreCase)
-            ? "WorkIQ's pre-release terms must be accepted. Run " +
+            ? "The WorkIQ EULA must be accepted. Run " +
               "'workiq accept-eula' after reviewing " +
               "https://github.com/microsoft/work-iq/tree/main/EULA."
             : null;
