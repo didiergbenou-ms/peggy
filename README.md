@@ -116,19 +116,21 @@ available. Source references are verified before they are attached to alerts.
 
 ### Teams chats
 
-Peggy enumerates the signed-in user's chats and requests changed messages using
-`lastModifiedDateTime`. Alert activity uses the message creation time or a real
-`lastEditedDateTime`, so an edit to an older message is detected while
-reaction-only or importance-only metadata changes do not re-enter the alert
-window.
+Automatic Teams discovery asks WorkIQ for chats and channel messages with
+activity in the current monitoring window. WorkIQ returns grounded candidates,
+and Peggy verifies the exact source link before creating an alert. This avoids
+crawling the user's complete Teams chat history. Automatic monitoring runs one
+discovery prompt per window and does not issue a second prompt for every
+candidate. Candidates without a verifiable grounded link are withheld and
+retried later.
 
-Unread views compare chat activity with the caller's
-`lastMessageReadDateTime`. Teams links must identify a specific
-`/l/message/` item rather than only a generic chat.
+Explicit unread views remain bounded structured WorkIQ reads and compare chat
+activity with the caller's `lastMessageReadDateTime`. Teams links must identify
+a specific `/l/message/` item rather than only a generic chat.
 
 ### Teams channels
 
-- Broad channel discovery uses a constrained WorkIQ prompt for the current
+- Broad Teams discovery uses a constrained WorkIQ prompt for the current
   monitoring window.
 - Prompt results must resolve to a cited, compatible Teams source before Peggy
   creates an alert.

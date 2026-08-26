@@ -642,7 +642,7 @@ static bool TryRunFakeWorkIq(string[] arguments)
             ? arguments[questionIndex + 1]
             : string.Empty;
         var isDiscovery = question.StartsWith(
-            "Search Microsoft Teams channel messages",
+            "Search Microsoft Teams chats and channel messages",
             StringComparison.Ordinal);
         WriteFakeWorkIqLog(
             $"{(isDiscovery ? "ask" : "ask-context")} {question}");
@@ -664,7 +664,8 @@ static bool TryRunFakeWorkIq(string[] arguments)
                 new
                 {
                     targetLink,
-                    isCitedInResponse = true
+                    isCitedInResponse =
+                        !isDiscovery
                 }
             ];
         Console.WriteLine(JsonSerializer.Serialize(new
@@ -1217,26 +1218,28 @@ static void HandleFakeChatActivityRequest(
     }
     else if (url.StartsWith("/me/chats?", StringComparison.Ordinal))
     {
-        response = new
-        {
-            value = new[]
+        response = isContentEdit
+            ? new
             {
-                new
+                value = new[]
                 {
-                    id = "old-chat",
-                    topic = "Old incident chat",
-                    viewpoint = new
+                    new
                     {
-                        lastMessageReadDateTime =
-                            DateTimeOffset.UtcNow.AddYears(-1)
-                    },
-                    lastMessagePreview = FakeChatActivityMessage(
-                        "old-message",
-                        isContentEdit,
-                        createdRecently: false)
+                        id = "old-chat",
+                        topic = "Edited incident chat",
+                        viewpoint = new
+                        {
+                            lastMessageReadDateTime =
+                                DateTimeOffset.UtcNow.AddYears(-1)
+                        },
+                        lastMessagePreview = FakeChatActivityMessage(
+                            "old-message",
+                            isContentEdit: true,
+                            createdRecently: true)
+                    }
                 }
             }
-        };
+            : new { value = Array.Empty<object>() };
     }
     else if (url.StartsWith(
                  "/me/chats/old-chat/messages?",
@@ -1249,7 +1252,7 @@ static void HandleFakeChatActivityRequest(
                 FakeChatActivityMessage(
                     "old-message",
                     isContentEdit,
-                    createdRecently: false)
+                    createdRecently: isContentEdit)
             }
         };
     }

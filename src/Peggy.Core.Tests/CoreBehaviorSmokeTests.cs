@@ -21,7 +21,6 @@ internal static class CoreBehaviorSmokeTests
         TestWorkIqTransportClassification();
         await TestWorkIqRetryPolicyAsync(directory);
         await TestPromptGuidedMonitoringAsync(directory);
-        await TestChatActivityTimestampsAsync(directory);
         await TestChannelDeltaContinuationAsync(directory);
         await TestLiveActionTransportAsync();
         TestActionPolicy();
@@ -751,12 +750,9 @@ internal static class CoreBehaviorSmokeTests
             TestAssert.True(
                 File.ReadAllLines(logPath).Any(request =>
                     request.StartsWith(
-                        "fetch /me/chats?",
-                        StringComparison.Ordinal) &&
-                    request.Contains(
-                        "lastMessagePreview%2fcreatedDateTime",
-                        StringComparison.OrdinalIgnoreCase)),
-                "Changed Teams chat discovery lost its bounded time filter.");
+                        "ask Search Microsoft Teams chats and channel messages",
+                        StringComparison.Ordinal)),
+                "Prompt-guided Teams discovery did not cover chats and channels.");
             TestAssert.True(
                 File.ReadAllLines(logPath)
                     .Where(request =>
@@ -898,6 +894,8 @@ internal static class CoreBehaviorSmokeTests
             "PEGGY_FAKE_WORKIQ_CONTEXT_ANSWER");
         var previousReference = Environment.GetEnvironmentVariable(
             "PEGGY_FAKE_WORKIQ_REFERENCE");
+        var previousDiscoveryReference = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_DISCOVERY_REFERENCE");
         try
         {
             var now = DateTimeOffset.UtcNow;
@@ -912,12 +910,11 @@ internal static class CoreBehaviorSmokeTests
                     new
                     {
                         stableReference =
-                            contextUrl,
+                            "turn1search7",
                         threadReference =
-                            contextUrl,
+                            "turn1search7",
                         entityUrl = string.Empty,
-                        webUrl =
-                            contextUrl,
+                        webUrl = string.Empty,
                         sender = "Semantic sender",
                         subject = "Semantic team / Semantic channel",
                         summary = "A decision is requested.",
@@ -936,6 +933,9 @@ internal static class CoreBehaviorSmokeTests
             Environment.SetEnvironmentVariable(
                 "PEGGY_FAKE_WORKIQ_ANSWER",
                 answer);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_DISCOVERY_REFERENCE",
+                contextUrl);
             var provider = new WorkIqMessageProvider(
                 executablePath: executable,
                 settings: new PeggySettings());
@@ -959,7 +959,7 @@ internal static class CoreBehaviorSmokeTests
             var requests = File.ReadAllLines(logPath);
             TestAssert.True(
                 requests.Any(request => request.StartsWith(
-                    "ask Search Microsoft Teams channel messages",
+                    "ask Search Microsoft Teams chats and channel messages",
                     StringComparison.Ordinal)) &&
                 requests.All(request =>
                     !request.Contains(
@@ -1074,6 +1074,9 @@ internal static class CoreBehaviorSmokeTests
                 "PEGGY_FAKE_WORKIQ_REFERENCE",
                 null);
             Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_DISCOVERY_REFERENCE",
+                null);
+            Environment.SetEnvironmentVariable(
                 "PEGGY_FAKE_WORKIQ_CONTEXT_ANSWER",
                 "No exact source link was found.");
             var withheld = await new WorkIqMessageProvider(
@@ -1124,6 +1127,9 @@ internal static class CoreBehaviorSmokeTests
             Environment.SetEnvironmentVariable(
                 "PEGGY_FAKE_WORKIQ_REFERENCE",
                 previousReference);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_DISCOVERY_REFERENCE",
+                previousDiscoveryReference);
         }
     }
 
@@ -1165,17 +1171,17 @@ internal static class CoreBehaviorSmokeTests
             TestAssert.True(
                 metadataOnly.Messages.Count == 0 &&
                 File.ReadAllLines(logPath).Any(request =>
+                    request.StartsWith(
+                        "fetch /me/chats?",
+                        StringComparison.Ordinal) &&
+                    request.Contains(
+                        "lastMessagePreview%2fcreatedDateTime%20gt",
+                        StringComparison.OrdinalIgnoreCase)) &&
+                !File.ReadAllLines(logPath).Any(request =>
                     request.Contains(
                         "/me/chats/old-chat/messages?",
-                        StringComparison.Ordinal) &&
-                    request.Contains(
-                        "lastModifiedDateTime%20gt",
-                        StringComparison.Ordinal) &&
-                    request.Contains(
-                        "$orderby=lastModifiedDateTime%20desc",
                         StringComparison.Ordinal)),
-                "A metadata-only update on an old Teams message was " +
-                "treated as fresh activity.");
+                "An old Teams chat outside the monitoring window was fetched.");
 
             File.WriteAllText(logPath, string.Empty);
             Environment.SetEnvironmentVariable(

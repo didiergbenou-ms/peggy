@@ -116,7 +116,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 ct);
             if (!hasMore && messages.Count < limit)
             {
-                warning = await CollectPromptChannelChangesAsync(
+                warning = await CollectPromptTeamsChangesAsync(
                     updated,
                     messages,
                     limit,
@@ -133,20 +133,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 nowUtc,
                 ct);
 
-            if (!hasMore)
-            {
-                hasMore = await CollectChatChangesAsync(
-                    updated,
-                    messages,
-                    currentUserId,
-                    limit,
-                    nowUtc,
-                    ct);
-            }
-
             if (!hasMore && messages.Count < limit)
             {
-                warning = await CollectPromptChannelChangesAsync(
+                warning = await CollectPromptTeamsChangesAsync(
                     updated,
                     messages,
                     limit,
@@ -1490,145 +1479,6 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         return settings;
     }
 
-    private async Task<bool> CollectChatChangesAsync(
-        MonitoringCursorState cursor,
-        ICollection<Message> destination,
-        string userId,
-        int limit,
-        DateTimeOffset nowUtc,
-        CancellationToken ct)
-    {
-        var since = cursor.TeamsWatermarkUtc
-            ?? cursor.InitialScanStartedUtc!.Value;
-        var boundaryIds = cursor.TeamsBoundaryMessageIds.ToHashSet(
-            StringComparer.Ordinal);
-        var fetchSince = boundaryIds.Count == 0
-            ? since
-            : since.AddTicks(-1);
-        var chats = await FetchChatsForChangeScanAsync(ct);
-        var capacity = limit - destination.Count;
-        if (capacity <= 0)
-        {
-            return true;
-        }
-
-        var candidates = new Dictionary<string, Message>(StringComparer.Ordinal);
-        var chatBacklogRemaining = false;
-        foreach (var chat in chats)
-        {
-            var subject = NormalizeSubject(chat.Topic, "Teams chat");
-            var changedMessages = await FetchOldestChatMessagesAsync(
-                chat.Id!,
-                limit: capacity,
-                newerThan: fetchSince,
-                excludedSenderId: userId,
-                excludedBoundaryMessageIds: boundaryIds,
-                ct);
-            chatBacklogRemaining |= changedMessages.HasMore;
-
-            var readAt = chat.Viewpoint?.LastMessageReadDateTime
-                ?? DateTimeOffset.MinValue;
-            foreach (var changedMessage in changedMessages.Messages)
-            {
-                var message = ToTeamsMessage(
-                    chat.Id!,
-                    subject,
-                    changedMessage,
-                    readAt);
-                if (message is not null &&
-                    (message.ReceivedAt > since ||
-                     (message.ReceivedAt == since &&
-                      !boundaryIds.Contains(message.Id))))
-                {
-                    candidates[message.Id] = message;
-                }
-            }
-        }
-
-        var ordered = candidates.Values
-            .OrderBy(message => message.ReceivedAt)
-            .ThenBy(message => message.Id, StringComparer.Ordinal)
-            .ToList();
-        var selected = ordered.Take(capacity).ToList();
-        foreach (var message in selected)
-        {
-            destination.Add(message);
-        }
-
-        if (ordered.Count > selected.Count || chatBacklogRemaining)
-        {
-            if (selected.Count == 0)
-            {
-                throw new InvalidDataException(
-                    "The assistant could not advance the Teams chat cursor.");
-            }
-
-            var boundary = selected[^1].ReceivedAt;
-            var emittedAtBoundary = selected
-                .Where(message => message.ReceivedAt == boundary)
-                .Select(message => message.Id);
-            cursor.TeamsBoundaryMessageIds = boundary == since
-                ? boundaryIds
-                    .Concat(emittedAtBoundary)
-                    .Distinct(StringComparer.Ordinal)
-                    .ToList()
-                : emittedAtBoundary.ToList();
-            cursor.TeamsWatermarkUtc = boundary;
-            return true;
-        }
-
-        var overlapWatermark = nowUtc.AddMinutes(-1);
-        if (overlapWatermark > since)
-        {
-            cursor.TeamsWatermarkUtc = overlapWatermark;
-        }
-        cursor.TeamsBoundaryMessageIds.Clear();
-        return false;
-    }
-
-    private async Task<IReadOnlyList<Chat>> FetchChatsForChangeScanAsync(
-        CancellationToken ct)
-    {
-        string? url =
-            "/me/chats?$top=50" +
-            "&$select=id,topic,chatType,viewpoint" +
-            $"&$orderby={Uri.EscapeDataString(
-                "lastMessagePreview/createdDateTime desc")}" +
-            "&$expand=lastMessagePreview";
-        var chats = new Dictionary<string, Chat>(StringComparer.Ordinal);
-        var visited = new HashSet<string>(StringComparer.Ordinal);
-        for (var pageNumber = 1; url is not null; pageNumber++)
-        {
-            if (pageNumber > 20 || !visited.Add(url))
-            {
-                throw new InvalidDataException(
-                    "WorkIQ could not reach the Teams chat monitoring boundary.");
-            }
-
-            var page = await _client.FetchAsync<
-                GraphCollection<Chat>>(url, ct);
-            if (page.Value.Count == 0)
-            {
-                break;
-            }
-            var valid = page.Value
-                .Where(chat => !string.IsNullOrWhiteSpace(chat.Id))
-                .ToList();
-            if (page.Value.Count > 0 && valid.Count == 0)
-            {
-                throw new InvalidDataException(
-                    "WorkIQ returned Teams chats without identifiers.");
-            }
-            foreach (var chat in valid)
-            {
-                chats[chat.Id!] = chat;
-            }
-            url = NormalizeGraphUrl(page.NextLink);
-        }
-
-        return chats.Values.ToList();
-    }
-
     private async Task<IReadOnlyList<Message>> ListUnreadTeamsAsync(
         int limit,
         CancellationToken ct)
@@ -1887,72 +1737,6 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             .ToList();
     }
 
-    private async Task<BoundedChatMessages> FetchOldestChatMessagesAsync(
-        string chatId,
-        int limit,
-        DateTimeOffset newerThan,
-        string excludedSenderId,
-        IReadOnlySet<string> excludedBoundaryMessageIds,
-        CancellationToken ct)
-    {
-        var encodedChatId = Uri.EscapeDataString(chatId);
-        var messages = new SortedSet<ChatMessage>(
-            ChatMessageActivityComparer.Instance);
-        var seenIds = new HashSet<string>(StringComparer.Ordinal);
-        var eligibleCount = 0;
-        var pageSize = Math.Clamp(limit, 1, MaxPageSize);
-        var filter = Uri.EscapeDataString(
-            $"lastModifiedDateTime gt {FormatGraphTimestamp(newerThan)}");
-        var orderBy = Uri.EscapeDataString("lastModifiedDateTime desc");
-        string? url =
-            $"/me/chats/{encodedChatId}/messages" +
-            $"?$top={pageSize}&$filter={filter}&$orderby={orderBy}";
-        var visited = new HashSet<string>(StringComparer.Ordinal);
-        for (var pageNumber = 1; url is not null; pageNumber++)
-        {
-            if (pageNumber > 20 || !visited.Add(url))
-            {
-                throw new InvalidDataException(
-                    "WorkIQ could not complete the Teams chat change scan.");
-            }
-
-            var page = await _client.FetchAsync<
-                GraphCollection<ChatMessage>>(url, ct);
-            if (page.Value.Count == 0)
-            {
-                break;
-            }
-
-            var valid = page.Value
-                .Where(message =>
-                    !string.IsNullOrWhiteSpace(message.Id) &&
-                    message.CreatedDateTime is not null &&
-                    message.LastModifiedDateTime is not null)
-                .ToList();
-            if (page.Value.Count > 0 && valid.Count == 0)
-            {
-                throw new InvalidDataException(
-                    "WorkIQ returned changed Teams messages without cursor fields.");
-            }
-
-            AddOldestEligibleMessages(
-                messages,
-                seenIds,
-                valid,
-                limit,
-                newerThan,
-                excludedSenderId,
-                chatId,
-                excludedBoundaryMessageIds,
-                ref eligibleCount);
-            url = NormalizeGraphUrl(page.NextLink);
-        }
-
-        return new BoundedChatMessages(
-            messages.ToList(),
-            eligibleCount > messages.Count);
-    }
-
     private async Task<GraphCollection<ChatMessage>> FetchChatMessagePageAsync(
         string encodedChatId,
         DateTimeOffset? before,
@@ -2013,43 +1797,6 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         }
     }
 
-    private static void AddOldestEligibleMessages(
-        SortedSet<ChatMessage> destination,
-        ISet<string> seenIds,
-        IEnumerable<ChatMessage> candidates,
-        int limit,
-        DateTimeOffset newerThan,
-        string excludedSenderId,
-        string chatId,
-        IReadOnlySet<string> excludedBoundaryMessageIds,
-        ref int eligibleCount)
-    {
-        foreach (var message in candidates)
-        {
-            if (!IsEligibleChatMessage(
-                    message,
-                    newerThan,
-                    excludedSenderId) ||
-                excludedBoundaryMessageIds.Contains(
-                    EncodeTeamsMessageKey(
-                        chatId,
-                        BuildVersionedChatItemId(
-                            message.Id!,
-                            GetChatActivityUtc(message)))) ||
-                !seenIds.Add(message.Id!))
-            {
-                continue;
-            }
-
-            eligibleCount++;
-            destination.Add(message);
-            if (destination.Count > limit)
-            {
-                destination.Remove(destination.Max!);
-            }
-        }
-    }
-
     private static bool IsEligibleChatMessage(
         ChatMessage message,
         DateTimeOffset? newerThan,
@@ -2073,7 +1820,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 excludedSenderId,
                 StringComparison.OrdinalIgnoreCase));
 
-    private async Task<string?> CollectPromptChannelChangesAsync(
+    private async Task<string?> CollectPromptTeamsChangesAsync(
         MonitoringCursorState cursor,
         ICollection<Message> destination,
         int limit,
@@ -2119,25 +1866,41 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         catch (JsonException)
         {
             return "Prompt-guided Teams discovery returned an unsupported " +
-                  "answer. Structured Outlook, chat, and watchlist monitoring " +
-                  "remain active.";
+                  "answer. Structured Outlook and watchlist monitoring remain " +
+                  "active.";
         }
         if (envelope.Items is null)
         {
             return "Prompt-guided Teams discovery omitted its candidate list. " +
-                  "Structured Outlook, chat, and watchlist monitoring remain active.";
+                  "Structured Outlook and watchlist monitoring remain active.";
         }
 
         var candidates = envelope.Items.Take(capacity).ToList();
-        var citedSourceUrls = promptResult.References
+        var groundedSourceUrls = promptResult.References
             .Where(reference =>
-                reference.IsCited &&
                 IsCompatibleSourceUrl(
                     MessageSource.Teams,
                     reference.TargetLink))
             .Select(reference => reference.TargetLink)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        var verifiedGroundedSources =
+            new List<(string Url, DateTimeOffset ActivityUtc)>();
+        foreach (var groundedSourceUrl in groundedSourceUrls)
+        {
+            var activityUtc = await VerifyPromptSourceActivityAsync(
+                groundedSourceUrl,
+                sinceUtc,
+                nowUtc,
+                ct);
+            if (activityUtc is not null)
+            {
+                verifiedGroundedSources.Add(
+                    (groundedSourceUrl, activityUtc.Value));
+            }
+        }
+        var usedGroundedSourceUrls = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase);
         var unresolvedSources = 0;
         foreach (var candidate in candidates)
         {
@@ -2156,31 +1919,34 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 message.WebUrl ?? string.Empty)
                 ? message.WebUrl
                 : candidates.Count == 1 &&
-                  citedSourceUrls.Count == 1
-                    ? citedSourceUrls[0]
+                  groundedSourceUrls.Count == 1
+                    ? groundedSourceUrls[0]
                     : null;
+            DateTimeOffset? verifiedActivity = null;
             if (sourceUrl is null)
             {
-                try
-                {
-                    var resolution = await ResolveContextAsync(
-                        MessageSource.Teams,
-                        candidate.Summary!,
-                        candidate.Reason ?? string.Empty,
-                        candidate.ActivityUtc!.Value,
-                        ct);
-                    if (resolution?.WebUrl is not null &&
-                        IsCompatibleSourceUrl(
-                            MessageSource.Teams,
-                            resolution.WebUrl))
+                var nearestSource = verifiedGroundedSources
+                    .Where(source =>
+                        !usedGroundedSourceUrls.Contains(source.Url))
+                    .Select(source => new
                     {
-                        sourceUrl = resolution.WebUrl;
-                    }
-                }
-                catch (WorkIqClient.WorkIqPromptException)
+                        Source = source,
+                        Difference = Math.Abs(
+                            (source.ActivityUtc -
+                             candidate.ActivityUtc!.Value).TotalSeconds)
+                    })
+                    .Where(match =>
+                        match.Difference <= TimeSpan.FromMinutes(5).TotalSeconds)
+                    .OrderBy(match => match.Difference)
+                    .ThenBy(
+                        match => match.Source.Url,
+                        StringComparer.Ordinal)
+                    .FirstOrDefault();
+                if (nearestSource is not null)
                 {
-                    // The candidate remains retryable because the prompt
-                    // watermark is not advanced below.
+                    sourceUrl = nearestSource.Source.Url;
+                    verifiedActivity = nearestSource.Source.ActivityUtc;
+                    usedGroundedSourceUrls.Add(sourceUrl);
                 }
             }
             if (sourceUrl is null)
@@ -2189,11 +1955,11 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 continue;
             }
 
-            var verifiedActivity = await VerifyPromptSourceActivityAsync(
-                sourceUrl,
-                sinceUtc,
-                nowUtc,
-                ct);
+            verifiedActivity ??= await VerifyPromptSourceActivityAsync(
+                    sourceUrl,
+                    sinceUtc,
+                    nowUtc,
+                    ct);
             if (verifiedActivity is null)
             {
                 unresolvedSources++;
@@ -2354,7 +2120,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         DateTimeOffset nowUtc,
         int limit)
         =>
-            "Search Microsoft Teams channel messages with activity from " +
+            "Search Microsoft Teams chats and channel messages with activity from " +
             $"{sinceUtc:O} through {nowUtc:O}. Find items that mention me, " +
             "reply to a thread I participated in, request a decision or action " +
             "from me, contain a near deadline, or otherwise deserve my attention. " +
@@ -2387,12 +2153,12 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                return "The WorkIQ EULA must be accepted. Run " +
                       "'workiq accept-eula' after reviewing " +
                       "https://github.com/microsoft/work-iq/tree/main/EULA. " +
-                      "Structured Outlook, chat, and watchlist monitoring remain active.";
+                      "Structured Outlook and watchlist monitoring remain active.";
             }
         }
 
         return "Prompt-guided Teams discovery is temporarily unavailable. " +
-              "Structured Outlook, chat, and watchlist monitoring remain active.";
+              "Structured Outlook and watchlist monitoring remain active.";
     }
 
     private static string StripJsonFence(string value)
@@ -4106,10 +3872,6 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         string RequestUrl,
         bool UsedStoredLink);
 
-    private sealed record BoundedChatMessages(
-        IReadOnlyList<ChatMessage> Messages,
-        bool HasMore);
-
     private sealed class PromptCandidateEnvelope
     {
         [JsonPropertyName("items")]
@@ -4147,33 +3909,6 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
         [JsonPropertyName("isMention")]
         public bool IsMention { get; init; }
-    }
-
-    private sealed class ChatMessageActivityComparer : IComparer<ChatMessage>
-    {
-        public static ChatMessageActivityComparer Instance { get; } = new();
-
-        public int Compare(ChatMessage? left, ChatMessage? right)
-        {
-            if (ReferenceEquals(left, right))
-            {
-                return 0;
-            }
-            if (left is null)
-            {
-                return -1;
-            }
-            if (right is null)
-            {
-                return 1;
-            }
-
-            var activity = GetChatActivityUtc(left).CompareTo(
-                GetChatActivityUtc(right));
-            return activity != 0
-                ? activity
-                : string.Compare(left.Id, right.Id, StringComparison.Ordinal);
-        }
     }
 
     private sealed class IdentitySet
