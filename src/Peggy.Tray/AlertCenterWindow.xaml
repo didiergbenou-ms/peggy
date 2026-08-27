@@ -33,7 +33,8 @@
         <Button DockPanel.Dock="Right" Content="Retry now" Padding="12,5"
                 Click="Retry_Click"/>
         <StackPanel>
-          <TextBlock Text="Monitoring interrupted" FontWeight="SemiBold"
+          <TextBlock x:Name="HealthTitle"
+                     Text="Monitoring interrupted" FontWeight="SemiBold"
                      Foreground="#6b5000"/>
           <TextBlock x:Name="HealthDetail" TextWrapping="Wrap"
                      Foreground="#6b5000" Margin="0,3,10,0"/>

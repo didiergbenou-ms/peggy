@@ -119,6 +119,10 @@ internal static class DesktopSmokeTests
             Visibility.Visible,
             Find<Border>(window, "HealthBanner").Visibility,
             "Monitoring interruption health UI did not appear.");
+        TestAssert.Equal(
+            "Monitoring interrupted",
+            Find<TextBlock>(window, "HealthTitle").Text,
+            "A real monitoring failure was not labeled as interrupted.");
         window.SetMonitoringInterrupted(false, 0, now);
         TestAssert.Equal(
             Visibility.Collapsed,
@@ -132,10 +136,12 @@ internal static class DesktopSmokeTests
         TestAssert.True(
             Find<Border>(window, "HealthBanner").Visibility ==
                 Visibility.Visible &&
+            Find<TextBlock>(window, "HealthTitle").Text ==
+                "Monitoring notice" &&
             Find<TextBlock>(window, "HealthDetail").Text.Contains(
                 "accept-eula",
                 StringComparison.Ordinal),
-            "The WorkIQ EULA remediation was not surfaced immediately.");
+            "A nonfatal WorkIQ notice was mislabeled or not surfaced.");
         window.SetMonitoringInterrupted(false, 0, now);
 
         window.ShowCriticalBanner(alert, maskContent: false);

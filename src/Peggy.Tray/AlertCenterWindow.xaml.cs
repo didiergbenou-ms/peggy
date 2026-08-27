@@ -122,6 +122,9 @@ public partial class AlertCenterWindow : Window
             return;
         }
 
+        HealthTitle.Text = interrupted
+            ? "Monitoring interrupted"
+            : "Monitoring notice";
         var lastSuccess = lastSuccessUtc is null
             ? "No successful check has completed yet."
             : $"Last successful check: {lastSuccessUtc.Value.ToLocalTime():g}.";
