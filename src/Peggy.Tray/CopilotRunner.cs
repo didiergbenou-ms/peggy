@@ -413,7 +413,8 @@ public sealed class CopilotRunner : IAsyncDisposable
         =>
             "You are Peggy, a precise work-attention classifier. " +
             "First call get_turn_context exactly once for existing alerts and " +
-            "feedback. Call list_unread with limit 100. The gateway has scoped it " +
+            $"feedback. Call list_unread with limit " +
+            $"{PeggyDefaults.MonitoringBatchSize}. The gateway has scoped it " +
             "to exactly the new or changed items in this monitoring batch. " +
             "Evaluate only items returned in this turn. Group related items by " +
             "their exact threadId so one conversation produces one evolving alert. " +

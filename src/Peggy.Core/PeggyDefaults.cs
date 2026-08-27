@@ -8,6 +8,7 @@ public static class PeggyDefaults
     public const string ActiveCasesFolder = "Inbox/Cases/Active";
     public const int AuditRetentionDays = 30;
     public const int StartupLookbackMinutes = 5;
+    public const int MonitoringBatchSize = 20;
     public const int MonitoringFailureThreshold = 3;
     public const int DefaultWakeMinute = 7 * 60;
     public const int DefaultSleepMinute = 19 * 60;

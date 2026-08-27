@@ -567,6 +567,26 @@ internal static class AssistantBehaviorSmokeTests
             "Never call prepare_action",
             alertPrompt,
             "Monitoring prompt did not forbid actions.");
+        TestAssert.Contains(
+            $"list_unread with limit {PeggyDefaults.MonitoringBatchSize}",
+            alertPrompt,
+            "Monitoring prompt did not enforce the bounded batch size.");
+        TestAssert.Contains(
+            "Copilot timed out",
+            InvokePrivate<string>(
+                typeof(App),
+                "GetMonitoringRemediation",
+                new TimeoutException(),
+                "classification"),
+            "A classifier timeout did not identify the failing stage.");
+        TestAssert.Contains(
+            "WorkIQ timed out",
+            InvokePrivate<string>(
+                typeof(App),
+                "GetMonitoringRemediation",
+                new TimeoutException(),
+                "retrieval"),
+            "A retrieval timeout did not identify the failing stage.");
         var largeAlerts = Enumerable.Range(0, 100)
             .Select(index => new AlertRecord
             {

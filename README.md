@@ -99,6 +99,8 @@ whose owning process has exited.
 - Outside that window Peggy sleeps and automatic checks pause.
 - **Check now** and **Talk to Peggy** remain available while sleeping.
 - Waking or restarting establishes a new five-minute lookback.
+- Recovery backlogs are classified in persisted batches of 20 items so one
+  oversized interval cannot repeatedly time out.
 - Three consecutive monitoring failures mark monitoring as interrupted and
   surface remediation in the Alert Center.
 

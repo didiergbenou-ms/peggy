@@ -373,6 +373,7 @@ public partial class App : Application
         _checking = true;
         var keepThinkingForContinuation = false;
         var resultAnimationActive = false;
+        var checkStage = "preparing";
         if (!_conversation.IsActive &&
             _mascot.IsVisible)
         {
@@ -414,9 +415,10 @@ public partial class App : Application
                 var nowUtc = DateTimeOffset.UtcNow;
                 var cursorBefore = JsonSerializer.Serialize(
                     _state.State.MonitoringCursor);
+                checkStage = "retrieval";
                 var batch = await _provider.GetChangesAsync(
                     _state.State.MonitoringCursor,
-                    100,
+                    PeggyDefaults.MonitoringBatchSize,
                     nowUtc,
                     _shutdown.Token);
                 lastWarning = batch.Warning;
@@ -446,6 +448,7 @@ public partial class App : Application
                 AlertApplyResult? applied = null;
                 if (fresh.Count > 0)
                 {
+                    checkStage = "classification";
                     var result = await _copilot.RunAlertEvaluationAsync(
                         fresh,
                         _alertManager.GetActiveAlerts(),
@@ -473,6 +476,7 @@ public partial class App : Application
                     SurfaceMaterialAlerts(applied.MaterialUpdates);
                 }
 
+                checkStage = "persistence";
                 _state.State.MonitoringCursor = batch.Cursor;
                 hasMore = batch.HasMore;
                 await _state.SaveAsync(_shutdown.Token);
@@ -514,7 +518,9 @@ public partial class App : Application
             }
 
             var becameInterrupted = _state.RecordMonitoringFailure();
-            _monitoringRemediation = GetMonitoringRemediation(ex);
+            _monitoringRemediation = GetMonitoringRemediation(
+                ex,
+                checkStage);
             try
             {
                 await _state.SaveAsync(_shutdown.Token);
@@ -524,7 +530,8 @@ public partial class App : Application
             {
             }
             Log(
-                $"CHECK ERROR type={ex.GetType().Name} " +
+                $"CHECK ERROR stage={checkStage} " +
+                $"type={ex.GetType().Name} " +
                 $"failures={_state.State.ConsecutiveMonitoringFailures}");
             if (becameInterrupted ||
                 _monitoringRemediation is not null)
@@ -1477,8 +1484,24 @@ public partial class App : Application
         _wakeCheckTimer.Start();
     }
 
-    private static string? GetMonitoringRemediation(Exception exception)
-        => exception.Message.Contains(
+    private static string? GetMonitoringRemediation(
+        Exception exception,
+        string stage)
+        => exception is TimeoutException &&
+           string.Equals(
+               stage,
+               "classification",
+               StringComparison.Ordinal)
+            ? "Copilot timed out while classifying a monitoring batch. " +
+              "Peggy will retry the same bounded batch."
+            : exception is TimeoutException &&
+              string.Equals(
+                  stage,
+                  "retrieval",
+                  StringComparison.Ordinal)
+                ? "WorkIQ timed out while reading Microsoft 365. " +
+                  "Peggy will retry."
+            : exception.Message.Contains(
                "accept-eula",
                StringComparison.OrdinalIgnoreCase) ||
            exception.Message.Contains(
