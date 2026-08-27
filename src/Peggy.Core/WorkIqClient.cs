@@ -55,6 +55,89 @@ internal sealed class WorkIqClient
                 retryTransientFailures: true,
                 ct));
 
+    public async Task<IReadOnlyList<WorkIqReadResult<T>>> FetchManyAsync<T>(
+        IReadOnlyList<string> urls,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(urls);
+        if (urls.Count == 0)
+        {
+            return [];
+        }
+        if (urls.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new ArgumentException(
+                "Every WorkIQ entity URL is required.",
+                nameof(urls));
+        }
+
+        try
+        {
+            return await RunMcpReadWithRetriesAsync(
+                async () =>
+                {
+                    using var response = await RunMcpToolAsync(
+                        "fetch",
+                        new Dictionary<string, object?>
+                        {
+                            ["entityUrls"] = urls
+                        },
+                        TimeSpan.FromSeconds(45),
+                        ct);
+                    return ExtractMcpReadResults<T>(
+                        response.RootElement,
+                        urls.Count);
+                },
+                ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (
+            ex is TimeoutException or
+            WorkIqRequestException or
+            InvalidOperationException or
+            InvalidDataException or
+            IOException)
+        {
+            throw new WorkIqSearchException(
+                "WorkIQ exact-message verification failed.",
+                ex);
+        }
+    }
+
+    public async Task<T> SearchAsync<T>(
+        object body,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+
+        try
+        {
+            return DeserializeRequired<T>(
+                await RunMcpReadActionAsync(
+                    "/search/query",
+                    body,
+                    ct));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (
+            ex is TimeoutException or
+            WorkIqRequestException or
+            InvalidOperationException or
+            InvalidDataException or
+            IOException)
+        {
+            throw new WorkIqSearchException(
+                "WorkIQ structured search failed.",
+                ex);
+        }
+    }
+
     public async Task<string> AskAsync(
         string question,
         CancellationToken ct)
@@ -249,6 +332,154 @@ internal sealed class WorkIqClient
         return ExtractMcpPayload(response.RootElement);
     }
 
+    private async Task<string> RunMcpReadActionAsync(
+        string url,
+        object body,
+        CancellationToken ct)
+        => await RunMcpReadWithRetriesAsync(
+            () => RunMcpMutationAsync(
+                "do_action",
+                "actionUrl",
+                url,
+                body,
+                ct),
+            ct);
+
+    private static async Task<T> RunMcpReadWithRetriesAsync<T>(
+        Func<Task<T>> operation,
+        CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await operation();
+            }
+            catch (WorkIqRequestException ex) when (
+                IsTransientStatus(ex.StatusCode) &&
+                attempt < MaxTransientAttempts)
+            {
+                var delay = ex.RetryAfter ??
+                    TimeSpan.FromSeconds(
+                        (ex.StatusCode == 429 ? 5 : 2) *
+                        Math.Pow(2, attempt - 1));
+                await Task.Delay(
+                    TimeSpan.FromSeconds(
+                        Math.Clamp(delay.TotalSeconds, 1, 60)),
+                    ct);
+            }
+            catch (TimeoutException) when (
+                attempt < MaxTransportAttempts)
+            {
+                await Task.Delay(
+                    TimeSpan.FromSeconds(Math.Pow(2, attempt)),
+                    ct);
+            }
+            catch (IOException) when (
+                attempt < MaxTransportAttempts)
+            {
+                await Task.Delay(
+                    TimeSpan.FromSeconds(Math.Pow(2, attempt)),
+                    ct);
+            }
+            catch (WorkIqTransportException) when (
+                attempt < MaxTransportAttempts)
+            {
+                await Task.Delay(
+                    TimeSpan.FromSeconds(Math.Pow(2, attempt)),
+                    ct);
+            }
+        }
+    }
+
+    private static IReadOnlyList<WorkIqReadResult<T>>
+        ExtractMcpReadResults<T>(
+            JsonElement root,
+            int expectedCount)
+    {
+        if (root.TryGetProperty("error", out var rpcError))
+        {
+            var message = FindErrorMessage(rpcError);
+            var detail = $"WorkIQ MCP request failed: {message}";
+            throw IsTransientProcessError(message)
+                ? new WorkIqTransportException(detail)
+                : new InvalidOperationException(detail);
+        }
+        if (!root.TryGetProperty("result", out var result) ||
+            !result.TryGetProperty(
+                "structuredContent",
+                out var structured) ||
+            !structured.TryGetProperty(
+                "results",
+                out var results) ||
+            results.ValueKind != JsonValueKind.Array ||
+            results.GetArrayLength() != expectedCount)
+        {
+            throw new InvalidDataException(
+                "WorkIQ MCP returned an unsupported batch result shape.");
+        }
+
+        var parsed = new List<WorkIqReadResult<T>>(expectedCount);
+        foreach (var item in results.EnumerateArray())
+        {
+            var statusCode =
+                item.TryGetProperty("statusCode", out var status) &&
+                status.TryGetInt32(out var parsedStatus)
+                    ? parsedStatus
+                    : 0;
+            var error = item.TryGetProperty("error", out _)
+                ? FindErrorMessage(item)
+                : string.Empty;
+            if (IsTransientStatus(statusCode))
+            {
+                throw new WorkIqRequestException(
+                    statusCode,
+                    FindRetryAfter(item),
+                    error.Length == 0
+                        ? $"WorkIQ request failed with status {statusCode}."
+                        : $"WorkIQ request failed with status {statusCode}: " +
+                          error);
+            }
+            if (statusCode >= 400 || error.Length > 0)
+            {
+                parsed.Add(new WorkIqReadResult<T>(
+                    statusCode,
+                    default,
+                    error));
+                continue;
+            }
+            if (!item.TryGetProperty("data", out var data) ||
+                data.ValueKind is JsonValueKind.Null or
+                    JsonValueKind.Undefined)
+            {
+                throw new InvalidDataException(
+                    "WorkIQ returned a successful batch item without data.");
+            }
+
+            T? value;
+            try
+            {
+                value = data.Deserialize<T>(JsonOptions);
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidDataException(
+                    "WorkIQ returned an unsupported batch item.",
+                    ex);
+            }
+            if (value is null)
+            {
+                throw new InvalidDataException(
+                    "WorkIQ returned an empty batch item.");
+            }
+            parsed.Add(new WorkIqReadResult<T>(
+                statusCode,
+                value,
+                string.Empty));
+        }
+        return parsed;
+    }
+
     private async Task<JsonDocument> RunMcpToolAsync(
         string toolName,
         IReadOnlyDictionary<string, object?> arguments,
@@ -387,7 +618,7 @@ internal sealed class WorkIqClient
         while (true)
         {
             var line = await process.StandardOutput.ReadLineAsync(ct)
-                ?? throw new InvalidDataException(
+                ?? throw new WorkIqTransportException(
                     "WorkIQ MCP closed before returning a response.");
             JsonDocument document;
             try
@@ -396,7 +627,7 @@ internal sealed class WorkIqClient
             }
             catch (JsonException ex)
             {
-                throw new InvalidDataException(
+                throw new WorkIqTransportException(
                     "WorkIQ MCP returned an invalid JSON-RPC message.",
                     ex);
             }
@@ -417,8 +648,11 @@ internal sealed class WorkIqClient
     {
         if (root.TryGetProperty("error", out var rpcError))
         {
-            throw new InvalidOperationException(
-                $"WorkIQ MCP request failed: {FindErrorMessage(rpcError)}");
+            var message = FindErrorMessage(rpcError);
+            var detail = $"WorkIQ MCP request failed: {message}";
+            throw IsTransientProcessError(message)
+                ? new WorkIqTransportException(detail)
+                : new InvalidOperationException(detail);
         }
         if (!root.TryGetProperty("result", out var result))
         {
@@ -427,18 +661,30 @@ internal sealed class WorkIqClient
         }
         if (!result.TryGetProperty(
                 "structuredContent",
-                out var structured) ||
-            !structured.TryGetProperty(
-                "results",
-                out var results) ||
-            results.ValueKind != JsonValueKind.Array ||
-            results.GetArrayLength() == 0)
+                out var structured))
         {
             throw new InvalidDataException(
                 "WorkIQ MCP returned an unsupported result shape.");
         }
 
-        var first = results[0];
+        JsonElement first;
+        if (structured.TryGetProperty(
+                "results",
+                out var results) &&
+            results.ValueKind == JsonValueKind.Array &&
+            results.GetArrayLength() > 0)
+        {
+            first = results[0];
+        }
+        else if (structured.TryGetProperty("statusCode", out _))
+        {
+            first = structured;
+        }
+        else
+        {
+            throw new InvalidDataException(
+                "WorkIQ MCP returned an unsupported result shape.");
+        }
         var statusCode =
             first.TryGetProperty("statusCode", out var status) &&
             status.TryGetInt32(out var parsedStatus)
@@ -1064,10 +1310,32 @@ internal sealed class WorkIqClient
         }
     }
 
+    internal sealed class WorkIqSearchException : InvalidOperationException
+    {
+        public WorkIqSearchException(
+            string message,
+            Exception innerException)
+            : base(message, innerException)
+        {
+        }
+    }
+
+    internal sealed record WorkIqReadResult<T>(
+        int StatusCode,
+        T? Data,
+        string Error);
+
     private sealed class WorkIqTransportException : InvalidOperationException
     {
         public WorkIqTransportException(string message)
             : base(message)
+        {
+        }
+
+        public WorkIqTransportException(
+            string message,
+            Exception innerException)
+            : base(message, innerException)
         {
         }
     }

@@ -47,7 +47,7 @@ remain in a separate local process.
   Attention, and Awareness alerts.
 - Opens alerts in the exact Outlook or Teams source when a verified link is
   available.
-- Supports prompt-guided Teams channel discovery and explicit full-channel
+- Supports structured Teams message discovery and explicit full-channel
   watchlists.
 - Provides a warmed, persistent Copilot conversation with streamed responses.
 - Runs English speech recognition and synthesis locally with sherpa-onnx.
@@ -116,13 +116,20 @@ available. Source references are verified before they are attached to alerts.
 
 ### Teams chats
 
-Automatic Teams discovery asks WorkIQ for chats and channel messages with
-activity in the current monitoring window. WorkIQ returns grounded candidates,
-and Peggy verifies the exact source link before creating an alert. This avoids
-crawling the user's complete Teams chat history. Automatic monitoring runs one
-discovery prompt per window and does not issue a second prompt for every
-candidate. Candidates without a verifiable grounded link are withheld and
-retried later.
+Automatic Teams discovery uses WorkIQ's structured `/search/query` operation
+for newly sent messages in a bounded UTC window. Each search hit carries its message identity,
+timestamp, sender, and exact Teams source link, so Peggy does not depend on a
+natural-language answer to associate content with its source. Search windows
+overlap by ten minutes. Peggy enriches search hits through bounded, batched
+WorkIQ entity reads when possible, including resolving channel reply roots.
+Stable message identities prevent duplicate classification across search and
+watchlist delta scans while allowing recently indexed messages to be recovered.
+Large result sets continue from a persisted search offset instead of restarting
+or silently dropping later pages.
+
+WorkIQ exposes `/search/query` through its generic `do_action` POST transport,
+but the operation is read-only. Peggy does not send or modify a Teams item
+during monitoring.
 
 Explicit unread views remain bounded structured WorkIQ reads and compare chat
 activity with the caller's `lastMessageReadDateTime`. Teams links must identify
@@ -130,12 +137,12 @@ a specific `/l/message/` item rather than only a generic chat.
 
 ### Teams channels
 
-- Broad Teams discovery uses a constrained WorkIQ prompt for the current
-  monitoring window.
-- Prompt results must resolve to a cited, compatible Teams source before Peggy
-  creates an alert.
+- Broad Teams discovery uses structured WorkIQ search for the current monitoring
+  window and discovers messages by sent time.
+- Search results must contain a compatible exact Teams message link before
+  Peggy creates an alert.
 - Channels selected in the full-channel watchlist use structured Graph delta
-  scans.
+  scans and include edits to older messages.
 - Known channel participation is retained across monitoring-window rebases.
 
 ### Alert lifecycle
@@ -610,6 +617,7 @@ Optional live switches use the configured Microsoft 365 or Copilot account:
 | `--live` | Exercises live Microsoft 365 read surfaces |
 | `--live-channels` | Exercises live Teams channel reads |
 | `--live-unread` | Exercises live unread-message retrieval |
+| `--live-monitoring` | Exercises bounded structured monitoring with exact source validation |
 | `--live-copilot` | Exercises a live Copilot conversation |
 
 Example:
@@ -756,7 +764,13 @@ Remove-Item Env:\PEGGY_MESSAGE_PROVIDER
 - Framework-dependent publish by default.
 - Microsoft To Do actions target only the default `Tasks` list.
 - Monitoring is polling-based, not real-time.
-- Broad channel discovery depends on grounded WorkIQ prompt results.
+- Broad Teams discovery depends on the freshness and availability of WorkIQ
+  structured search.
+- Broad Teams search cannot discover an edit to a message sent before its
+  overlap window. Microsoft exposes the all-chat modification feed only to
+  application identities, which is incompatible with Peggy's independent
+  delegated user sign-in. Use a channel watchlist when older channel-message
+  edits must be monitored.
 - The outbound speech-host firewall rule is an optional administrator step.
 - ONNX Runtime telemetry behavior ultimately depends on the native runtime
   packaged by sherpa-onnx. A private native build using `--no_telemetry` is the

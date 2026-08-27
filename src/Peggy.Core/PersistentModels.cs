@@ -103,6 +103,12 @@ public sealed class MonitoringCursorState
 
     public List<string> TeamsBoundaryMessageIds { get; set; } = [];
 
+    public DateTimeOffset? TeamsSearchWindowEndUtc { get; set; }
+
+    public int TeamsSearchOffset { get; set; }
+
+    public List<string> TeamsSearchProcessedHitIds { get; set; } = [];
+
     public DateTimeOffset? PromptWatermarkUtc { get; set; }
 
     public DateTimeOffset? OutlookWatermarkUtc { get; set; }

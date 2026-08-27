@@ -212,6 +212,15 @@ public sealed class EncryptedStateStore
             state.MonitoringCursor.InitialOutlookScanComplete = true;
         }
         state.MonitoringCursor.TeamsBoundaryMessageIds ??= [];
+        state.MonitoringCursor.TeamsSearchProcessedHitIds ??= [];
+        state.MonitoringCursor.TeamsSearchOffset = Math.Max(
+            0,
+            state.MonitoringCursor.TeamsSearchOffset);
+        if (state.MonitoringCursor.TeamsSearchWindowEndUtc is null)
+        {
+            state.MonitoringCursor.TeamsSearchOffset = 0;
+            state.MonitoringCursor.TeamsSearchProcessedHitIds.Clear();
+        }
         state.MonitoringCursor.OutlookBoundaryMessageIds ??= [];
         state.MonitoringCursor.OutlookDeltaLinks ??=
             new Dictionary<string, string>(StringComparer.Ordinal);

@@ -57,6 +57,12 @@ try
     {
         await TestLiveUnreadAsync();
     }
+    else if (args.Contains(
+                 "--live-monitoring",
+                 StringComparer.OrdinalIgnoreCase))
+    {
+        await TestLiveMonitoringAsync();
+    }
     Console.WriteLine("All Peggy Core smoke tests passed.");
 }
 finally
@@ -323,6 +329,9 @@ static async Task TestEncryptedStateAsync(string directory)
             Initialized = true,
             TeamsWatermarkUtc = DateTimeOffset.UtcNow,
             TeamsBoundaryMessageIds = ["boundary-message"],
+            TeamsSearchWindowEndUtc = DateTimeOffset.UtcNow.AddMinutes(1),
+            TeamsSearchOffset = 25,
+            TeamsSearchProcessedHitIds = ["processed-search-hit"],
             PromptWatermarkUtc = DateTimeOffset.UtcNow.AddMinutes(-2),
             OutlookWatermarkUtc = DateTimeOffset.UtcNow,
             OutlookBoundaryMessageIds = ["outlook-boundary-message"],
@@ -388,8 +397,14 @@ static async Task TestEncryptedStateAsync(string directory)
             .SequenceEqual(["boundary-message"]),
         "The Teams boundary cursor did not round-trip.");
     Assert(
+        loaded.MonitoringCursor.TeamsSearchWindowEndUtc is not null &&
+        loaded.MonitoringCursor.TeamsSearchOffset == 25 &&
+        loaded.MonitoringCursor.TeamsSearchProcessedHitIds
+            .SequenceEqual(["processed-search-hit"]),
+        "The structured Teams search continuation did not round-trip.");
+    Assert(
         loaded.MonitoringCursor.PromptWatermarkUtc is not null,
-        "The prompt-guided monitoring cursor did not round-trip.");
+        "The legacy Teams monitoring cursor did not round-trip.");
     Assert(
         loaded.MonitoringCursor.OutlookBoundaryMessageIds
             .SequenceEqual(["outlook-boundary-message"]),
@@ -591,6 +606,51 @@ static async Task TestLiveUnreadAsync()
         $"{teams.Count} Teams, available threads resolved.");
 }
 
+static async Task TestLiveMonitoringAsync()
+{
+    var provider = new WorkIqMessageProvider();
+    var cursor = new MonitoringCursorState
+    {
+        InitialScanStartedUtc = DateTimeOffset.UtcNow.AddMinutes(
+            -PeggyDefaults.StartupLookbackMinutes)
+    };
+    var messages = new List<Message>();
+    string? warning = null;
+    var hasMore = true;
+    var batches = 0;
+    while (hasMore && batches < 20)
+    {
+        batches++;
+        var batch = await provider.GetChangesAsync(
+            cursor,
+            100,
+            DateTimeOffset.UtcNow);
+        cursor = batch.Cursor;
+        hasMore = batch.HasMore;
+        warning = batch.Warning ?? warning;
+        messages.AddRange(batch.Messages);
+    }
+
+    Assert(
+        !hasMore,
+        "Live monitoring did not complete its bounded continuation.");
+    Assert(
+        messages
+            .Where(message => message.Source == MessageSource.Teams)
+            .All(message =>
+                Uri.TryCreate(
+                    message.WebUrl,
+                    UriKind.Absolute,
+                    out var uri) &&
+                uri.AbsolutePath.StartsWith(
+                    "/l/message/",
+                    StringComparison.OrdinalIgnoreCase)),
+        "Live monitoring returned a Teams item without an exact source link.");
+    Console.WriteLine(
+        $"Live monitoring passed: {messages.Count} exact-source item(s), " +
+        $"{batches} batch(es), warning={warning ?? "none"}.");
+}
+
 static void Assert(bool condition, string message)
 {
     if (!condition)
@@ -731,10 +791,7 @@ static bool TryRunFakeWorkIq(string[] arguments)
         return true;
     }
 
-    if (string.Equals(
-            scenario,
-            "semantic",
-            StringComparison.Ordinal))
+    if (scenario is "semantic" or "structured-search")
     {
         HandleFakeSemanticReadRequest(arguments[0], url);
         return true;
@@ -817,7 +874,9 @@ static void HandleFakeChannelDeltaRequest(
         response = new
         {
             id = "user-me",
-            mail = PeggyDefaults.ConfiguredWorkIqAccount,
+            mail = Environment.GetEnvironmentVariable(
+                       "PEGGY_FAKE_WORKIQ_MAIL") ??
+                   PeggyDefaults.ConfiguredWorkIqAccount,
             userPrincipalName = PeggyDefaults.ConfiguredWorkIqAccount
         };
     }
@@ -1065,7 +1124,9 @@ static void HandleFakeSemanticReadRequest(
         response = new
         {
             id = "user-me",
-            mail = PeggyDefaults.ConfiguredWorkIqAccount,
+            mail = Environment.GetEnvironmentVariable(
+                       "PEGGY_FAKE_WORKIQ_MAIL") ??
+                   PeggyDefaults.ConfiguredWorkIqAccount,
             userPrincipalName = PeggyDefaults.ConfiguredWorkIqAccount
         };
     }
@@ -1126,6 +1187,52 @@ static void HandleFakeSemanticReadRequest(
     else if (url.StartsWith("/me/chats?", StringComparison.Ordinal))
     {
         response = new { value = Array.Empty<object>() };
+    }
+    else if (url.Contains(
+                 "/messages/delta()",
+                 StringComparison.Ordinal))
+    {
+        response = new
+        {
+            value = new[]
+            {
+                new
+                {
+                    id = "channel-root-1",
+                    createdDateTime =
+                        DateTimeOffset.UtcNow.AddMinutes(-2),
+                    lastModifiedDateTime =
+                        DateTimeOffset.UtcNow.AddMinutes(-1),
+                    messageType = "message",
+                    from = new
+                    {
+                        user = new
+                        {
+                            id = "root-sender",
+                            displayName = "Root sender"
+                        }
+                    },
+                    body = new
+                    {
+                        contentType = "text",
+                        content = "Channel root"
+                    },
+                    mentions = Array.Empty<object>(),
+                    replies = new[]
+                    {
+                        FakeStructuredSearchMessage(
+                            "channel-message-1",
+                            "channel-root-1",
+                            "A channel reply needs review.",
+                            "https://teams.microsoft.com/l/message/" +
+                            "19%3Achannel-1%40thread.tacv2/" +
+                            "channel-message-1",
+                            senderId: "sender-2",
+                            senderName: "Channel sender")
+                    }
+                }
+            }
+        };
     }
     else if (url.StartsWith(
                  "/me/chats/19%3Acontext-chat%40thread.v2/messages/" +
@@ -1315,11 +1422,17 @@ static Dictionary<string, object?> FakeChannelPage(
     string? nextLink,
     string? deltaLink)
 {
+    var activityUtc = DateTimeOffset.TryParse(
+        Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_CHANNEL_ACTIVITY_UTC"),
+        out var configuredActivity)
+        ? configuredActivity
+        : DateTimeOffset.UtcNow.AddMinutes(-1);
     var root = new Dictionary<string, object?>
     {
         ["id"] = id,
-        ["createdDateTime"] = DateTimeOffset.UtcNow.AddMinutes(-1),
-        ["lastModifiedDateTime"] = DateTimeOffset.UtcNow.AddMinutes(-1),
+        ["createdDateTime"] = activityUtc,
+        ["lastModifiedDateTime"] = activityUtc,
         ["messageType"] = "message",
         ["subject"] = "Opaque delta test",
         ["webUrl"] =
@@ -1340,6 +1453,11 @@ static Dictionary<string, object?> FakeChannelPage(
         ["mentions"] = Array.Empty<object>(),
         ["replies"] = Array.Empty<object>()
     };
+    if (ParseFakeChannelEdit() is { } editedUtc)
+    {
+        root["lastEditedDateTime"] = editedUtc;
+        root["lastModifiedDateTime"] = editedUtc;
+    }
     if (id.Contains("channel-3", StringComparison.Ordinal))
     {
         root["replies@odata.nextLink"] =
@@ -1404,9 +1522,22 @@ static object CreateFakeActionResponse(
     string url,
     string? body)
 {
-    WriteFakeWorkIqLog($"{command} {url}");
+    WriteFakeWorkIqLog(
+        command == "do-action" &&
+        string.Equals(url, "/search/query", StringComparison.Ordinal)
+            ? $"{command} {url} {body}"
+            : $"{command} {url}");
     object response;
-    if (url.StartsWith("/me?$select=", StringComparison.Ordinal))
+    if (command == "do-action" &&
+        string.Equals(url, "/search/query", StringComparison.Ordinal))
+    {
+        RequireFakeBody(
+            body,
+            "\"entityTypes\":[\"chatMessage\"]",
+            "\"queryString\":\"sent");
+        response = GetFakeSearchResponse(body);
+    }
+    else if (url.StartsWith("/me?$select=", StringComparison.Ordinal))
     {
         response = new
         {
@@ -1808,6 +1939,23 @@ static void RunFakeWorkIqMcp()
                 answer);
             continue;
         }
+        if (string.Equals(tool, "fetch", StringComparison.Ordinal))
+        {
+            var urls = toolArguments
+                .GetProperty("entityUrls")
+                .EnumerateArray()
+                .Select(item => item.GetString() ?? string.Empty)
+                .ToList();
+            var responses = urls
+                .Select(url =>
+                {
+                    WriteFakeWorkIqLog($"fetch {url}");
+                    return CreateFakeStructuredSearchFetchResponse(url);
+                })
+                .ToList();
+            WriteFakeMcpBatchSuccess(id, responses);
+            continue;
+        }
         var (command, urlParameter) = tool switch
         {
             "create_entity" => ("create", "parentUrl"),
@@ -1869,13 +2017,288 @@ static void RunFakeWorkIqMcp()
             continue;
         }
 
+        if (string.Equals(tool, "do_action", StringComparison.Ordinal) &&
+            string.Equals(url, "/search/query", StringComparison.Ordinal) &&
+            ShouldCrashFakeSearch())
+        {
+            WriteFakeWorkIqLog($"{command} {url} {body}");
+            Environment.Exit(70);
+        }
+
+        if (string.Equals(tool, "do_action", StringComparison.Ordinal) &&
+            string.Equals(url, "/search/query", StringComparison.Ordinal) &&
+            ShouldFailFakeSearch())
+        {
+            WriteFakeWorkIqLog($"{command} {url} {body}");
+            WriteFakeMcpToolError(
+                id,
+                503,
+                "temporary structured search failure");
+            continue;
+        }
+
         var response = CreateFakeActionResponse(
             command,
             url,
             body);
-        WriteFakeMcpToolSuccess(id, response);
+        if (string.Equals(tool, "do_action", StringComparison.Ordinal) &&
+            string.Equals(url, "/search/query", StringComparison.Ordinal))
+        {
+            WriteFakeMcpDirectToolSuccess(id, response);
+        }
+        else
+        {
+            WriteFakeMcpToolSuccess(id, response);
+        }
     }
 }
+
+static object GetFakeSearchResponse(string? body)
+{
+    var offset = 0;
+    if (!string.IsNullOrWhiteSpace(body))
+    {
+        using var request = JsonDocument.Parse(body);
+        var requests = request.RootElement.GetProperty("requests");
+        if (requests.GetArrayLength() > 0 &&
+            requests[0].TryGetProperty("from", out var from) &&
+            from.TryGetInt32(out var parsedOffset))
+        {
+            offset = parsedOffset;
+        }
+    }
+
+    var configured =
+        Environment.GetEnvironmentVariable(
+            $"PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_{offset}") ??
+        Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE") ??
+        """
+        {"value":[{"searchTerms":[],"hitsContainers":[{"total":0,"moreResultsAvailable":false,"hits":[]}]}]}
+        """;
+    return JsonSerializer.Deserialize<JsonElement>(configured).Clone();
+}
+
+static bool ShouldFailFakeSearch()
+{
+    if (!int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_FAIL_COUNT"),
+            out var failures) ||
+        failures <= 0)
+    {
+        return false;
+    }
+
+    var counterPath = Environment.GetEnvironmentVariable(
+        "PEGGY_FAKE_WORKIQ_SEARCH_COUNTER");
+    if (string.IsNullOrWhiteSpace(counterPath))
+    {
+        throw new InvalidOperationException(
+            "A fake search retry counter path is required.");
+    }
+
+    var attempts = File.Exists(counterPath)
+        ? int.Parse(File.ReadAllText(counterPath))
+        : 0;
+    attempts++;
+    File.WriteAllText(counterPath, attempts.ToString());
+    return attempts <= failures;
+}
+
+static bool ShouldCrashFakeSearch()
+{
+    if (!int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_CRASH_COUNT"),
+            out var failures) ||
+        failures <= 0)
+    {
+        return false;
+    }
+
+    var counterPath = Environment.GetEnvironmentVariable(
+        "PEGGY_FAKE_WORKIQ_SEARCH_CRASH_COUNTER");
+    if (string.IsNullOrWhiteSpace(counterPath))
+    {
+        throw new InvalidOperationException(
+            "A fake search crash counter path is required.");
+    }
+
+    var attempts = File.Exists(counterPath)
+        ? int.Parse(File.ReadAllText(counterPath))
+        : 0;
+    attempts++;
+    File.WriteAllText(counterPath, attempts.ToString());
+    return attempts <= failures;
+}
+
+static object? CreateFakeStructuredSearchFetchResponse(string url)
+{
+    if (url.Contains(
+            "/me/chats/19%3Astale-chat%40thread.v2/messages/" +
+            "stale-message",
+            StringComparison.Ordinal))
+    {
+        return null;
+    }
+    if (url.Contains(
+            "/me/chats/19%3Acontext-chat%40thread.v2/messages/" +
+            "context-message",
+            StringComparison.Ordinal))
+    {
+        return FakeStructuredSearchMessage(
+            "context-message",
+            replyToId: null,
+            "A decision is requested.",
+            "https://teams.microsoft.com/l/message/" +
+            "19%3Acontext-chat%40thread.v2/context-message" +
+            "?context=%7B%22contextType%22%3A%22chat%22%7D",
+            senderId: "sender@example.com",
+            senderName: "Structured sender",
+            senderAsEmail: true);
+    }
+    if (url.Contains(
+            "/me/chats/19%3Aself-chat%40thread.v2/messages/self-message",
+            StringComparison.Ordinal))
+    {
+        var primaryMail = Environment.GetEnvironmentVariable(
+                              "PEGGY_FAKE_WORKIQ_MAIL") ??
+                          PeggyDefaults.ConfiguredWorkIqAccount;
+        return FakeStructuredSearchMessage(
+            "self-message",
+            replyToId: null,
+            "The current user's own message.",
+            "https://teams.microsoft.com/l/message/" +
+            "19%3Aself-chat%40thread.v2/self-message" +
+            "?context=%7B%22contextType%22%3A%22chat%22%7D",
+            senderId: primaryMail,
+            senderName: "Current user",
+            senderAsEmail: true);
+    }
+    if (url.Contains(
+            "/messages/channel-root-1/replies/channel-message-1",
+            StringComparison.Ordinal))
+    {
+        return FakeStructuredSearchMessage(
+            "channel-message-1",
+            "channel-root-1",
+            "A channel reply needs review.",
+            "https://teams.microsoft.com/l/message/" +
+            "19%3Achannel-1%40thread.tacv2/channel-message-1" +
+            "?parentMessageId=channel-root-1&groupId=team-1",
+            senderId: "sender-2",
+            senderName: "Channel sender");
+    }
+    if (url.EndsWith(
+            "/messages/channel-message-1",
+            StringComparison.Ordinal))
+    {
+        return FakeStructuredSearchMessage(
+            "not-the-requested-message",
+            replyToId: null,
+            "Direct reply lookup did not resolve.",
+            webUrl: string.Empty,
+            senderId: "sender-2",
+            senderName: "Channel sender");
+    }
+    if (url.Contains(
+            "/messages/root-edit-channel-1",
+            StringComparison.Ordinal))
+    {
+        return FakeStructuredSearchMessage(
+            "root-edit-channel-1",
+            replyToId: null,
+            "First opaque page channel-1",
+            "https://teams.microsoft.com/l/message/" +
+            "channel/root-edit-channel-1",
+            senderId: "other-user",
+            senderName: "Other user",
+            activityUtc: ParseFakeChannelActivity(),
+            editedUtc: ParseFakeChannelEdit());
+    }
+    if (url.Contains(
+            "/messages/unlinked-message",
+            StringComparison.Ordinal))
+    {
+        return FakeStructuredSearchMessage(
+            "unlinked-message",
+            replyToId: null,
+            "A source link must be recovered.",
+            webUrl: string.Empty,
+            senderId: "sender-3",
+            senderName: "Structured sender");
+    }
+
+    throw new InvalidOperationException(
+        $"Unexpected fake structured search fetch URL: {url}");
+}
+
+static object FakeStructuredSearchMessage(
+    string id,
+    string? replyToId,
+    string body,
+    string webUrl,
+    string senderId,
+    string senderName,
+    DateTimeOffset? activityUtc = null,
+    DateTimeOffset? editedUtc = null,
+    bool senderAsEmail = false)
+{
+    var timestamp = activityUtc ?? DateTimeOffset.UtcNow.AddMinutes(-1);
+    var from = senderAsEmail
+        ? (object)new
+        {
+            emailAddress = new
+            {
+                name = senderName,
+                address = senderId
+            }
+        }
+        : new
+        {
+            user = new
+            {
+                id = senderId,
+                displayName = senderName
+            }
+        };
+    return new
+    {
+        id,
+        replyToId,
+        createdDateTime = timestamp,
+        lastModifiedDateTime = editedUtc ?? timestamp,
+        lastEditedDateTime = editedUtc,
+        messageType = "message",
+        subject = string.Empty,
+        webUrl,
+        from,
+        body = new
+        {
+            contentType = "text",
+            content = body
+        },
+        mentions = Array.Empty<object>(),
+        replies = Array.Empty<object>()
+    };
+}
+
+static DateTimeOffset ParseFakeChannelActivity()
+    => DateTimeOffset.TryParse(
+        Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_CHANNEL_ACTIVITY_UTC"),
+        out var configuredActivity)
+        ? configuredActivity
+        : DateTimeOffset.UtcNow.AddMinutes(-1);
+
+static DateTimeOffset? ParseFakeChannelEdit()
+    => DateTimeOffset.TryParse(
+        Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_CHANNEL_EDITED_UTC"),
+        out var configuredActivity)
+        ? configuredActivity
+        : null;
 
 static void WriteFakeMcpResponse(int id, object result)
     => Console.WriteLine(JsonSerializer.Serialize(new
@@ -1918,6 +2341,47 @@ static void WriteFakeMcpToolSuccess(
                         statusCode = 200
                     }
                 }
+            },
+            isError = false
+        });
+
+static void WriteFakeMcpDirectToolSuccess(
+    int id,
+    object data)
+    => WriteFakeMcpResponse(
+        id,
+        new
+        {
+            content = Array.Empty<object>(),
+            structuredContent = new
+            {
+                data,
+                statusCode = 200
+            },
+            isError = false
+        });
+
+static void WriteFakeMcpBatchSuccess(
+    int id,
+    IReadOnlyList<object?> data)
+    => WriteFakeMcpResponse(
+        id,
+        new
+        {
+            content = Array.Empty<object>(),
+            structuredContent = new
+            {
+                results = data.Select(item => new
+                {
+                    data = item,
+                    statusCode = item is null ? 404 : 200,
+                    error = item is null
+                        ? new
+                        {
+                            message = "ErrorItemNotFound"
+                        }
+                        : null
+                })
             },
             isError = false
         });

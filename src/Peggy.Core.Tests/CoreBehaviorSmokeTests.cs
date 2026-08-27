@@ -20,7 +20,9 @@ internal static class CoreBehaviorSmokeTests
         TestConfiguredStatePath(directory);
         TestWorkIqTransportClassification();
         await TestWorkIqRetryPolicyAsync(directory);
-        await TestPromptGuidedMonitoringAsync(directory);
+        await TestStructuredTeamsMonitoringAsync(directory);
+        await TestStructuredSearchTransportRetryAsync(directory);
+        await TestStructuredTeamsCrossPathIdentityAsync(directory);
         await TestChannelDeltaContinuationAsync(directory);
         await TestLiveActionTransportAsync();
         TestActionPolicy();
@@ -750,9 +752,9 @@ internal static class CoreBehaviorSmokeTests
             TestAssert.True(
                 File.ReadAllLines(logPath).Any(request =>
                     request.StartsWith(
-                        "ask Search Microsoft Teams chats and channel messages",
+                        "do-action /search/query",
                         StringComparison.Ordinal)),
-                "Prompt-guided Teams discovery did not cover chats and channels.");
+                "Structured Teams discovery did not cover chats and channels.");
             TestAssert.True(
                 File.ReadAllLines(logPath)
                     .Where(request =>
@@ -875,7 +877,7 @@ internal static class CoreBehaviorSmokeTests
         }
     }
 
-    private static async Task TestPromptGuidedMonitoringAsync(
+    private static async Task TestStructuredTeamsMonitoringAsync(
         string directory)
     {
         var executable = Environment.ProcessPath
@@ -883,7 +885,10 @@ internal static class CoreBehaviorSmokeTests
                 "The test executable path is unavailable.");
         var logPath = Path.Combine(
             directory,
-            "semantic-requests.log");
+            "structured-search-requests.log");
+        var retryCounter = Path.Combine(
+            directory,
+            "structured-search-retries.txt");
         var previousScenario = Environment.GetEnvironmentVariable(
             "PEGGY_FAKE_WORKIQ_SCENARIO");
         var previousLog = Environment.GetEnvironmentVariable(
@@ -894,8 +899,18 @@ internal static class CoreBehaviorSmokeTests
             "PEGGY_FAKE_WORKIQ_CONTEXT_ANSWER");
         var previousReference = Environment.GetEnvironmentVariable(
             "PEGGY_FAKE_WORKIQ_REFERENCE");
-        var previousDiscoveryReference = Environment.GetEnvironmentVariable(
-            "PEGGY_FAKE_WORKIQ_DISCOVERY_REFERENCE");
+        var previousSearchResponse = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE");
+        var previousSearchPage0 = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_0");
+        var previousSearchPage1 = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_1");
+        var previousSearchFailures = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_FAIL_COUNT");
+        var previousSearchCounter = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_COUNTER");
+        var previousMail = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_MAIL");
         try
         {
             var now = DateTimeOffset.UtcNow;
@@ -903,74 +918,251 @@ internal static class CoreBehaviorSmokeTests
                 "https://teams.microsoft.com/l/message/" +
                 "19%3Acontext-chat%40thread.v2/context-message" +
                 "?context=%7B%22contextType%22%3A%22chat%22%7D";
-            var answer = JsonSerializer.Serialize(new
+            const string channelUrl =
+                "https://teams.microsoft.com/l/message/" +
+                "19%3Achannel-1%40thread.tacv2/channel-message-1";
+            const string selfUrl =
+                "https://teams.microsoft.com/l/message/" +
+                "19%3Aself-chat%40thread.v2/self-message" +
+                "?context=%7B%22contextType%22%3A%22chat%22%7D";
+            var firstPage = JsonSerializer.Serialize(new
             {
-                items = new[]
+                value = new[]
                 {
                     new
                     {
-                        stableReference =
-                            "turn1search7",
-                        threadReference =
-                            "turn1search7",
-                        entityUrl = string.Empty,
-                        webUrl = string.Empty,
-                        sender = "Semantic sender",
-                        subject = "Semantic team / Semantic channel",
-                        summary = "A decision is requested.",
-                        activityUtc = now.AddMinutes(-1),
-                        reason = "The user was asked to decide today.",
-                        isMention = true
+                        searchTerms = Array.Empty<string>(),
+                        hitsContainers = new[]
+                        {
+                            new
+                            {
+                                total = 1,
+                                moreResultsAvailable = true,
+                                hits = new[]
+                                {
+                                    new
+                                    {
+                                        hitId = "search-hit-1",
+                                        rank = 1,
+                                        summary =
+                                            "<c0>A decision is requested.</c0>",
+                                        resource = new
+                                        {
+                                            id = "context-message",
+                                            createdDateTime =
+                                                now.AddMinutes(-1),
+                                            lastModifiedDateTime =
+                                                now.AddMinutes(-1),
+                                            subject = string.Empty,
+                                            webLink = contextUrl,
+                                            from = new
+                                            {
+                                                emailAddress = new
+                                                {
+                                                    name = "Structured sender",
+                                                    address =
+                                                        "sender@example.com"
+                                                }
+                                            },
+                                            channelIdentity = new
+                                            {
+                                                teamId = string.Empty,
+                                                channelId = string.Empty
+                                            },
+                                            chatId =
+                                                "19:context-chat@thread.v2"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            var secondPage = JsonSerializer.Serialize(new
+            {
+                value = new[]
+                {
+                    new
+                    {
+                        searchTerms = Array.Empty<string>(),
+                        hitsContainers = new[]
+                        {
+                            new
+                            {
+                                total = 2,
+                                moreResultsAvailable = false,
+                                hits = new[]
+                                {
+                                    new
+                                    {
+                                        hitId = "search-hit-2",
+                                        rank = 2,
+                                        summary =
+                                            "A channel reply needs review.",
+                                        resource = new
+                                        {
+                                            id = "channel-message-1",
+                                            createdDateTime =
+                                                now.AddSeconds(-30),
+                                            lastModifiedDateTime =
+                                                now.AddSeconds(-30),
+                                            subject = "Channel topic",
+                                            webLink = channelUrl,
+                                            from = new
+                                            {
+                                                emailAddress = new
+                                                {
+                                                    name = "Channel sender",
+                                                    address =
+                                                        "sender-2@example.com"
+                                                }
+                                            },
+                                            channelIdentity = new
+                                            {
+                                                teamId = "team-1",
+                                                channelId =
+                                                    "19:channel-1@thread.tacv2"
+                                            },
+                                            chatId =
+                                                "19:channel-1@thread.tacv2"
+                                        }
+                                    },
+                                    new
+                                    {
+                                        hitId = "search-hit-self",
+                                        rank = 3,
+                                        summary =
+                                            "The current user's own message.",
+                                        resource = new
+                                        {
+                                            id = "self-message",
+                                            createdDateTime =
+                                                now.AddSeconds(-15),
+                                            lastModifiedDateTime =
+                                                now.AddSeconds(-15),
+                                            subject = "Self message",
+                                            webLink = selfUrl,
+                                            from = new
+                                            {
+                                                emailAddress = new
+                                                {
+                                                    name = "Current user",
+                                                    address =
+                                                        "primary@example.invalid"
+                                                }
+                                            },
+                                            channelIdentity = new
+                                            {
+                                                teamId = string.Empty,
+                                                channelId = string.Empty
+                                            },
+                                            chatId =
+                                                "19:self-chat@thread.v2"
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             });
             Environment.SetEnvironmentVariable(
                 "PEGGY_FAKE_WORKIQ_SCENARIO",
-                "semantic");
+                "structured-search");
             Environment.SetEnvironmentVariable(
                 "PEGGY_FAKE_WORKIQ_LOG",
                 logPath);
             Environment.SetEnvironmentVariable(
                 "PEGGY_FAKE_WORKIQ_ANSWER",
-                answer);
+                "Configured semantic answer.");
             Environment.SetEnvironmentVariable(
-                "PEGGY_FAKE_WORKIQ_DISCOVERY_REFERENCE",
-                contextUrl);
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_0",
+                firstPage);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_1",
+                secondPage);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_FAIL_COUNT",
+                "1");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_COUNTER",
+                retryCounter);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_MAIL",
+                "primary@example.invalid");
             var provider = new WorkIqMessageProvider(
                 executablePath: executable,
                 settings: new PeggySettings());
-            var batch = await provider.GetChangesAsync(
+            var firstBatch = await provider.GetChangesAsync(
                 new MonitoringCursorState(),
                 100,
                 now);
+            var secondBatch = await provider.GetChangesAsync(
+                firstBatch.Cursor,
+                100,
+                now.AddSeconds(1));
+            var structuredMessages = firstBatch.Messages
+                .Concat(secondBatch.Messages)
+                .ToList();
             TestAssert.True(
-                !batch.HasMore &&
-                batch.Warning is null &&
-                batch.Messages.Count == 1 &&
-                batch.Messages[0].Id.StartsWith(
-                    "workiq-candidate:",
-                    StringComparison.Ordinal) &&
-                batch.Messages[0].Subject.Contains(
-                    "Semantic channel",
-                    StringComparison.Ordinal) &&
-                batch.Messages[0].IsMention &&
-                batch.Cursor.PromptWatermarkUtc is not null,
-                "Prompt-guided monitoring did not create a grounded candidate.");
+                firstBatch.HasMore &&
+                !secondBatch.HasMore &&
+                firstBatch.Warning is null &&
+                secondBatch.Warning is null &&
+                structuredMessages.Count == 2 &&
+                structuredMessages.Any(message =>
+                    message.WebUrl == contextUrl &&
+                    message.Preview == "A decision is requested.") &&
+                structuredMessages.Any(message =>
+                    message.WebUrl == channelUrl &&
+                    message.TeamId == "team-1" &&
+                    message.RootMessageId == "channel-root-1" &&
+                    message.Id.StartsWith(
+                        "teams-channel-message:",
+                        StringComparison.Ordinal)) &&
+                structuredMessages.All(message =>
+                    message.WebUrl != selfUrl) &&
+                firstBatch.Cursor.TeamsSearchOffset == 1 &&
+                secondBatch.Cursor.TeamsSearchOffset == 0 &&
+                secondBatch.Cursor.TeamsWatermarkUtc == now &&
+                secondBatch.Cursor.PromptWatermarkUtc is null,
+                "Structured Teams monitoring did not return exact search hits. " +
+                $"firstHasMore={firstBatch.HasMore}, " +
+                $"secondHasMore={secondBatch.HasMore}, " +
+                $"firstWarning={firstBatch.Warning}, " +
+                $"secondWarning={secondBatch.Warning}, " +
+                $"messages={JsonSerializer.Serialize(structuredMessages)}, " +
+                $"watermark={secondBatch.Cursor.TeamsWatermarkUtc:O}.");
             var requests = File.ReadAllLines(logPath);
             TestAssert.True(
-                requests.Any(request => request.StartsWith(
-                    "ask Search Microsoft Teams chats and channel messages",
-                    StringComparison.Ordinal)) &&
+                requests.Count(request => request.StartsWith(
+                    "do-action /search/query",
+                    StringComparison.Ordinal)) == 3 &&
+                requests.Any(request =>
+                    request.Contains(
+                        "\"entityTypes\":[\"chatMessage\"]",
+                        StringComparison.Ordinal) &&
+                    request.Contains(
+                        "\"queryString\":\"sent",
+                        StringComparison.Ordinal)) &&
                 requests.All(request =>
+                    !request.StartsWith(
+                        "ask Search Microsoft Teams",
+                        StringComparison.Ordinal) &&
                     !request.Contains(
                         "/me/joinedTeams",
                         StringComparison.Ordinal) &&
                     !request.Contains(
-                        "/messages/delta()",
+                        "/me/chats?",
                         StringComparison.Ordinal)),
-                "Hybrid monitoring still crawled the full Teams channel catalog.");
+                "Structured monitoring used prompt discovery or a full chat crawl.");
             TestAssert.Equal(
-                answer,
+                "3",
+                File.ReadAllText(retryCounter),
+                "Structured Teams search did not retry its transient failure.");
+            TestAssert.Equal(
+                "Configured semantic answer.",
                 await provider.AskWorkAsync(
                     "Return the configured semantic answer."),
                 "WorkIQ prompt answers were not exposed to conversations.");
@@ -979,7 +1171,7 @@ internal static class CoreBehaviorSmokeTests
                 executablePath: executable,
                 settings: new PeggySettings());
             TestAssert.Equal(
-                answer,
+                "Configured semantic answer.",
                 await promptOnlyProvider.AskWorkAsync(
                     "Validate identity before this prompt."),
                 "A direct WorkIQ prompt did not return its answer.");
@@ -1028,75 +1220,124 @@ internal static class CoreBehaviorSmokeTests
                 "Citation-aware alert context bypassed account validation or " +
                 "did not recover its Teams link.");
 
-            var recoveryNow = now.AddMinutes(2);
-            var unlinkedAnswer = JsonSerializer.Serialize(new
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_FAIL_COUNT",
+                "0");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_1",
+                null);
+            var unlinkedResponse = JsonSerializer.Serialize(new
             {
-                items = new[]
+                value = new[]
                 {
-                        new
+                    new
+                    {
+                        searchTerms = Array.Empty<string>(),
+                        hitsContainers = new[]
                         {
-                            stableReference = "opaque-semantic-item",
-                            threadReference = "opaque-semantic-thread",
-                            entityUrl = string.Empty,
-                            webUrl = string.Empty,
-                            sender = "Semantic sender",
-                            subject = "Semantic team / Semantic channel",
-                            summary = "A source link must be recovered.",
-                            activityUtc = now.AddMinutes(1),
-                            reason = "The item requests a decision.",
-                            isMention = false
+                            new
+                            {
+                                total = 2,
+                                moreResultsAvailable = false,
+                                hits = new[]
+                                {
+                                    new
+                                    {
+                                        hitId = "unlinked-hit",
+                                        rank = 1,
+                                        summary =
+                                            "A source link must be recovered.",
+                                        resource = new
+                                        {
+                                            id = "unlinked-message",
+                                            createdDateTime =
+                                                now.AddMinutes(1),
+                                            lastModifiedDateTime =
+                                                now.AddMinutes(1),
+                                            subject = "Unlinked result",
+                                            webLink = string.Empty,
+                                            from = new
+                                            {
+                                                user = new
+                                                {
+                                                    id = "sender-3",
+                                                    displayName =
+                                                        "Structured sender"
+                                                }
+                                            },
+                                            channelIdentity = new
+                                            {
+                                                teamId = "team-without-link",
+                                                channelId =
+                                                    "channel-without-link"
+                                            },
+                                            chatId = "channel-without-link"
+                                        }
+                                    },
+                                    new
+                                    {
+                                        hitId = "stale-hit",
+                                        rank = 2,
+                                        summary =
+                                            "A stale indexed message.",
+                                        resource = new
+                                        {
+                                            id = "stale-message",
+                                            createdDateTime =
+                                                now.AddMinutes(1),
+                                            lastModifiedDateTime =
+                                                now.AddMinutes(1),
+                                            subject = "Stale result",
+                                            webLink =
+                                                "https://teams.microsoft.com/" +
+                                                "l/message/" +
+                                                "19%3Astale-chat%40thread.v2/" +
+                                                "stale-message",
+                                            from = new
+                                            {
+                                                user = new
+                                                {
+                                                    id = "sender-4",
+                                                    displayName =
+                                                        "Stale sender"
+                                                }
+                                            },
+                                            channelIdentity = new
+                                            {
+                                                teamId = string.Empty,
+                                                channelId = string.Empty
+                                            },
+                                            chatId =
+                                                "19:stale-chat@thread.v2"
+                                        }
+                                    }
+                                }
+                            }
                         }
+                    }
                 }
             });
             Environment.SetEnvironmentVariable(
-                "PEGGY_FAKE_WORKIQ_ANSWER",
-                unlinkedAnswer);
-            var recoveredAtDiscovery =
-                await new WorkIqMessageProvider(
-                            executablePath: executable,
-                            settings: new PeggySettings())
-                        .GetChangesAsync(
-                            new MonitoringCursorState(),
-                            100,
-                            recoveryNow);
-            TestAssert.True(
-                recoveredAtDiscovery.Warning is null &&
-                recoveredAtDiscovery.Messages is
-                [
-                        {
-                            WebUrl: contextUrl
-                        }
-                ] &&
-                recoveredAtDiscovery.Cursor.PromptWatermarkUtc is not null,
-                "Prompt discovery emitted a candidate before recovering its source link.");
-
-            Environment.SetEnvironmentVariable(
-                "PEGGY_FAKE_WORKIQ_REFERENCE",
-                null);
-            Environment.SetEnvironmentVariable(
-                "PEGGY_FAKE_WORKIQ_DISCOVERY_REFERENCE",
-                null);
-            Environment.SetEnvironmentVariable(
-                "PEGGY_FAKE_WORKIQ_CONTEXT_ANSWER",
-                "No exact source link was found.");
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_0",
+                unlinkedResponse);
             var withheld = await new WorkIqMessageProvider(
                         executablePath: executable,
                         settings: new PeggySettings())
                 .GetChangesAsync(
                         new MonitoringCursorState(),
                         100,
-                        now.AddMinutes(4));
+                        now.AddMinutes(2));
             TestAssert.True(
                 withheld.Messages.Count == 0 &&
                 withheld.Warning?.Contains(
-                        "no verified source link",
+                        "exact message and thread",
                         StringComparison.OrdinalIgnoreCase) == true &&
-                withheld.Cursor.PromptWatermarkUtc is null,
-                "A linkless prompt candidate was emitted or silently skipped.");
+                withheld.Cursor.TeamsWatermarkUtc is not null,
+                "A linkless structured result was emitted or retried forever.");
 
             Environment.SetEnvironmentVariable(
-                "PEGGY_FAKE_WORKIQ_ANSWER",
-                "not-json");
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_0",
+                """{"value":[]}""");
             var degraded = await new WorkIqMessageProvider(
                     executablePath: executable,
                     settings: new PeggySettings())
@@ -1107,8 +1348,8 @@ internal static class CoreBehaviorSmokeTests
             TestAssert.True(
                 degraded.Messages.Count == 0 &&
                 !string.IsNullOrWhiteSpace(degraded.Warning) &&
-                degraded.Cursor.PromptWatermarkUtc is null,
-                "Malformed semantic output was silently accepted or skipped.");
+                degraded.Cursor.TeamsWatermarkUtc is null,
+                "Malformed structured search output was silently accepted.");
         }
         finally
         {
@@ -1128,8 +1369,288 @@ internal static class CoreBehaviorSmokeTests
                 "PEGGY_FAKE_WORKIQ_REFERENCE",
                 previousReference);
             Environment.SetEnvironmentVariable(
-                "PEGGY_FAKE_WORKIQ_DISCOVERY_REFERENCE",
-                previousDiscoveryReference);
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE",
+                previousSearchResponse);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_0",
+                previousSearchPage0);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_1",
+                previousSearchPage1);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_FAIL_COUNT",
+                previousSearchFailures);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_COUNTER",
+                previousSearchCounter);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_MAIL",
+                previousMail);
+        }
+    }
+
+    private static async Task TestStructuredSearchTransportRetryAsync(
+        string directory)
+    {
+        var executable = Environment.ProcessPath
+            ?? throw new InvalidOperationException(
+                "The test executable path is unavailable.");
+        var logPath = Path.Combine(
+            directory,
+            "structured-search-transport.log");
+        var counterPath = Path.Combine(
+            directory,
+            "structured-search-crashes.txt");
+        var previousScenario = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SCENARIO");
+        var previousLog = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_LOG");
+        var previousResponse = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE");
+        var previousPage0 = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_0");
+        var previousPage1 = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_1");
+        var previousFailureCount = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_FAIL_COUNT");
+        var previousCrashCount = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_CRASH_COUNT");
+        var previousCrashCounter = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_CRASH_COUNTER");
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                "structured-search");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                logPath);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE",
+                """
+                {"value":[{"searchTerms":[],"hitsContainers":[{"total":0,"moreResultsAvailable":false,"hits":[]}]}]}
+                """);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_0",
+                null);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_1",
+                null);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_FAIL_COUNT",
+                "0");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_CRASH_COUNT",
+                "1");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_CRASH_COUNTER",
+                counterPath);
+
+            var now = DateTimeOffset.UtcNow;
+            var batch = await new WorkIqMessageProvider(
+                    executablePath: executable,
+                    settings: new PeggySettings())
+                .GetChangesAsync(
+                    new MonitoringCursorState(),
+                    100,
+                    now);
+            TestAssert.True(
+                batch.Warning is null &&
+                batch.Messages.Count == 0 &&
+                batch.Cursor.TeamsWatermarkUtc == now &&
+                File.ReadAllText(counterPath) == "2",
+                "A transient WorkIQ MCP termination was not retried.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                previousScenario);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                previousLog);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE",
+                previousResponse);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_0",
+                previousPage0);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_1",
+                previousPage1);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_FAIL_COUNT",
+                previousFailureCount);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_CRASH_COUNT",
+                previousCrashCount);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_CRASH_COUNTER",
+                previousCrashCounter);
+        }
+    }
+
+    private static async Task TestStructuredTeamsCrossPathIdentityAsync(
+        string directory)
+    {
+        var executable = Environment.ProcessPath
+            ?? throw new InvalidOperationException(
+                "The test executable path is unavailable.");
+        var logPath = Path.Combine(
+            directory,
+            "structured-search-cross-path.log");
+        var previousScenario = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SCENARIO");
+        var previousLog = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_LOG");
+        var previousResponse = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE");
+        var previousPage0 = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_0");
+        var previousPage1 = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_1");
+        var previousActivity = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_CHANNEL_ACTIVITY_UTC");
+        var previousEdited = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_CHANNEL_EDITED_UTC");
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            var activityUtc = now.AddMinutes(-2);
+            var editedUtc = now.AddMinutes(-1);
+            const string sourceUrl =
+                "https://teams.microsoft.com/l/message/" +
+                "channel/root-edit-channel-1";
+            var response = JsonSerializer.Serialize(new
+            {
+                value = new[]
+                {
+                    new
+                    {
+                        searchTerms = Array.Empty<string>(),
+                        hitsContainers = new[]
+                        {
+                            new
+                            {
+                                total = 1,
+                                moreResultsAvailable = false,
+                                hits = new[]
+                                {
+                                    new
+                                    {
+                                        hitId = "cross-path-hit",
+                                        rank = 1,
+                                        summary =
+                                            "First opaque page channel-1",
+                                        resource = new
+                                        {
+                                            id = "root-edit-channel-1",
+                                            createdDateTime = activityUtc,
+                                            lastModifiedDateTime = editedUtc,
+                                            subject = "Opaque delta test",
+                                            webLink = sourceUrl,
+                                            from = new
+                                            {
+                                                user = new
+                                                {
+                                                    id = "other-user",
+                                                    displayName = "Other user"
+                                                }
+                                            },
+                                            channelIdentity = new
+                                            {
+                                                teamId = "team-1",
+                                                channelId = "channel-1"
+                                            },
+                                            chatId = "channel-1"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                "channel-delta");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                logPath);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE",
+                response);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_0",
+                null);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_1",
+                null);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_CHANNEL_ACTIVITY_UTC",
+                activityUtc.ToString("O"));
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_CHANNEL_EDITED_UTC",
+                editedUtc.ToString("O"));
+
+            var provider = new WorkIqMessageProvider(
+                executablePath: executable,
+                settings: new PeggySettings
+                {
+                    TeamsChannelWatchlist =
+                    [
+                        new TeamsChannelWatch
+                        {
+                            TeamId = "team-1",
+                            ChannelId = "channel-1",
+                            DisplayName =
+                                "Test team / Test channel 1"
+                        }
+                    ]
+                });
+            var first = await provider.GetChangesAsync(
+                new MonitoringCursorState
+                {
+                    InitialScanStartedUtc = now.AddMinutes(-5)
+                },
+                1,
+                now);
+            var second = await provider.GetChangesAsync(
+                first.Cursor,
+                100,
+                now.AddSeconds(1));
+            TestAssert.True(
+                first.HasMore &&
+                first.Messages.Count == 1 &&
+                second.Messages.Count == 1 &&
+                first.Messages[0].Id == second.Messages[0].Id &&
+                second.Messages[0].IsWatchlistedChannel,
+                "Structured search and channel delta used different message " +
+                "identities across monitoring batches.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                previousScenario);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                previousLog);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE",
+                previousResponse);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_0",
+                previousPage0);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SEARCH_RESPONSE_1",
+                previousPage1);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_CHANNEL_ACTIVITY_UTC",
+                previousActivity);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_CHANNEL_EDITED_UTC",
+                previousEdited);
         }
     }
 

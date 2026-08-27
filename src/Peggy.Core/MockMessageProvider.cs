@@ -472,6 +472,10 @@ public sealed class MockMessageProvider : IMessageProvider
             InitialScanStartedUtc = cursor.InitialScanStartedUtc,
             TeamsWatermarkUtc = cursor.TeamsWatermarkUtc,
             TeamsBoundaryMessageIds = cursor.TeamsBoundaryMessageIds.ToList(),
+            TeamsSearchWindowEndUtc = cursor.TeamsSearchWindowEndUtc,
+            TeamsSearchOffset = cursor.TeamsSearchOffset,
+            TeamsSearchProcessedHitIds =
+                cursor.TeamsSearchProcessedHitIds.ToList(),
             PromptWatermarkUtc = cursor.PromptWatermarkUtc,
             OutlookWatermarkUtc = cursor.OutlookWatermarkUtc,
             OutlookBoundaryMessageIds =

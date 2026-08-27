@@ -18,8 +18,10 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     private const int MaxPreviewLength = 700;
     private const int MaxChannelsPerBatch = 8;
     private const int MaxChannelConcurrency = 4;
+    private const int MaxTeamsSearchPageSize = 200;
     private const string DefaultActiveFolderPath = PeggyDefaults.ActiveCasesFolder;
     private static readonly TimeSpan CatalogCacheDuration = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan TeamsSearchOverlap = TimeSpan.FromMinutes(10);
 
     private static readonly Regex BreakTagRegex = new(
         @"<(br\s*/?|/p|/div|/li)>",
@@ -116,12 +118,15 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 ct);
             if (!hasMore && messages.Count < limit)
             {
-                warning = await CollectPromptTeamsChangesAsync(
+                var search = await CollectStructuredTeamsChangesAsync(
                     updated,
                     messages,
+                    currentUserId,
                     limit,
                     nowUtc,
                     ct);
+                hasMore = search.HasMore;
+                warning = search.Warning;
             }
         }
         else
@@ -135,12 +140,15 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
             if (!hasMore && messages.Count < limit)
             {
-                warning = await CollectPromptTeamsChangesAsync(
+                var search = await CollectStructuredTeamsChangesAsync(
                     updated,
                     messages,
+                    currentUserId,
                     limit,
                     nowUtc,
                     ct);
+                hasMore = search.HasMore;
+                warning = search.Warning;
             }
 
             if (!hasMore && messages.Count < limit)
@@ -164,8 +172,13 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             updated.Initialized = true;
         }
         var deduplicated = messages
-            .GroupBy(message => message.Id, StringComparer.Ordinal)
-            .Select(group => group.OrderByDescending(message => message.ReceivedAt).First())
+            .GroupBy(
+                GetMessageDeduplicationKey,
+                StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderByDescending(message => message.IsWatchlistedChannel)
+                .ThenByDescending(message => message.ReceivedAt)
+                .First())
             .OrderBy(message => message.ReceivedAt)
             .ToList();
         return new MessageChangeBatch(
@@ -207,7 +220,6 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
         return null;
     }
-
     public async Task<IReadOnlyList<CalendarItem>> ListUpcomingEventsAsync(
         DateTimeOffset startUtc,
         DateTimeOffset endUtc,
@@ -1820,379 +1832,901 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 excludedSenderId,
                 StringComparison.OrdinalIgnoreCase));
 
-    private async Task<string?> CollectPromptTeamsChangesAsync(
-        MonitoringCursorState cursor,
-        ICollection<Message> destination,
-        int limit,
-        DateTimeOffset nowUtc,
+    private async Task<TeamsSearchCollectionResult>
+        CollectStructuredTeamsChangesAsync(
+            MonitoringCursorState cursor,
+            ICollection<Message> destination,
+            string currentUserId,
+            int limit,
+            DateTimeOffset nowUtc,
+            CancellationToken ct)
+    {
+        var capacity = limit - destination.Count;
+        if (capacity <= 0)
+        {
+            return new TeamsSearchCollectionResult(true, null);
+        }
+
+        var initialScanStartedUtc = cursor.InitialScanStartedUtc ??
+            nowUtc.AddMinutes(-PeggyDefaults.StartupLookbackMinutes);
+        var watermark = cursor.TeamsWatermarkUtc ??
+            cursor.PromptWatermarkUtc ??
+            initialScanStartedUtc;
+        var windowEndUtc = cursor.TeamsSearchWindowEndUtc ?? nowUtc;
+        var windowStartUtc = cursor.TeamsWatermarkUtc is null
+            ? watermark
+            : MaxTimestamp(
+                initialScanStartedUtc,
+                watermark.Subtract(TeamsSearchOverlap));
+
+        TeamsSearchPage searchPage;
+        IReadOnlyList<TeamsSearchVerification> verifiedHits;
+        string? verificationWarning = null;
+        try
+        {
+            searchPage = await SearchTeamsMessagesAsync(
+                windowStartUtc,
+                windowEndUtc,
+                cursor.TeamsSearchOffset,
+                Math.Min(capacity, MaxTeamsSearchPageSize),
+                ct);
+        }
+        catch (WorkIqClient.WorkIqSearchException ex)
+        {
+            return new TeamsSearchCollectionResult(
+                false,
+                BuildStructuredSearchWarning(ex));
+        }
+        catch (InvalidDataException)
+        {
+            return new TeamsSearchCollectionResult(
+                false,
+                "Structured Teams search returned an unsupported response. " +
+                "Structured Outlook and watchlist monitoring remain active.");
+        }
+        try
+        {
+            verifiedHits = await VerifyTeamsSearchHitsAsync(
+                searchPage.Hits,
+                ct);
+        }
+        catch (Exception ex) when (
+            ex is WorkIqClient.WorkIqSearchException or
+            TimeoutException or
+            WorkIqClient.WorkIqRequestException or
+            InvalidOperationException or
+            InvalidDataException or
+            IOException)
+        {
+            verifiedHits = searchPage.Hits
+                .Select((hit, index) =>
+                {
+                    var request = BuildTeamsSearchFetchRequest(
+                        hit,
+                        index);
+                    return new TeamsSearchVerification(
+                        hit,
+                        Resource: null,
+                        RootMessageId:
+                            request is
+                            {
+                                IsChannel: true,
+                                RootNeedsVerification: false
+                            }
+                                ? request.RootMessageId
+                                : null,
+                        StatusCode: 0);
+                })
+                .ToList();
+            verificationWarning =
+                "Exact Teams message enrichment was temporarily unavailable. " +
+                "Peggy used structured search content with exact source links.";
+        }
+
+        var candidates = verifiedHits
+            .Select(verification => CreateStructuredTeamsCandidate(
+                verification,
+                currentUserId,
+                windowStartUtc,
+                windowEndUtc))
+            .Where(candidate => candidate is not null)
+            .Cast<TeamsSearchCandidate>()
+            .GroupBy(candidate => candidate.Key, StringComparer.Ordinal)
+            .Select(group => group
+                .OrderByDescending(candidate => candidate.ActivityUtc)
+                .First())
+            .OrderBy(candidate => candidate.ActivityUtc)
+            .ThenBy(candidate => candidate.Key, StringComparer.Ordinal)
+            .ToList();
+        var previousBoundary = cursor.TeamsBoundaryMessageIds.ToHashSet(
+            StringComparer.Ordinal);
+        var previouslyProcessed =
+            cursor.TeamsSearchProcessedHitIds.ToHashSet(
+                StringComparer.Ordinal);
+        var processed = cursor.TeamsSearchProcessedHitIds.ToHashSet(
+            StringComparer.Ordinal);
+        var unresolvedSources = candidates.Count(candidate =>
+            candidate.MissingSource);
+        foreach (var candidate in candidates)
+        {
+            if (!candidate.MissingSource)
+            {
+                processed.Add(candidate.Key);
+            }
+            if (previousBoundary.Contains(candidate.Key) ||
+                previouslyProcessed.Contains(candidate.Key))
+            {
+                continue;
+            }
+
+            if (candidate.Message is not null)
+            {
+                destination.Add(candidate.Message);
+            }
+        }
+
+        var missingSourceWarning = unresolvedSources == 0
+            ? null
+            : $"{unresolvedSources} structured Teams search result(s) could " +
+              "not be resolved to an exact message and thread. Peggy skipped " +
+              "them and will retry them during the bounded overlap window.";
+        var warning = string.Join(
+            " ",
+            new[] { verificationWarning, missingSourceWarning }
+                .Where(value => !string.IsNullOrWhiteSpace(value)));
+        warning = warning.Length == 0 ? null : warning;
+        if (searchPage.MoreResultsAvailable)
+        {
+            cursor.TeamsSearchWindowEndUtc = windowEndUtc;
+            cursor.TeamsSearchOffset = searchPage.NextOffset;
+            cursor.TeamsSearchProcessedHitIds = processed.ToList();
+            return new TeamsSearchCollectionResult(true, warning);
+        }
+
+        cursor.TeamsWatermarkUtc = windowEndUtc;
+        cursor.TeamsBoundaryMessageIds = processed.ToList();
+        cursor.TeamsSearchWindowEndUtc = null;
+        cursor.TeamsSearchOffset = 0;
+        cursor.TeamsSearchProcessedHitIds.Clear();
+        cursor.PromptWatermarkUtc = null;
+        return new TeamsSearchCollectionResult(false, warning);
+    }
+
+    private async Task<TeamsSearchPage>
+        SearchTeamsMessagesAsync(
+            DateTimeOffset sinceUtc,
+            DateTimeOffset untilUtc,
+            int offset,
+            int pageSize,
+            CancellationToken ct)
+    {
+        var response = await _client.SearchAsync<TeamsSearchResponse>(
+            BuildTeamsSearchRequest(
+                sinceUtc,
+                untilUtc,
+                offset,
+                pageSize),
+            ct);
+        if (response.Value.Count != 1 ||
+            response.Value[0].HitsContainers.Count != 1)
+        {
+            throw new InvalidDataException(
+                "WorkIQ returned an invalid Teams search envelope.");
+        }
+
+        var container = response.Value[0].HitsContainers[0];
+        if (container.MoreResultsAvailable &&
+            container.Hits.Count == 0)
+        {
+            throw new InvalidDataException(
+                "WorkIQ reported more Teams search results without " +
+                "returning a usable page.");
+        }
+        var hits = container.Hits
+            .GroupBy(
+                hit => BuildTeamsSearchLookupKey(hit) ?? string.Empty,
+                StringComparer.Ordinal)
+            .Where(group => group.Key.Length > 0)
+            .Select(group => group.First())
+            .ToList();
+        return new TeamsSearchPage(
+            hits,
+            container.MoreResultsAvailable,
+            offset + container.Hits.Count);
+    }
+
+    private async Task<IReadOnlyList<TeamsSearchVerification>>
+        VerifyTeamsSearchHitsAsync(
+            IReadOnlyList<TeamsSearchHit> hits,
+            CancellationToken ct)
+    {
+        var verified = hits
+            .Select(hit => new TeamsSearchVerification(
+                hit,
+                Resource: null,
+                RootMessageId: null,
+                StatusCode: 0))
+            .ToArray();
+        var requests = hits
+            .Select((hit, index) =>
+                BuildTeamsSearchFetchRequest(hit, index))
+            .Where(request => request is not null)
+            .Cast<TeamsSearchFetchRequest>()
+            .ToList();
+        foreach (var request in requests.Where(request =>
+                     request.IsChannel &&
+                     !request.RootNeedsVerification))
+        {
+            verified[request.Index] = new TeamsSearchVerification(
+                hits[request.Index],
+                Resource: null,
+                RootMessageId: request.RootMessageId,
+                StatusCode: 0);
+        }
+        const int batchSize = 20;
+        for (var start = 0; start < requests.Count; start += batchSize)
+        {
+            var batch = requests
+                .Skip(start)
+                .Take(batchSize)
+                .ToList();
+            var results = await _client.FetchManyAsync<ChatMessage>(
+                batch.Select(request => request.Url).ToList(),
+                ct);
+            for (var index = 0; index < batch.Count; index++)
+            {
+                var result = results[index];
+                var expected = hits[batch[index].Index].Resource;
+                if (result.Data is null ||
+                    expected is null ||
+                    !string.Equals(
+                        result.Data.Id,
+                        expected.Id,
+                        StringComparison.Ordinal))
+                {
+                    verified[batch[index].Index] =
+                        new TeamsSearchVerification(
+                            hits[batch[index].Index],
+                            Resource: null,
+                            RootMessageId:
+                                batch[index].IsChannel &&
+                                !batch[index].RootNeedsVerification
+                                    ? batch[index].RootMessageId
+                                    : null,
+                            StatusCode: result.StatusCode);
+                    continue;
+                }
+
+                verified[batch[index].Index] = new TeamsSearchVerification(
+                    hits[batch[index].Index],
+                    result.Data,
+                    batch[index].IsChannel
+                        ? batch[index].RootMessageId
+                        : null,
+                    StatusCode: result.StatusCode);
+            }
+        }
+        await ResolveUnverifiedChannelHitsAsync(
+            hits,
+            requests,
+            verified,
+            ct);
+        return verified;
+    }
+
+    private async Task ResolveUnverifiedChannelHitsAsync(
+        IReadOnlyList<TeamsSearchHit> hits,
+        IReadOnlyList<TeamsSearchFetchRequest> requests,
+        TeamsSearchVerification[] verified,
         CancellationToken ct)
     {
-        var capacity = Math.Min(limit - destination.Count, 20);
-        if (capacity <= 0)
+        var unresolved = requests
+            .Where(request =>
+                request.IsChannel &&
+                request.RootNeedsVerification &&
+                verified[request.Index].Resource is null)
+            .GroupBy(
+                request => (request.TeamId!, request.ChannelId!))
+            .ToList();
+        foreach (var group in unresolved)
+        {
+            var targets = group.ToDictionary(
+                request => hits[request.Index].Resource!.Id!,
+                request => request,
+                StringComparer.Ordinal);
+            var cutoffUtc = group
+                .Select(request =>
+                    hits[request.Index].Resource!.CreatedDateTime!.Value)
+                .Min()
+                .AddMinutes(-1);
+            string? url = BuildChannelDeltaPageUrl(
+                group.Key.Item1,
+                group.Key.Item2,
+                cutoffUtc,
+                MaxPageSize);
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+            for (var pageNumber = 1;
+                 url is not null &&
+                 targets.Count > 0 &&
+                 pageNumber <= 10;
+                 pageNumber++)
+            {
+                if (!visited.Add(url))
+                {
+                    break;
+                }
+
+                GraphCollection<ChatMessage> page;
+                try
+                {
+                    page = await _client.CallFunctionAsync<
+                        GraphCollection<ChatMessage>>(url, ct);
+                }
+                catch (WorkIqClient.WorkIqRequestException ex) when (
+                    ex.StatusCode is 404 or 410)
+                {
+                    break;
+                }
+                foreach (var root in page.Value.Where(root =>
+                             !string.IsNullOrWhiteSpace(root.Id)))
+                {
+                    ResolveChannelSearchTarget(
+                        root,
+                        root.Id!,
+                        targets,
+                        hits,
+                        verified);
+                    foreach (var reply in root.Replies)
+                    {
+                        ResolveChannelSearchTarget(
+                            reply,
+                            root.Id!,
+                            targets,
+                            hits,
+                            verified);
+                    }
+                }
+                url = NormalizeGraphUrl(page.NextLink);
+            }
+        }
+    }
+
+    private static void ResolveChannelSearchTarget(
+        ChatMessage item,
+        string rootMessageId,
+        IDictionary<string, TeamsSearchFetchRequest> targets,
+        IReadOnlyList<TeamsSearchHit> hits,
+        TeamsSearchVerification[] verified)
+    {
+        if (string.IsNullOrWhiteSpace(item.Id) ||
+            item.Removed is not null ||
+            item.DeletedDateTime is not null ||
+            !targets.Remove(item.Id, out var request))
+        {
+            return;
+        }
+
+        verified[request.Index] = new TeamsSearchVerification(
+            hits[request.Index],
+            item,
+            rootMessageId,
+            StatusCode: 200);
+    }
+
+    private static TeamsSearchFetchRequest?
+        BuildTeamsSearchFetchRequest(
+            TeamsSearchHit hit,
+            int index)
+    {
+        var item = hit.Resource;
+        if (item is null ||
+            string.IsNullOrWhiteSpace(item.Id))
         {
             return null;
         }
 
-        var sinceUtc = cursor.PromptWatermarkUtc ??
-            cursor.InitialScanStartedUtc!.Value;
-        var question = BuildPromptDiscoveryQuestion(
-            sinceUtc,
-            nowUtc,
-            capacity);
-        WorkIqPromptResult promptResult;
-        try
+        var teamId = item.ChannelIdentity?.TeamId;
+        var channelId = item.ChannelIdentity?.ChannelId;
+        if (!string.IsNullOrWhiteSpace(teamId) &&
+            !string.IsNullOrWhiteSpace(channelId))
         {
-            promptResult = await _client.AskWithReferencesAsync(
-                question,
-                ct);
-        }
-        catch (WorkIqClient.WorkIqPromptException ex)
-        {
-            return BuildPromptWarning(ex);
-        }
-
-        PromptCandidateEnvelope envelope;
-        try
-        {
-            envelope = JsonSerializer.Deserialize<PromptCandidateEnvelope>(
-               StripJsonFence(promptResult.Answer),
-               new JsonSerializerOptions
-               {
-                   PropertyNameCaseInsensitive = true
-               })
-               ?? throw new JsonException(
-                   "WorkIQ returned an empty candidate envelope.");
-        }
-        catch (JsonException)
-        {
-            return "Prompt-guided Teams discovery returned an unsupported " +
-                  "answer. Structured Outlook and watchlist monitoring remain " +
-                  "active.";
-        }
-        if (envelope.Items is null)
-        {
-            return "Prompt-guided Teams discovery omitted its candidate list. " +
-                  "Structured Outlook and watchlist monitoring remain active.";
-        }
-
-        var candidates = envelope.Items.Take(capacity).ToList();
-        var groundedSourceUrls = promptResult.References
-            .Where(reference =>
-                IsCompatibleSourceUrl(
-                    MessageSource.Teams,
-                    reference.TargetLink))
-            .Select(reference => reference.TargetLink)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var verifiedGroundedSources =
-            new List<(string Url, DateTimeOffset ActivityUtc)>();
-        foreach (var groundedSourceUrl in groundedSourceUrls)
-        {
-            var activityUtc = await VerifyPromptSourceActivityAsync(
-                groundedSourceUrl,
-                sinceUtc,
-                nowUtc,
-                ct);
-            if (activityUtc is not null)
+            var explicitRootMessageId =
+                GetExplicitChannelRootMessageId(
+                    item,
+                    FirstNonBlank(item.WebUrl, item.WebLink));
+            var rootMessageId = explicitRootMessageId ??
+                item.Id;
+            var url =
+                $"/teams/{Uri.EscapeDataString(teamId)}/channels/" +
+                $"{Uri.EscapeDataString(channelId)}/messages/" +
+                Uri.EscapeDataString(rootMessageId);
+            if (!string.Equals(
+                    rootMessageId,
+                    item.Id,
+                    StringComparison.Ordinal))
             {
-                verifiedGroundedSources.Add(
-                    (groundedSourceUrl, activityUtc.Value));
+                url += $"/replies/{Uri.EscapeDataString(item.Id)}";
             }
-        }
-        var usedGroundedSourceUrls = new HashSet<string>(
-            StringComparer.OrdinalIgnoreCase);
-        var unresolvedSources = 0;
-        foreach (var candidate in candidates)
-        {
-            var message = await CreatePromptCandidateMessageAsync(
-               candidate,
-               sinceUtc,
-               nowUtc,
-               ct);
-            if (message is null)
-            {
-               continue;
-            }
-
-            var sourceUrl = IsCompatibleSourceUrl(
-                MessageSource.Teams,
-                message.WebUrl ?? string.Empty)
-                ? message.WebUrl
-                : candidates.Count == 1 &&
-                  groundedSourceUrls.Count == 1
-                    ? groundedSourceUrls[0]
-                    : null;
-            DateTimeOffset? verifiedActivity = null;
-            if (sourceUrl is null)
-            {
-                var nearestSource = verifiedGroundedSources
-                    .Where(source =>
-                        !usedGroundedSourceUrls.Contains(source.Url))
-                    .Select(source => new
-                    {
-                        Source = source,
-                        Difference = Math.Abs(
-                            (source.ActivityUtc -
-                             candidate.ActivityUtc!.Value).TotalSeconds)
-                    })
-                    .Where(match =>
-                        match.Difference <= TimeSpan.FromMinutes(5).TotalSeconds)
-                    .OrderBy(match => match.Difference)
-                    .ThenBy(
-                        match => match.Source.Url,
-                        StringComparer.Ordinal)
-                    .FirstOrDefault();
-                if (nearestSource is not null)
-                {
-                    sourceUrl = nearestSource.Source.Url;
-                    verifiedActivity = nearestSource.Source.ActivityUtc;
-                    usedGroundedSourceUrls.Add(sourceUrl);
-                }
-            }
-            if (sourceUrl is null)
-            {
-                unresolvedSources++;
-                continue;
-            }
-
-            verifiedActivity ??= await VerifyPromptSourceActivityAsync(
-                    sourceUrl,
-                    sinceUtc,
-                    nowUtc,
-                    ct);
-            if (verifiedActivity is null)
-            {
-                unresolvedSources++;
-                continue;
-            }
-
-            destination.Add(message with
-            {
-                WebUrl = sourceUrl,
-                ReceivedAt = verifiedActivity.Value
-            });
+            return new TeamsSearchFetchRequest(
+                index,
+                url,
+                IsChannel: true,
+                teamId,
+                channelId,
+                rootMessageId,
+                RootNeedsVerification:
+                    explicitRootMessageId is null);
         }
 
-        if (unresolvedSources > 0)
-        {
-            return $"{unresolvedSources} prompt-guided Teams " +
-                   "candidate(s) had no verified source link. The assistant withheld " +
-                   "them and will retry instead of creating linkless alerts.";
-        }
+        var chatId = FirstNonBlank(
+            item.ChatId,
+            GetTeamsLinkThreadId(
+                FirstNonBlank(item.WebUrl, item.WebLink)));
+        return string.IsNullOrWhiteSpace(chatId)
+            ? null
+            : new TeamsSearchFetchRequest(
+                index,
+                $"/me/chats/{Uri.EscapeDataString(chatId)}/messages/" +
+                Uri.EscapeDataString(item.Id),
+                IsChannel: false,
+                TeamId: null,
+                ChannelId: null,
+                RootMessageId: null,
+                RootNeedsVerification: false);
+    }
 
-        var overlapWatermark = nowUtc.AddMinutes(-1);
-        if (cursor.PromptWatermarkUtc is null ||
-            overlapWatermark > cursor.PromptWatermarkUtc)
+    private static string? GetExplicitChannelRootMessageId(
+        ChatMessage item,
+        string? webUrl)
+    {
+        if (!string.IsNullOrWhiteSpace(item.ReplyToId))
         {
-            cursor.PromptWatermarkUtc = overlapWatermark;
+            return item.ReplyToId;
+        }
+        if (Uri.TryCreate(webUrl, UriKind.Absolute, out var uri))
+        {
+            var parentMessageId = GetQueryParameter(
+                uri,
+                "parentMessageId");
+            if (!string.IsNullOrWhiteSpace(parentMessageId))
+            {
+                return parentMessageId;
+            }
         }
         return null;
     }
 
-    private async Task<Message?> CreatePromptCandidateMessageAsync(
-        PromptCandidate candidate,
+    private static object BuildTeamsSearchRequest(
         DateTimeOffset sinceUtc,
-        DateTimeOffset nowUtc,
-        CancellationToken ct)
+        DateTimeOffset untilUtc,
+        int offset,
+        int pageSize)
+        => new
+        {
+            requests = new[]
+            {
+                new
+                {
+                   entityTypes = new[] { "chatMessage" },
+                   query = new
+                   {
+                       queryString =
+                           $"sent>={FormatSearchTimestamp(sinceUtc)} AND " +
+                           $"sent<={FormatSearchTimestamp(untilUtc)}"
+                   },
+                   from = offset,
+                   size = Math.Clamp(
+                       pageSize,
+                       1,
+                       MaxTeamsSearchPageSize)
+                }
+            }
+        };
+
+    private TeamsSearchCandidate? CreateStructuredTeamsCandidate(
+        TeamsSearchVerification verification,
+        string currentUserId,
+        DateTimeOffset sinceUtc,
+        DateTimeOffset untilUtc)
     {
-        if (string.IsNullOrWhiteSpace(candidate.Summary) ||
-            candidate.ActivityUtc is null ||
-            candidate.ActivityUtc < sinceUtc.AddMinutes(-1) ||
-            candidate.ActivityUtc > nowUtc.AddMinutes(5))
+        var searchItem = verification.Hit.Resource;
+        if (searchItem is null ||
+            string.IsNullOrWhiteSpace(searchItem.Id) ||
+            searchItem.CreatedDateTime is null)
         {
             return null;
         }
 
-        var entityUrl = NormalizeGraphUrl(candidate.EntityUrl);
-        if (!string.IsNullOrWhiteSpace(entityUrl))
+        var item = verification.Resource ?? searchItem;
+        var key = BuildTeamsSearchHitKey(
+            verification.Hit,
+            verification.Resource);
+        if (key is null)
         {
-            var match = ChannelMessagePathRegex.Match(entityUrl);
-            if (match.Success)
+            return null;
+        }
+        if (verification.Resource is null &&
+            verification.StatusCode is 404 or 410)
+        {
+            return new TeamsSearchCandidate(
+                key,
+                GetSearchResultActivityUtc(searchItem),
+                null,
+                MissingSource: true);
+        }
+
+        var activityUtc = verification.Resource is null
+            ? GetSearchResultActivityUtc(item)
+            : GetChatActivityUtc(item);
+        if (activityUtc < sinceUtc ||
+            activityUtc > untilUtc.AddMinutes(5))
+        {
+            return null;
+        }
+        if (verification.Resource is not null &&
+            !IsEligibleChatMessage(
+                item,
+                newerThan: null,
+                excludedSenderId: null))
+        {
+            return new TeamsSearchCandidate(
+                key,
+                activityUtc,
+                null,
+                MissingSource: false);
+        }
+
+        var sender = GetSender(item.From);
+        if (string.IsNullOrWhiteSpace(sender.Id) &&
+            string.IsNullOrWhiteSpace(sender.DisplayName))
+        {
+            sender = GetSender(searchItem.From);
+        }
+        if (IsCurrentUserSender(sender, currentUserId))
+        {
+            return new TeamsSearchCandidate(
+                key,
+                activityUtc,
+                null,
+                MissingSource: false);
+        }
+
+        var preview = NormalizeText(
+            item.Body?.Content ??
+            item.Summary ??
+            verification.Hit.Summary,
+            string.Equals(
+                item.Body?.ContentType,
+                "html",
+                StringComparison.OrdinalIgnoreCase) ||
+            item.Body is null);
+        if (preview.Length == 0)
+        {
+            return new TeamsSearchCandidate(
+                key,
+                activityUtc,
+                null,
+                MissingSource: false);
+        }
+
+        var teamId = FirstNonBlank(
+            item.ChannelIdentity?.TeamId,
+            searchItem.ChannelIdentity?.TeamId);
+        var channelId = FirstNonBlank(
+            item.ChannelIdentity?.ChannelId,
+            searchItem.ChannelIdentity?.ChannelId);
+        var isChannel = !string.IsNullOrWhiteSpace(teamId) &&
+                        !string.IsNullOrWhiteSpace(channelId);
+        if (isChannel &&
+            string.IsNullOrWhiteSpace(verification.RootMessageId))
+        {
+            return new TeamsSearchCandidate(
+                key,
+                activityUtc,
+                null,
+                MissingSource: true);
+        }
+
+        var webUrl = GetStructuredTeamsSourceUrl(
+            item,
+            searchItem);
+        if (webUrl is null)
+        {
+            return new TeamsSearchCandidate(
+                key,
+                activityUtc,
+                null,
+                MissingSource: true);
+        }
+
+        var chatId = FirstNonBlank(
+            item.ChatId,
+            searchItem.ChatId,
+            GetTeamsLinkThreadId(webUrl));
+        var rootMessageId = isChannel
+            ? verification.RootMessageId
+            : null;
+        var threadId = isChannel
+            ? EncodeChannelThreadKey(
+                teamId!,
+                channelId!,
+                rootMessageId!)
+            : !string.IsNullOrWhiteSpace(chatId)
+                ? EncodeKey("teams-thread:", chatId)
+                : EncodeKey("teams-thread:", webUrl);
+        var subject = NormalizeSubject(
+            FirstNonBlank(item.Subject, searchItem.Subject),
+            isChannel ? "Teams channel" : "Teams chat");
+        var message = new Message(
+            key,
+            MessageSource.Teams,
+            threadId,
+            string.IsNullOrWhiteSpace(sender.DisplayName)
+                ? "Microsoft Teams"
+                : sender.DisplayName,
+            subject,
+            preview,
+            activityUtc,
+            false)
+        {
+            WebUrl = webUrl,
+            TeamId = isChannel ? teamId : null,
+            ChannelId = isChannel ? channelId : null,
+            RootMessageId = rootMessageId,
+            IsMention = IsMentioned(item, currentUserId),
+            IsWatchlistedChannel = isChannel &&
+                IsWatchlisted(new TeamsChannel
+                {
+                   TeamId = teamId,
+                   Id = channelId
+                })
+        };
+        return new TeamsSearchCandidate(
+            key,
+            activityUtc,
+            message,
+            MissingSource: false);
+    }
+
+    private static string? BuildTeamsSearchHitKey(
+        TeamsSearchHit hit,
+        ChatMessage? verifiedResource = null)
+    {
+        var searchItem = hit.Resource;
+        var item = verifiedResource ?? searchItem;
+        if (item is null ||
+            searchItem is null ||
+            string.IsNullOrWhiteSpace(item.Id) ||
+            item.CreatedDateTime is null)
+        {
+            return null;
+        }
+
+        var activityUtc = verifiedResource is null
+            ? GetSearchResultActivityUtc(item)
+            : GetChatActivityUtc(item);
+        var teamId = FirstNonBlank(
+            item.ChannelIdentity?.TeamId,
+            searchItem.ChannelIdentity?.TeamId);
+        var channelId = FirstNonBlank(
+            item.ChannelIdentity?.ChannelId,
+            searchItem.ChannelIdentity?.ChannelId);
+        if (!string.IsNullOrWhiteSpace(teamId) &&
+            !string.IsNullOrWhiteSpace(channelId))
+        {
+            var rootMessageId = GetChannelRootMessageId(
+                item,
+                FirstNonBlank(
+                    item.WebUrl,
+                    item.WebLink,
+                    searchItem.WebUrl,
+                    searchItem.WebLink),
+                searchItem);
+            return EncodeChannelMessageKey(
+                teamId,
+                channelId,
+                rootMessageId,
+                BuildVersionedChannelItemId(item.Id, activityUtc));
+        }
+
+        var chatId = FirstNonBlank(
+            item.ChatId,
+            searchItem.ChatId,
+            GetTeamsLinkThreadId(
+                FirstNonBlank(
+                    item.WebUrl,
+                    item.WebLink,
+                    searchItem.WebUrl,
+                    searchItem.WebLink)));
+        if (!string.IsNullOrWhiteSpace(chatId))
+        {
+            return EncodeTeamsMessageKey(
+                chatId,
+                BuildVersionedChatItemId(item.Id, activityUtc));
+        }
+
+        var identity = string.Join(
+            "\n",
+            hit.HitId,
+            item.ChatId,
+            item.Id,
+            activityUtc.UtcTicks.ToString(
+                CultureInfo.InvariantCulture));
+        return "teams-search:" + Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..32];
+    }
+
+    private static string? BuildTeamsSearchLookupKey(
+        TeamsSearchHit hit)
+        => BuildTeamsSearchHitKey(hit);
+
+    private static string? GetStructuredTeamsSourceUrl(
+        ChatMessage item,
+        ChatMessage searchItem)
+    {
+        foreach (var candidate in new[]
+                 {
+                     item.WebUrl,
+                     item.WebLink,
+                     searchItem.WebUrl,
+                     searchItem.WebLink
+                 })
+        {
+            if (!string.IsNullOrWhiteSpace(candidate) &&
+                IsCompatibleSourceUrl(MessageSource.Teams, candidate))
             {
-               try
-               {
-                   var item = await _client.FetchAsync<ChatMessage>(
-                       entityUrl,
-                       ct);
-                   var teamId = Uri.UnescapeDataString(
-                       match.Groups["team"].Value);
-                   var channelId = Uri.UnescapeDataString(
-                       match.Groups["channel"].Value);
-                   var rootId = Uri.UnescapeDataString(
-                       match.Groups["root"].Value);
-                   var channel = new TeamsChannel
-                   {
-                       TeamId = teamId,
-                       TeamDisplayName = candidate.Subject,
-                       Id = channelId,
-                       DisplayName = candidate.Subject
-                   };
-                   var verified = ToChannelMessage(
-                       channel,
-                       item,
-                       rootId,
-                       candidate.IsMention,
-                       IsWatchlisted(channel));
-                   if (verified is not null &&
-                       verified.ReceivedAt >=
-                       sinceUtc.AddMinutes(-1) &&
-                       IsCompatibleSourceUrl(
-                           MessageSource.Teams,
-                           verified.WebUrl ??
-                           candidate.WebUrl ??
-                           string.Empty))
-                   {
-                       return verified with
-                       {
-                           WebUrl = verified.WebUrl ??
-                                    candidate.WebUrl
-                       };
-                   }
-               }
-               catch (WorkIqClient.WorkIqRequestException ex) when (
-                   ex.StatusCode == 404)
-               {
-                   // Fall through to citation-aware source resolution.
-               }
-               catch (WorkIqClient.WorkIqRequestException)
-               {
-                   // Preserve the grounded candidate when optional direct
-                   // verification is temporarily unavailable.
-               }
-               catch (TimeoutException)
-               {
-                   // Preserve the grounded candidate when optional direct
-                   // verification is temporarily unavailable.
-               }
+                return candidate;
             }
         }
 
-        var stableReference = FirstNonEmpty(
-            candidate.StableReference,
-            candidate.WebUrl,
-            candidate.EntityUrl,
-            candidate.Summary);
-        var threadReference = FirstNonEmpty(
-            candidate.ThreadReference,
-            candidate.StableReference,
-            candidate.WebUrl,
-            stableReference);
-        var summary = NormalizeCandidateText(
-            candidate.Summary,
-            MaxPreviewLength);
-        var reason = NormalizeCandidateText(
-            candidate.Reason,
-            300);
-        var preview = reason.Length == 0
-            ? summary
-            : $"{summary} Reason: {reason}";
-        return new Message(
-            BuildPromptIdentifier(
-               "workiq-candidate:",
-               $"{stableReference}\n{candidate.ActivityUtc:O}\n{summary}"),
-            MessageSource.Teams,
-            BuildPromptIdentifier(
-               "workiq-thread:",
-               threadReference),
-            NormalizeCandidateText(
-               candidate.Sender,
-               150,
-               "Microsoft Teams"),
-            NormalizeCandidateText(
-               candidate.Subject,
-               200,
-               "Prompt-guided Teams discovery"),
-            preview,
-            candidate.ActivityUtc.Value,
-            false)
+        if (!string.IsNullOrWhiteSpace(
+                FirstNonBlank(
+                    item.ChannelIdentity?.TeamId,
+                    searchItem.ChannelIdentity?.TeamId)) ||
+            !string.IsNullOrWhiteSpace(
+                FirstNonBlank(
+                    item.ChannelIdentity?.ChannelId,
+                    searchItem.ChannelIdentity?.ChannelId)) ||
+            string.IsNullOrWhiteSpace(
+                FirstNonBlank(item.ChatId, searchItem.ChatId)) ||
+            string.IsNullOrWhiteSpace(item.Id))
         {
-            WebUrl = IsWebUrl(candidate.WebUrl)
-               ? candidate.WebUrl
-               : IsWebUrl(candidate.StableReference)
-                   ? candidate.StableReference
-                   : null,
-            IsMention = candidate.IsMention
-        };
+            return null;
+        }
+
+        var generated = BuildTeamsChatMessageUrl(
+            FirstNonBlank(item.ChatId, searchItem.ChatId)!,
+            item.Id);
+        return IsCompatibleSourceUrl(MessageSource.Teams, generated)
+            ? generated
+            : null;
     }
 
-    private static string BuildPromptDiscoveryQuestion(
-        DateTimeOffset sinceUtc,
-        DateTimeOffset nowUtc,
-        int limit)
-        =>
-            "Search Microsoft Teams chats and channel messages with activity from " +
-            $"{sinceUtc:O} through {nowUtc:O}. Find items that mention me, " +
-            "reply to a thread I participated in, request a decision or action " +
-            "from me, contain a near deadline, or otherwise deserve my attention. " +
-            "Return JSON only with exactly this shape: " +
-            "{\"items\":[{\"stableReference\":\"stable URL or reference\"," +
-            "\"threadReference\":\"stable thread URL or reference\"," +
-            "\"entityUrl\":\"exact relative WorkIQ /teams/... message path when available\"," +
-            "\"webUrl\":\"direct cited Teams message URL when available\",\"sender\":\"display name\"," +
-            "\"subject\":\"team, channel, or topic\",\"summary\":\"short factual summary\"," +
-            "\"activityUtc\":\"ISO 8601 UTC timestamp\",\"reason\":\"why it may need attention\"," +
-            "\"isMention\":false}]}. Include only the stated time range, at most " +
-            $"{limit} items. If none qualify, return {{\"items\":[]}}. " +
-            "Copy webUrl from the source citation when WorkIQ provides one; " +
-            "never invent a URL. Do not take actions and do not include markdown.";
+    private static string? GetTeamsLinkThreadId(string? webUrl)
+    {
+        if (!Uri.TryCreate(webUrl, UriKind.Absolute, out var uri) ||
+            !IsSpecificTeamsMessageUri(uri))
+        {
+            return null;
+        }
 
-    private static string BuildPromptWarning(
-        WorkIqClient.WorkIqPromptException exception)
+        var path = uri.AbsolutePath.Split(
+            '/',
+            StringSplitOptions.RemoveEmptyEntries);
+        return Uri.UnescapeDataString(path[2]);
+    }
+
+    private static string? GetQueryParameter(Uri uri, string name)
+    {
+        foreach (var pair in uri.Query
+                     .TrimStart('?')
+                     .Split(
+                         '&',
+                         StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = pair.IndexOf('=');
+            var key = separator < 0
+                ? pair
+                : pair[..separator];
+            if (!string.Equals(
+                    Uri.UnescapeDataString(key),
+                    name,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return separator < 0
+                ? string.Empty
+                : Uri.UnescapeDataString(
+                    pair[(separator + 1)..].Replace(
+                        '+',
+                        ' '));
+        }
+        return null;
+    }
+
+    private static string GetChannelRootMessageId(
+        ChatMessage item,
+        string? webUrl,
+        ChatMessage? fallback = null)
+    {
+        if (!string.IsNullOrWhiteSpace(item.ReplyToId))
+        {
+            return item.ReplyToId;
+        }
+        if (!string.IsNullOrWhiteSpace(fallback?.ReplyToId))
+        {
+            return fallback.ReplyToId;
+        }
+        if (Uri.TryCreate(webUrl, UriKind.Absolute, out var uri))
+        {
+            var parentMessageId = GetQueryParameter(
+                uri,
+                "parentMessageId");
+            if (!string.IsNullOrWhiteSpace(parentMessageId))
+            {
+                return parentMessageId;
+            }
+        }
+
+        return item.Id!;
+    }
+
+    private bool IsCurrentUserSender(
+        Identity sender,
+        string currentUserId)
+        => string.Equals(
+               sender.Id,
+               currentUserId,
+               StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(
+               sender.Id,
+               _account,
+               StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(
+               sender.Id,
+               _outlookAccount,
+               StringComparison.OrdinalIgnoreCase);
+
+    private static string? FirstNonBlank(params string?[] values)
+        => values.FirstOrDefault(value =>
+            !string.IsNullOrWhiteSpace(value));
+
+    private static string BuildStructuredSearchWarning(
+        WorkIqClient.WorkIqSearchException exception)
     {
         for (Exception? current = exception;
-            current is not null;
-            current = current.InnerException)
+             current is not null;
+             current = current.InnerException)
         {
             if (current.Message.Contains(
                    "accept-eula",
                    StringComparison.OrdinalIgnoreCase) ||
-               current.Message.Contains(
+                current.Message.Contains(
                    "End User License",
                    StringComparison.OrdinalIgnoreCase))
             {
-               return "The WorkIQ EULA must be accepted. Run " +
+                return "The WorkIQ EULA must be accepted. Run " +
                       "'workiq accept-eula' after reviewing " +
                       "https://github.com/microsoft/work-iq/tree/main/EULA. " +
                       "Structured Outlook and watchlist monitoring remain active.";
             }
         }
 
-        return "Prompt-guided Teams discovery is temporarily unavailable. " +
-              "Structured Outlook and watchlist monitoring remain active.";
+        return "Structured Teams search is temporarily unavailable. " +
+               "Structured Outlook and watchlist monitoring remain active.";
     }
 
-    private static string StripJsonFence(string value)
-    {
-        var trimmed = value.Trim();
-        if (!trimmed.StartsWith("```", StringComparison.Ordinal))
-        {
-            return trimmed;
-        }
-        var firstNewLine = trimmed.IndexOf('\n');
-        var closingFence = trimmed.LastIndexOf(
-            "```",
-            StringComparison.Ordinal);
-        if (firstNewLine < 0 ||
-            closingFence <= firstNewLine)
-        {
-            throw new JsonException(
-               "WorkIQ returned an incomplete JSON code fence.");
-        }
-        return trimmed[(firstNewLine + 1)..closingFence].Trim();
-    }
+    private static string FormatSearchTimestamp(DateTimeOffset value)
+        => value.UtcDateTime.ToString(
+            "yyyy-MM-ddTHH:mm:ss.fffZ",
+            CultureInfo.InvariantCulture);
 
-    private static string BuildPromptIdentifier(
-        string prefix,
-        string value)
-        => prefix + Convert.ToHexString(
-            SHA256.HashData(
-               Encoding.UTF8.GetBytes(value)))[..32];
-
-    private static string FirstNonEmpty(
-        params string?[] values)
-        => values.FirstOrDefault(value =>
-              !string.IsNullOrWhiteSpace(value))
-           ?? "workiq-candidate";
+    private static DateTimeOffset MaxTimestamp(
+        DateTimeOffset first,
+        DateTimeOffset second)
+        => first >= second ? first : second;
 
     private static string NormalizeCandidateText(
         string? value,
@@ -2254,81 +2788,6 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 IsSpecificTeamsMessageUri(uri));
     }
 
-    private async Task<DateTimeOffset?> VerifyPromptSourceActivityAsync(
-        string sourceUrl,
-        DateTimeOffset sinceUtc,
-        DateTimeOffset nowUtc,
-        CancellationToken ct)
-    {
-        if (!TryBuildTeamsGraphMessageUrl(sourceUrl, out var graphUrl))
-        {
-            return null;
-        }
-
-        try
-        {
-            var item = await _client.FetchAsync<ChatMessage>(
-                graphUrl,
-                ct);
-            var activityUtc = GetChatActivityUtc(item);
-            return IsEligibleChatMessage(
-                       item,
-                       sinceUtc.AddMinutes(-1),
-                       excludedSenderId: null) &&
-                   activityUtc <= nowUtc.AddMinutes(5)
-                ? activityUtc
-                : null;
-        }
-        catch (WorkIqClient.WorkIqRequestException ex) when (
-            ex.StatusCode == 404)
-        {
-            return null;
-        }
-    }
-
-    private static bool TryBuildTeamsGraphMessageUrl(
-        string sourceUrl,
-        out string graphUrl)
-    {
-        graphUrl = string.Empty;
-        if (!Uri.TryCreate(sourceUrl, UriKind.Absolute, out var uri) ||
-            !IsSpecificTeamsMessageUri(uri))
-        {
-            return false;
-        }
-
-        var path = uri.AbsolutePath
-            .Split('/', StringSplitOptions.RemoveEmptyEntries)
-            .Select(Uri.UnescapeDataString)
-            .ToArray();
-        var threadOrChannelId = path[2];
-        var messageId = path[3];
-        var groupId = GetQueryParameter(uri, "groupId");
-        if (string.IsNullOrWhiteSpace(groupId))
-        {
-            graphUrl =
-                $"/me/chats/{Uri.EscapeDataString(threadOrChannelId)}/" +
-                $"messages/{Uri.EscapeDataString(messageId)}";
-            return true;
-        }
-
-        var rootMessageId =
-            GetQueryParameter(uri, "parentMessageId") ?? messageId;
-        graphUrl =
-            $"/teams/{Uri.EscapeDataString(groupId)}/channels/" +
-            $"{Uri.EscapeDataString(threadOrChannelId)}/messages/" +
-            Uri.EscapeDataString(rootMessageId);
-        if (!string.Equals(
-                messageId,
-                rootMessageId,
-                StringComparison.Ordinal))
-        {
-            graphUrl +=
-                $"/replies/{Uri.EscapeDataString(messageId)}";
-        }
-        return true;
-    }
-
     private static bool IsSpecificTeamsMessageUri(Uri uri)
     {
         var path = uri.AbsolutePath.Split(
@@ -2345,36 +2804,6 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                    StringComparison.OrdinalIgnoreCase) &&
                !string.IsNullOrWhiteSpace(path[2]) &&
                !string.IsNullOrWhiteSpace(path[3]);
-    }
-
-    private static string? GetQueryParameter(Uri uri, string name)
-    {
-        foreach (var pair in uri.Query
-                     .TrimStart('?')
-                     .Split(
-                         '&',
-                         StringSplitOptions.RemoveEmptyEntries))
-        {
-            var separator = pair.IndexOf('=');
-            var key = separator < 0
-                ? pair
-                : pair[..separator];
-            if (!string.Equals(
-                    Uri.UnescapeDataString(key),
-                    name,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            return separator < 0
-                ? string.Empty
-                : Uri.UnescapeDataString(
-                    pair[(separator + 1)..].Replace(
-                        '+',
-                        ' '));
-        }
-        return null;
     }
 
     private async Task<bool> CollectChannelChangesAsync(
@@ -2878,6 +3307,13 @@ public sealed class WorkIqMessageProvider : IMessageProvider
            item.CreatedDateTime ??
            DateTimeOffset.MinValue;
 
+    private static DateTimeOffset GetSearchResultActivityUtc(
+        ChatMessage item)
+        => item.LastEditedDateTime ??
+           item.LastModifiedDateTime ??
+           item.CreatedDateTime ??
+           DateTimeOffset.MinValue;
+
     private static DateTimeOffset GetChannelRootActivityUtc(ChatMessage root)
         => new[] { root }
             .Concat(root.Replies)
@@ -3203,6 +3639,19 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     private static string GetChannelKey(string teamId, string channelId)
         => $"{EncodeValue(teamId)}:{EncodeValue(channelId)}";
 
+    private static string GetMessageDeduplicationKey(Message message)
+    {
+        if (message.Source == MessageSource.Teams &&
+            Uri.TryCreate(message.WebUrl, UriKind.Absolute, out var uri) &&
+            IsSpecificTeamsMessageUri(uri))
+        {
+            return "teams-source:" +
+                   Uri.UnescapeDataString(uri.AbsolutePath).TrimEnd('/');
+        }
+
+        return $"{message.Source}:{message.Id}";
+    }
+
     private static MonitoringCursorState CloneCursor(MonitoringCursorState cursor)
         => new()
         {
@@ -3211,6 +3660,10 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             InitialScanStartedUtc = cursor.InitialScanStartedUtc,
             TeamsWatermarkUtc = cursor.TeamsWatermarkUtc,
             TeamsBoundaryMessageIds = cursor.TeamsBoundaryMessageIds.ToList(),
+            TeamsSearchWindowEndUtc = cursor.TeamsSearchWindowEndUtc,
+            TeamsSearchOffset = cursor.TeamsSearchOffset,
+            TeamsSearchProcessedHitIds =
+                cursor.TeamsSearchProcessedHitIds.ToList(),
             PromptWatermarkUtc = cursor.PromptWatermarkUtc,
             OutlookWatermarkUtc = cursor.OutlookWatermarkUtc,
             OutlookBoundaryMessageIds =
@@ -3573,7 +4026,16 @@ public sealed class WorkIqMessageProvider : IMessageProvider
            "?context=%7B%22contextType%22%3A%22chat%22%7D";
 
     private static Identity GetSender(IdentitySet? from)
-        => from?.User ?? from?.Application ?? from?.Device ?? new Identity();
+        => from?.User ??
+           from?.Application ??
+           from?.Device ??
+           (from?.EmailAddress is { } email
+               ? new Identity
+               {
+                   Id = email.Address,
+                   DisplayName = email.Name
+               }
+               : new Identity());
 
     private static string NormalizeSubject(string? subject, string fallback)
         => string.IsNullOrWhiteSpace(subject) ? fallback : NormalizeText(subject, isHtml: false);
@@ -3835,6 +4297,15 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         [JsonPropertyName("webUrl")]
         public string? WebUrl { get; init; }
 
+        [JsonPropertyName("webLink")]
+        public string? WebLink { get; init; }
+
+        [JsonPropertyName("chatId")]
+        public string? ChatId { get; init; }
+
+        [JsonPropertyName("channelIdentity")]
+        public ChannelIdentity? ChannelIdentity { get; init; }
+
         [JsonPropertyName("from")]
         public IdentitySet? From { get; init; }
 
@@ -3852,6 +4323,15 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
         [JsonIgnore]
         public bool HasUnpagedRecentReplies { get; set; }
+    }
+
+    private sealed class ChannelIdentity
+    {
+        [JsonPropertyName("teamId")]
+        public string? TeamId { get; init; }
+
+        [JsonPropertyName("channelId")]
+        public string? ChannelId { get; init; }
     }
 
     private sealed record ChannelEntity(
@@ -3872,49 +4352,76 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         string RequestUrl,
         bool UsedStoredLink);
 
-    private sealed class PromptCandidateEnvelope
+    private sealed record TeamsSearchCollectionResult(
+        bool HasMore,
+        string? Warning);
+
+    private sealed record TeamsSearchPage(
+        IReadOnlyList<TeamsSearchHit> Hits,
+        bool MoreResultsAvailable,
+        int NextOffset);
+
+    private sealed record TeamsSearchVerification(
+        TeamsSearchHit Hit,
+        ChatMessage? Resource,
+        string? RootMessageId,
+        int StatusCode);
+
+    private sealed record TeamsSearchFetchRequest(
+        int Index,
+        string Url,
+        bool IsChannel,
+        string? TeamId,
+        string? ChannelId,
+        string? RootMessageId,
+        bool RootNeedsVerification);
+
+    private sealed record TeamsSearchCandidate(
+        string Key,
+        DateTimeOffset ActivityUtc,
+        Message? Message,
+        bool MissingSource);
+
+    private sealed class TeamsSearchResponse
     {
-        [JsonPropertyName("items")]
-        public List<PromptCandidate>? Items { get; init; }
+        [JsonPropertyName("value")]
+        public List<TeamsSearchResponseItem> Value { get; init; } = [];
     }
 
-    private sealed class PromptCandidate
+    private sealed class TeamsSearchResponseItem
     {
-        [JsonPropertyName("stableReference")]
-        public string? StableReference { get; init; }
+        [JsonPropertyName("hitsContainers")]
+        public List<TeamsSearchHitsContainer> HitsContainers { get; init; } = [];
+    }
 
-        [JsonPropertyName("threadReference")]
-        public string? ThreadReference { get; init; }
+    private sealed class TeamsSearchHitsContainer
+    {
+        [JsonPropertyName("hits")]
+        public List<TeamsSearchHit> Hits { get; init; } = [];
 
-        [JsonPropertyName("entityUrl")]
-        public string? EntityUrl { get; init; }
+        [JsonPropertyName("moreResultsAvailable")]
+        public bool MoreResultsAvailable { get; init; }
+    }
 
-        [JsonPropertyName("webUrl")]
-        public string? WebUrl { get; init; }
-
-        [JsonPropertyName("sender")]
-        public string? Sender { get; init; }
-
-        [JsonPropertyName("subject")]
-        public string? Subject { get; init; }
+    private sealed class TeamsSearchHit
+    {
+        [JsonPropertyName("hitId")]
+        public string? HitId { get; init; }
 
         [JsonPropertyName("summary")]
         public string? Summary { get; init; }
 
-        [JsonPropertyName("activityUtc")]
-        public DateTimeOffset? ActivityUtc { get; init; }
-
-        [JsonPropertyName("reason")]
-        public string? Reason { get; init; }
-
-        [JsonPropertyName("isMention")]
-        public bool IsMention { get; init; }
+        [JsonPropertyName("resource")]
+        public ChatMessage? Resource { get; init; }
     }
 
     private sealed class IdentitySet
     {
         [JsonPropertyName("user")]
         public Identity? User { get; init; }
+
+        [JsonPropertyName("emailAddress")]
+        public EmailAddress? EmailAddress { get; init; }
 
         [JsonPropertyName("application")]
         public Identity? Application { get; init; }
