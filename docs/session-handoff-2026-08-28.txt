@@ -1,0 +1,261 @@
+PEGGY SESSION HANDOFF
+Captured: 2026-08-28
+Repository: https://github.com/didiergbenou-ms/peggy
+Branch: main
+
+PURPOSE
+
+This is a sanitized continuity record for resuming work on another laptop.
+It preserves the decisions, implementation history, current architecture,
+release state, and latest conversation outcomes. It intentionally excludes
+credentials, authentication tokens, private Microsoft 365 message content,
+and hidden system data.
+
+The earlier chat history was compacted during the session, so this is a
+comprehensive engineering handoff rather than a verbatim transcript.
+
+CURRENT REPOSITORY STATE
+
+- Main was clean and synchronized with origin before this handoff was added.
+- Latest commit before this handoff: 81df4ec docs: link latest release
+- First release: v0.1.0
+- Release commit: acf1a097b1c0613304d834d0f7565632de19c70d
+- Release page:
+  https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.0
+- All 38 tracked implementation tasks were complete.
+- No code implementation request was open when this handoff was created.
+
+PRODUCT SUMMARY
+
+Peggy is a local-first Windows x64 Microsoft 365 desktop assistant. She has:
+
+- An animated WPF mascot, tray menu, Alert Center, and conversation window.
+- Local English speech recognition and synthesis through sherpa-onnx and
+  NAudio in an isolated speech-host process.
+- GitHub Copilot CLI reasoning and a persistent official .NET Copilot SDK
+  conversation.
+- Standalone Microsoft WorkIQ installation and sign-in.
+- Outlook, calendar, Teams, and Microsoft To Do capabilities.
+- Explicit approval for actions and typed confirmation for destructive
+  actions.
+- Encrypted local state, privacy masking, audit history, monitoring health,
+  and source-linked alerts.
+
+NONNEGOTIABLE DECISIONS
+
+- Peggy must not depend on Microsoft Scout.
+- Peggy invokes the standalone WorkIQ executable as a child process.
+- Peggy production code does not call Microsoft Graph directly.
+- WorkIQ performs Microsoft 365 and Graph access behind its CLI and MCP tools.
+- Microsoft To Do uses Classic Outlook COM locally.
+- Automatic Teams discovery must not use WorkIQ ask as an authoritative feed.
+- Alerts require an exact, compatible source message link.
+- Unverified, stale, or ambiguous Teams results must be withheld.
+- Raw microphone audio stays inside peggy-speech-host.exe.
+- Partial speech transcripts stay local.
+- Only accepted final speech transcripts may be sent for reasoning.
+- Ordinary voice transcripts auto-send after the configured undo window.
+- Action approvals remain explicit.
+- Generated user-facing text must not use em dashes.
+
+STANDALONE WORKIQ
+
+Scout-specific WorkIQ discovery was removed. Peggy now:
+
+- Resolves WorkIQ from PEGGY_WORKIQ_PATH, PATH, or the global npm location.
+- Can install @microsoft/workiq through npm from the first-run window.
+- Presents the WorkIQ EULA flow.
+- Runs login, consent, and /me verification.
+- Pins the verified Microsoft 365 account in DPAPI-encrypted state.
+- Supports reauthentication from Settings and the tray.
+
+The pinned DPAPI state is local to the Windows user and laptop. Do not copy the
+encrypted state file to another laptop. Install Peggy there and sign in again.
+
+TEAMS MONITORING DESIGN
+
+Automatic monitoring still runs every five minutes during the configured awake
+window, which defaults to 07:00 through 19:00 local time.
+
+Broad Teams discovery now uses structured WorkIQ /search/query instead of
+WorkIQ ask:
+
+- Search is bounded by UTC sent-time windows.
+- Windows overlap by ten minutes to recover ordinary indexing delay.
+- Search paging uses a persisted offset.
+- Hits are enriched through bounded, batched exact-message reads.
+- Channel reply roots are resolved and preserved.
+- Search and channel-delta paths share canonical message identities.
+- Confirmed 404 or 410 search hits are withheld.
+- Transient HTTP, timeout, MCP termination, and transport failures retry.
+- Exact source links are required before Copilot classification.
+- The classifier receives at most 20 messages per persisted batch.
+- Timeout logs identify retrieval versus classification stages.
+
+WorkIQ ask remains available for natural-language conversations and optional
+context resolution. It is not used as the deterministic monitoring feed.
+
+KNOWN PLATFORM LIMITATION
+
+Microsoft Teams search filters broad discovery by sent time. It does not expose
+a delegated all-chat modification feed. Microsoft documents all-chat delta and
+getAllMessages as application-only APIs, and WorkIQ rejects them in delegated
+context.
+
+Therefore:
+
+- Broad search discovers newly sent messages and edits within its overlap.
+- It cannot discover an edit to a message sent before the overlap window.
+- Explicitly watchlisted channels use structured delta scans and can detect
+  edits to older channel messages.
+
+MONITORING INCIDENT TIMELINE
+
+1. Monitoring was found manually paused and was resumed.
+2. The previous structured implementation tried to enumerate more than 2,200
+   chats and hit a safety bound.
+3. Prompt-guided discovery was introduced as a temporary scalability fix.
+4. WorkIQ ask sometimes returned candidates without deterministic one-to-one
+   source references.
+5. Those candidates were withheld to prevent incorrect or linkless alerts.
+6. Online Microsoft documentation confirmed that ask is a reasoning tool, not
+   an exhaustive deterministic message feed.
+7. Structured WorkIQ /search/query was validated locally and replaced ask.
+8. A stale interruption banner retained eight pre-fix InvalidDataException
+   failures.
+9. Retry now exposed a recovery interval containing more than 100 messages.
+10. Sending that entire backlog to Copilot caused a 150-second timeout.
+11. Recovery classification was capped at 20-item persisted batches.
+12. Retry now then completed successfully and cleared the interruption banner.
+13. The latest observed monitoring log entry before this handoff was a
+    successful check at 11:22 local time using two batches.
+
+RELEASE AND INSTALLATION
+
+A single current-user installer is available as install.ps1.
+
+Release assets:
+
+- install.ps1
+- peggy-win-x64.zip
+- peggy-win-x64.sha256
+
+The release archive is self-contained for Windows x64, including self-contained
+Peggy MCP and speech-host executables. The installer:
+
+- Supports latest or version-specific releases.
+- Supports public repositories, GH_TOKEN, and authenticated GitHub CLI fallback
+  for private repositories.
+- Enforces PowerShell 7 and Node.js 18 minimum versions.
+- Can install or upgrade PowerShell, Node.js, and Copilot CLI through WinGet.
+- Verifies SHA-256 before extraction.
+- Installs transactionally under %LOCALAPPDATA%\Programs\Peggy by default.
+- Preserves application state because state is outside the install directory.
+- Creates a Start menu shortcut.
+- Optionally installs speech models.
+- Optionally launches Peggy.
+
+The v0.1.0 GitHub Actions Release workflow completed successfully. A real
+authenticated private-release download and installation were verified.
+
+The release is checksum-verified but not Authenticode-signed. Windows
+SmartScreen can show an unknown-publisher warning until code signing is added.
+
+INSTALL ON ANOTHER LAPTOP
+
+1. Obtain repository access and authenticate GitHub CLI:
+
+   gh auth login
+
+2. Download install.ps1 from:
+
+   https://github.com/didiergbenou-ms/peggy/releases/latest
+
+3. Run:
+
+   powershell.exe -ExecutionPolicy Bypass -File .\install.ps1 `
+       -InstallPrerequisites
+
+4. Add local voice models if wanted:
+
+   powershell.exe -ExecutionPolicy Bypass -File .\install.ps1 `
+       -InstallPrerequisites `
+       -InstallSpeechModels
+
+5. Authenticate GitHub Copilot CLI if needed:
+
+   copilot login
+
+6. Complete Peggy's independent WorkIQ and Microsoft 365 sign-in window.
+
+DEVELOPMENT CONTINUATION
+
+On the other laptop:
+
+1. Clone or pull the private repository.
+2. Check out main.
+3. Read this file and README.md.
+4. Confirm the worktree before editing:
+
+   git status
+   git log -10 --oneline
+
+5. Restore and run the regression suite:
+
+   dotnet run --project .\src\Peggy.Core.Tests\Peggy.Core.Tests.csproj `
+       -c Release
+
+6. Build or run Peggy:
+
+   dotnet run --project .\src\Peggy.Tray\Peggy.Tray.csproj -c Release
+
+Suggested instruction for a new assistant session:
+
+Read docs/session-handoff-2026-08-28.txt and README.md, inspect main, and
+continue Peggy from the current repository state. Preserve the standalone
+WorkIQ architecture, exact-source monitoring guarantees, delegated sign-in,
+privacy boundaries, and the no-em-dash writing preference.
+
+IMPORTANT COMMITS
+
+- e71c63b feat: build Peggy desktop assistant
+- 8b39e4e docs: add comprehensive Peggy guide
+- 5ae243b docs: add Peggy visuals and architecture
+- 3de2fa0 docs: simplify architecture and expand privacy
+- f91d4cd docs: animate Peggy on the taskbar
+- bcffa73 docs: slow Peggy animation timing
+- 37a4313 docs: move Peggy to taskbar edge
+- 0a048e7 feat: add standalone WorkIQ sign-in
+- 3bc8397 fix: restore prompt-guided Teams monitoring
+- b3d8554 fix: distinguish monitoring notices
+- cfcec07 fix: use structured Teams monitoring
+- 8b665e2 fix: bound monitoring recovery batches
+- acf1a09 feat: add release installer
+- 81df4ec docs: link latest release
+
+FILES MOST RELEVANT TO FUTURE WORK
+
+- README.md
+- install.ps1
+- .github/workflows/release.yml
+- src/Peggy.Core/WorkIqClient.cs
+- src/Peggy.Core/WorkIqMessageProvider.cs
+- src/Peggy.Core/WorkIqSetupService.cs
+- src/Peggy.Core/EncryptedStateStore.cs
+- src/Peggy.Core/PeggyStateManager.cs
+- src/Peggy.Core/PersistentModels.cs
+- src/Peggy.Tray/App.xaml.cs
+- src/Peggy.Tray/CopilotRunner.cs
+- src/Peggy.Tray/AlertCenterWindow.xaml.cs
+- src/Peggy.Core.Tests/CoreBehaviorSmokeTests.cs
+- src/Peggy.Core.Tests/AssistantBehaviorSmokeTests.cs
+- src/Peggy.Core.Tests/DesktopSmokeTests.cs
+
+POSSIBLE NEXT IMPROVEMENTS
+
+- Add Authenticode signing to the release workflow.
+- Decide whether the repository and releases should become public.
+- Test v0.1.0 installation on a completely clean Windows x64 laptop.
+- Consider a future application-permission service only if complete all-chat
+  edit detection becomes a hard requirement. This would change Peggy's current
+  delegated, local-first trust model and should not be done casually.
