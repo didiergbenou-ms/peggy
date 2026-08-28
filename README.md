@@ -291,7 +291,9 @@ Peggy opens or persists them.
 2. **.NET 10 SDK** for development, or the .NET 10 Desktop Runtime only for a
    framework-dependent published build. GitHub Release packages are
    self-contained.
-3. **GitHub Copilot CLI** installed, authenticated, and available on `PATH`.
+3. **GitHub Copilot CLI 1.0.81 or later** installed, authenticated, and
+   available on `PATH`. Version 1.0.81 introduced the
+   `--usage-output-file` support required by Peggy's monitoring classifier.
 4. **Node.js 18 or later with npm** for standalone WorkIQ installation.
 5. A **Work IQ usage-based billing plan** with the user assigned.
 6. **Administrative consent** for the Work IQ application in the Microsoft
@@ -331,6 +333,8 @@ The installer:
 - Creates a Start menu shortcut and launches Peggy.
 - Can install PowerShell 7, Node.js LTS, and GitHub Copilot CLI through WinGet
   when `-InstallPrerequisites` is present.
+- Requires GitHub Copilot CLI 1.0.81 or later. If WinGet provides an older
+  version, the installer runs `copilot update stable` before installing Peggy.
 - Preserves encrypted Peggy state during upgrades because state lives outside
   the installation directory.
 
@@ -808,6 +812,7 @@ Remove-Item Env:\PEGGY_MESSAGE_PROVIDER
 | WorkIQ not found | Select **Install WorkIQ with npm**, run `npm install -g @microsoft/workiq`, or set `PEGGY_WORKIQ_PATH` |
 | WorkIQ terms error | Review the terms and run `workiq accept-eula` |
 | WorkIQ consent fails | Ask a Microsoft Entra administrator to grant the Work IQ application permissions required by your tenant |
+| Monitoring classification repeatedly fails after installation | Run `copilot --version` and confirm version 1.0.81 or later. Run `copilot update stable`, restart Peggy, or rerun `install.ps1 -InstallPrerequisites` |
 | Monitoring interrupted | Open the Alert Center for remediation; Peggy keeps retrying after three consecutive failures |
 | Speech models missing | Run `.\scripts\Install-SpeechModels.ps1` |
 | Incomplete model directory | Rerun the installer with `-Force` |

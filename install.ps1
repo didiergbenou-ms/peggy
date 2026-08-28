@@ -23,6 +23,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 $archiveName = 'peggy-win-x64.zip'
 $checksumName = 'peggy-win-x64.sha256'
+$minimumCopilotVersion = [Version]'1.0.81'
 $temporaryDirectory = Join-Path (
     [IO.Path]::GetTempPath()
 ) ('peggy-install-' + [Guid]::NewGuid().ToString('N'))
@@ -42,7 +43,20 @@ function Refresh-ProcessPath {
         'Path',
         [EnvironmentVariableTarget]::User
     )
-    $env:Path = @($machinePath, $userPath) -join ';'
+    $pathEntries = @(
+        foreach ($pathValue in @($env:Path, $machinePath, $userPath)) {
+            if ([string]::IsNullOrWhiteSpace($pathValue)) {
+                continue
+            }
+            foreach ($entry in $pathValue.Split(';')) {
+                $trimmed = $entry.Trim()
+                if (-not [string]::IsNullOrWhiteSpace($trimmed)) {
+                    $trimmed
+                }
+            }
+        }
+    ) | Select-Object -Unique
+    $env:Path = $pathEntries -join ';'
 }
 
 function Test-CommandAvailable {
@@ -198,6 +212,66 @@ function Ensure-MinimumPrerequisite {
         $installedVersion -lt $MinimumVersion) {
         throw "$DisplayName was installed but version $MinimumVersion or " +
             'later is not available. Open a new terminal and retry.'
+    }
+}
+
+function Ensure-CopilotPrerequisite {
+    param([Parameter(Mandatory)][Version]$MinimumVersion)
+
+    $command = @('copilot.exe', 'copilot')
+    $versionArgument = @('--version')
+    $installedVersion = Get-ExecutableVersion `
+        -Command $command `
+        -Argument $versionArgument
+    if ($null -ne $installedVersion -and
+        $installedVersion -ge $MinimumVersion) {
+        return
+    }
+
+    $installedDescription = if ($null -eq $installedVersion) {
+        'not installed or unreadable'
+    } else {
+        "version $installedVersion"
+    }
+    if (-not $InstallPrerequisites) {
+        throw "GitHub Copilot CLI $MinimumVersion or later is required " +
+            "($installedDescription). Peggy monitoring depends on " +
+            "'--usage-output-file'. Install or upgrade Copilot CLI first, " +
+            'or rerun with -InstallPrerequisites.'
+    }
+
+    if ($null -eq $installedVersion) {
+        Ensure-Prerequisite `
+            -Command $command `
+            -PackageId 'GitHub.Copilot' `
+            -DisplayName 'GitHub Copilot CLI'
+        $installedVersion = Get-ExecutableVersion `
+            -Command $command `
+            -Argument $versionArgument
+    }
+
+    if ($null -eq $installedVersion -or
+        $installedVersion -lt $MinimumVersion) {
+        $commandPath = Resolve-CommandPath -Name $command
+        if ([string]::IsNullOrWhiteSpace($commandPath)) {
+            throw 'GitHub Copilot CLI was installed but is unavailable on PATH.'
+        }
+
+        Write-Step "Updating GitHub Copilot CLI to $MinimumVersion or later"
+        & $commandPath update stable
+        if ($LASTEXITCODE -ne 0) {
+            throw "GitHub Copilot CLI update failed (exit $LASTEXITCODE)."
+        }
+        Refresh-ProcessPath
+        $installedVersion = Get-ExecutableVersion `
+            -Command $command `
+            -Argument $versionArgument
+    }
+
+    if ($null -eq $installedVersion -or
+        $installedVersion -lt $MinimumVersion) {
+        throw "GitHub Copilot CLI $MinimumVersion or later is required. " +
+            'Install the latest stable release and run this installer again.'
     }
 }
 
@@ -414,6 +488,7 @@ if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
 }
 
 $InstallDirectory = Assert-InstallDirectory -Path $InstallDirectory
+Refresh-ProcessPath
 
 Ensure-MinimumPrerequisite `
     -Command @('pwsh.exe', 'pwsh') `
@@ -437,10 +512,7 @@ if (-not (Test-CommandAvailable -Name @('npm.cmd', 'npm'))) {
     throw 'Node.js is installed but npm is unavailable. Repair the Node.js ' +
         'installation and run this installer again.'
 }
-Ensure-Prerequisite `
-    -Command @('copilot.exe', 'copilot') `
-    -PackageId 'GitHub.Copilot' `
-    -DisplayName 'GitHub Copilot CLI'
+Ensure-CopilotPrerequisite -MinimumVersion $minimumCopilotVersion
 
 New-Item -ItemType Directory -Path $temporaryDirectory -Force | Out-Null
 $stagingDirectory = $null
