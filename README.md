@@ -314,7 +314,9 @@ Peggy resolves standalone WorkIQ in this order:
 
 ### Install from a GitHub Release
 
-Download `install.ps1` from the latest GitHub Release, then run:
+Download `install.ps1` from the
+[latest GitHub Release](https://github.com/didiergbenou-ms/peggy/releases/latest),
+then run:
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\install.ps1 `
