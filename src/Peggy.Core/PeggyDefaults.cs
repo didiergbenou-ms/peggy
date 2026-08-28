@@ -19,6 +19,15 @@ public static class PeggyDefaults
             ?.Trim()
             ?? string.Empty;
 
+    public static int GetMonitoringBatchSize(int consecutiveFailures)
+        => consecutiveFailures switch
+        {
+            <= 0 => MonitoringBatchSize,
+            1 => 10,
+            2 => 5,
+            _ => 1
+        };
+
     public static string SpeechModelDirectory
         => Path.Combine(
             Environment.GetFolderPath(

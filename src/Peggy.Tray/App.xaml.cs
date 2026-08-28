@@ -374,6 +374,8 @@ public partial class App : Application
         var keepThinkingForContinuation = false;
         var resultAnimationActive = false;
         var checkStage = "preparing";
+        var batchLimit = PeggyDefaults.GetMonitoringBatchSize(
+            _state.State.ConsecutiveMonitoringFailures);
         if (!_conversation.IsActive &&
             _mascot.IsVisible)
         {
@@ -418,7 +420,7 @@ public partial class App : Application
                 checkStage = "retrieval";
                 var batch = await _provider.GetChangesAsync(
                     _state.State.MonitoringCursor,
-                    PeggyDefaults.MonitoringBatchSize,
+                    batchLimit,
                     nowUtc,
                     _shutdown.Token);
                 lastWarning = batch.Warning;
@@ -517,6 +519,15 @@ public partial class App : Application
                 return;
             }
 
+            if (ex is CopilotClassificationException classificationFailure)
+            {
+                _state.RecordCredit(
+                    "monitoring-rejected",
+                    classificationFailure.Usage.Model,
+                    classificationFailure.Usage.OperationCredits,
+                    classificationFailure.Usage.SessionCredits,
+                    DateTimeOffset.UtcNow);
+            }
             var becameInterrupted = _state.RecordMonitoringFailure();
             _monitoringRemediation = GetMonitoringRemediation(
                 ex,
@@ -531,7 +542,9 @@ public partial class App : Application
             }
             Log(
                 $"CHECK ERROR stage={checkStage} " +
+                $"code={GetMonitoringFailureCode(ex, checkStage)} " +
                 $"type={ex.GetType().Name} " +
+                $"batchLimit={batchLimit} " +
                 $"failures={_state.State.ConsecutiveMonitoringFailures}");
             if (becameInterrupted ||
                 _monitoringRemediation is not null)
@@ -1487,7 +1500,10 @@ public partial class App : Application
     private static string? GetMonitoringRemediation(
         Exception exception,
         string stage)
-        => exception is TimeoutException &&
+        => exception is CopilotClassificationException
+            ? "Copilot returned an invalid monitoring result. Peggy will " +
+              "retry with a smaller isolated batch."
+            : exception is TimeoutException &&
            string.Equals(
                stage,
                "classification",
@@ -1511,6 +1527,19 @@ public partial class App : Application
               "'workiq accept-eula' after reviewing " +
               "https://github.com/microsoft/work-iq/tree/main/EULA."
             : null;
+
+    private static string GetMonitoringFailureCode(
+        Exception exception,
+        string stage)
+        => exception is CopilotClassificationException classification
+            ? classification.Code
+            : exception is TimeoutException
+                ? $"{stage}-timeout"
+                : exception is InvalidDataException
+                    ? $"{stage}-invalid-data"
+                    : exception is InvalidOperationException
+                        ? $"{stage}-operation-failed"
+                        : $"{stage}-unexpected";
 
     private void CloseAlertContextWindows()
     {

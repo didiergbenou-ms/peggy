@@ -56,10 +56,19 @@ internal static class AssistantBehaviorSmokeTests
                 batch.Messages,
                 Array.Empty<AlertRecord>(),
                 Array.Empty<FeedbackRule>());
+            var secondAlerts = await runner.RunAlertEvaluationAsync(
+                batch.Messages,
+                Array.Empty<AlertRecord>(),
+                Array.Empty<FeedbackRule>());
             TestAssert.Equal(
                 PeggyDefaults.CopilotModel,
                 alerts.Usage.Model,
                 "Live Copilot monitoring used the wrong model.");
+            TestAssert.True(
+                alerts.Usage.SessionId != secondAlerts.Usage.SessionId &&
+                alerts.Usage.SessionId != runner.SessionId &&
+                secondAlerts.Usage.SessionId != runner.SessionId,
+                "Live monitoring reused a persistent Copilot session.");
             TestAssert.True(
                 alerts.Decisions.All(decision =>
                     batch.Messages.Any(message =>
@@ -111,12 +120,12 @@ internal static class AssistantBehaviorSmokeTests
                 "The persistent Copilot session did not retain conversation context.");
             TestAssert.True(
                 followUp.Usage.SessionCredits >=
-                alerts.Usage.SessionCredits,
+                secondAlerts.Usage.SessionCredits,
                 "Live Copilot session credits regressed between turns.");
 
             Console.WriteLine(
-                "Live Copilot integration passed: monitoring and proposal-only " +
-                $"conversation used {conversation.Usage.Model} in one session. " +
+                "Live Copilot integration passed: isolated monitoring and " +
+                $"persistent conversation used {conversation.Usage.Model}. " +
                 $"Warm follow-up first delta: " +
                 $"{followUpFirstDelta?.TotalSeconds:F2}s; complete: " +
                 $"{followUpWatch.Elapsed.TotalSeconds:F2}s.");
@@ -483,7 +492,7 @@ internal static class AssistantBehaviorSmokeTests
             false);
         var validJson =
             """
-            {"decisions":[{"threadId":"thread-1","tier":"attention","summary":"Review","reason":"Deadline","sourceReference":"message-1","messageIds":["message-1"]}]}
+            {"decisions":[{"tier":"attention","summary":"Review","reason":"Deadline","sourceReference":"message-1","messageIds":["message-1"]}]}
             """;
         var parsed = InvokePrivate<IReadOnlyList<AlertDecision>>(
             typeof(CopilotRunner),
@@ -495,15 +504,134 @@ internal static class AssistantBehaviorSmokeTests
             parsed.Count,
             "Copilot alert decision parsing failed.");
 
+        var teamsSource =
+            "https://teams.microsoft.com/l/message/19%3Athread-one/12345";
+        var originalMessages = new[]
+        {
+            new Message(
+                "teams-channel-message:opaque-real-message-one",
+                MessageSource.Teams,
+                "teams-channel-thread:opaque-real-thread-one",
+                "Sender one",
+                "Subject one",
+                "Preview one",
+                DateTimeOffset.UtcNow,
+                false)
+            {
+                WebUrl = teamsSource,
+                TeamId = "opaque-team-one",
+                ChannelId = "opaque-channel-one",
+                RootMessageId = "opaque-root-one",
+                IsMention = true
+            },
+            new Message(
+                "teams-channel-message:opaque-real-message-two",
+                MessageSource.Teams,
+                "teams-channel-thread:opaque-real-thread-two",
+                "Sender two",
+                "Subject two",
+                "Preview two",
+                DateTimeOffset.UtcNow.AddMinutes(-1),
+                false)
+            {
+                WebUrl =
+                    "https://teams.microsoft.com/l/message/19%3Athread-two/67890",
+                TeamId = "opaque-team-two",
+                ChannelId = "opaque-channel-two",
+                RootMessageId = "opaque-root-two"
+            }
+        };
+        var aliasScope = InvokePrivate<object>(
+            typeof(CopilotRunner),
+            "CreateMonitoringAliasScope",
+            (object)originalMessages);
+        var aliasedMessages = GetProperty<IReadOnlyList<Message>>(
+            aliasScope,
+            "Messages");
+        TestAssert.True(
+            aliasedMessages.Count == 2 &&
+            aliasedMessages[0].Id == "message-1" &&
+            aliasedMessages[0].ThreadId == "thread-1" &&
+            aliasedMessages[1].Id == "message-2" &&
+            aliasedMessages[1].ThreadId == "thread-2" &&
+            aliasedMessages.All(item =>
+                item.WebUrl is null &&
+                item.TeamId is null &&
+                item.ChannelId is null &&
+                item.RootMessageId is null),
+            "Monitoring aliases exposed a real identifier to Copilot.");
+        var aliasedJson = JsonSerializer.Serialize(aliasedMessages);
+        TestAssert.True(
+            !originalMessages.Any(original =>
+                aliasedJson.Contains(original.Id, StringComparison.Ordinal) ||
+                aliasedJson.Contains(original.ThreadId, StringComparison.Ordinal)),
+            "Monitoring focus JSON retained opaque source identifiers.");
+        var restored = InvokePrivate<IReadOnlyList<AlertDecision>>(
+            typeof(CopilotRunner),
+            "ParseAndRestoreAlertDecisions",
+            """
+            {"decisions":[{"tier":"attention","summary":"Review","reason":"Deadline","sourceReference":"message-1","messageIds":["message-1"]}]}
+            """,
+            aliasScope);
+        TestAssert.True(
+            restored.Count == 1 &&
+            restored[0].ThreadId == originalMessages[0].ThreadId &&
+            restored[0].MessageIds.SequenceEqual([originalMessages[0].Id]) &&
+            restored[0].SourceReference == teamsSource,
+            "Monitoring aliases did not restore exact local source identifiers.");
         TestAssert.Throws<InvalidDataException>(
             () => InvokePrivate<IReadOnlyList<AlertDecision>>(
                 typeof(CopilotRunner),
                 "ParseAlertDecisions",
                 """
-                {"decisions":[{"threadId":"outside","tier":"critical","summary":"Bad","reason":"Bad","sourceReference":"","messageIds":["message-1"]}]}
+                {"decisions":[{"tier":"attention","summary":"Bad","reason":"Bad","sourceReference":"","messageIds":["message-1","message-2"]}]}
+                """,
+                aliasedMessages),
+            "Copilot could combine message aliases from different threads.");
+        TestAssert.Throws<InvalidDataException>(
+            () => InvokePrivate<IReadOnlyList<AlertDecision>>(
+                typeof(CopilotRunner),
+                "ParseAlertDecisions",
+                """
+                {"decisions":[{"tier":"attention","summary":"Bad","reason":"Bad","sourceReference":"message-2","messageIds":["message-1"]}]}
+                """,
+                aliasedMessages),
+            "Copilot could attach a source alias outside the selected messages.");
+        TestAssert.Throws<InvalidDataException>(
+            () => InvokePrivate<IReadOnlyList<AlertDecision>>(
+                typeof(CopilotRunner),
+                "ParseAlertDecisions",
+                """
+                {"decisions":[{"tier":"attention","summary":"Bad","reason":"Bad","sourceReference":"message-99","messageIds":["message-1"]}]}
+                """,
+                aliasedMessages),
+            "Copilot could return an unknown source alias.");
+        TestAssert.Throws<InvalidDataException>(
+            () => InvokePrivate<IReadOnlyList<AlertDecision>>(
+                typeof(CopilotRunner),
+                "ParseAlertDecisions",
+                """
+                {"decisions":[{"tier":"attention","summary":"Bad","reason":"Bad","sourceReference":"","messageIds":[]}]}
+                """,
+                aliasedMessages),
+            "Copilot could omit every message alias from an alert.");
+        TestAssert.Throws<InvalidDataException>(
+            () => InvokePrivate<IReadOnlyList<AlertDecision>>(
+                typeof(CopilotRunner),
+                "ParseAlertDecisions",
+                """{"decisions":[null]}""",
+                aliasedMessages),
+            "Copilot could return an empty decision item.");
+
+        TestAssert.Throws<InvalidDataException>(
+            () => InvokePrivate<IReadOnlyList<AlertDecision>>(
+                typeof(CopilotRunner),
+                "ParseAlertDecisions",
+                """
+                {"decisions":[{"tier":"critical","summary":"Bad","reason":"Bad","sourceReference":"","messageIds":["message-outside"]}]}
                 """,
                 new[] { message }),
-            "Copilot could alert on an unscoped thread.");
+            "Copilot could alert on an unscoped message.");
         TestAssert.Throws<InvalidDataException>(
             () => InvokePrivate<IReadOnlyList<AlertDecision>>(
                 typeof(CopilotRunner),
@@ -562,15 +690,41 @@ internal static class AssistantBehaviorSmokeTests
 
         var alertPrompt = InvokePrivate<string>(
             typeof(CopilotRunner),
-            "BuildAlertPrompt");
+            "BuildAlertPrompt",
+            PeggyDefaults.MonitoringBatchSize);
         TestAssert.Contains(
             "Never call prepare_action",
             alertPrompt,
             "Monitoring prompt did not forbid actions.");
         TestAssert.Contains(
-            $"list_unread with limit {PeggyDefaults.MonitoringBatchSize}",
+            $"list_unread exactly once with limit {PeggyDefaults.MonitoringBatchSize}",
             alertPrompt,
             "Monitoring prompt did not enforce the bounded batch size.");
+        TestAssert.True(
+            alertPrompt.Contains("untrusted data", StringComparison.Ordinal) &&
+            alertPrompt.Contains(
+                "batch-local aliases",
+                StringComparison.Ordinal) &&
+            !alertPrompt.Contains("get_thread", StringComparison.Ordinal),
+            "Monitoring prompt did not preserve the isolated alias boundary.");
+        var operationSessionOne = InvokePrivate<string>(
+            typeof(CopilotRunner),
+            "CreateOperationSessionId");
+        var operationSessionTwo = InvokePrivate<string>(
+            typeof(CopilotRunner),
+            "CreateOperationSessionId");
+        TestAssert.True(
+            Guid.TryParse(operationSessionOne, out _) &&
+            Guid.TryParse(operationSessionTwo, out _) &&
+            operationSessionOne != operationSessionTwo,
+            "Monitoring operation session IDs were reused.");
+        TestAssert.True(
+            PeggyDefaults.GetMonitoringBatchSize(0) == 20 &&
+            PeggyDefaults.GetMonitoringBatchSize(1) == 10 &&
+            PeggyDefaults.GetMonitoringBatchSize(2) == 5 &&
+            PeggyDefaults.GetMonitoringBatchSize(3) == 1 &&
+            PeggyDefaults.GetMonitoringBatchSize(100) == 1,
+            "Monitoring retries did not reduce to a single poison item.");
         TestAssert.Contains(
             "Copilot timed out",
             InvokePrivate<string>(
@@ -587,6 +741,34 @@ internal static class AssistantBehaviorSmokeTests
                 new TimeoutException(),
                 "retrieval"),
             "A retrieval timeout did not identify the failing stage.");
+        var rejectedUsage = new CopilotRunResult(
+            string.Empty,
+            Guid.NewGuid().ToString(),
+            PeggyDefaults.CopilotModel,
+            1,
+            1,
+            10,
+            5);
+        var rejectedResult = new CopilotClassificationException(
+            "invalid-message-alias",
+            rejectedUsage,
+            new InvalidDataException());
+        TestAssert.Contains(
+            "smaller isolated batch",
+            InvokePrivate<string>(
+                typeof(App),
+                "GetMonitoringRemediation",
+                rejectedResult,
+                "classification"),
+            "Rejected classifier output did not explain its safe retry.");
+        TestAssert.Equal(
+            "invalid-message-alias",
+            InvokePrivate<string>(
+                typeof(App),
+                "GetMonitoringFailureCode",
+                rejectedResult,
+                "classification"),
+            "Classifier failure logs lost their safe error category.");
         var largeAlerts = Enumerable.Range(0, 100)
             .Select(index => new AlertRecord
             {
@@ -609,19 +791,23 @@ internal static class AssistantBehaviorSmokeTests
                     Summary = new string('f', 300),
                     CreatedUtc = DateTimeOffset.UtcNow.AddMinutes(-index)
                 })
-                .ToList());
+                .ToList(),
+            Enumerable.Range(0, 15).ToDictionary(
+                index => $"thread-{index}",
+                index => $"batch-thread-alias-{index}",
+                StringComparer.Ordinal));
         TestAssert.True(
             alertPrompt.Length < 5_000 &&
-            !alertPrompt.Contains(
-                "thread-0",
-                StringComparison.Ordinal) &&
             boundedContext.Contains(
+                "batch-thread-alias-0",
+                StringComparison.Ordinal) &&
+            !boundedContext.Contains(
                 "thread-0",
                 StringComparison.Ordinal) &&
             !boundedContext.Contains(
-                "thread-99",
+                "thread-15",
                 StringComparison.Ordinal),
-            "Private alert history was not bounded behind MCP context.");
+            "Private alert history was not scoped to batch-local aliases.");
         var voicePrompt = InvokePrivate<string>(
             typeof(CopilotRunner),
             "BuildConversationPrompt");
@@ -842,5 +1028,19 @@ internal static class AssistantBehaviorSmokeTests
             ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
             throw;
         }
+    }
+
+    private static T GetProperty<T>(object instance, string propertyName)
+    {
+        var property = instance.GetType().GetProperty(
+            propertyName,
+            BindingFlags.Public |
+            BindingFlags.NonPublic |
+            BindingFlags.Instance)
+            ?? throw new InvalidOperationException(
+                $"Property {instance.GetType().Name}.{propertyName} was not found.");
+        return (T)(property.GetValue(instance)
+            ?? throw new InvalidOperationException(
+                $"{instance.GetType().Name}.{propertyName} was null."));
     }
 }

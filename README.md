@@ -80,9 +80,11 @@ service relationships. Implementation details remain in the sections below.
 
 Peggy uses two Copilot paths:
 
-1. **Monitoring:** short, isolated `copilot -p` runs classify focused batches of
-   messages. Private focus, context, action, and usage files are passed through
-   temporary local paths rather than command-line arguments.
+1. **Monitoring:** each focused batch receives a new `copilot -p` session, so
+   classifications never resume prior monitoring history. Copilot sees short
+   batch-local aliases instead of Outlook or Teams identifiers. Peggy validates
+   alias ownership and maps accepted decisions back to exact local identifiers
+   and verified source links.
 2. **Conversation:** one warmed official .NET Copilot SDK session streams text
    deltas and uses the same bounded Peggy MCP tools.
 
@@ -99,10 +101,13 @@ whose owning process has exited.
 - Outside that window Peggy sleeps and automatic checks pause.
 - **Check now** and **Talk to Peggy** remain available while sleeping.
 - Waking or restarting establishes a new five-minute lookback.
-- Recovery backlogs are classified in persisted batches of 20 items so one
-  oversized interval cannot repeatedly time out.
+- Normal monitoring uses persisted batches of at most 20 items. Consecutive
+  failures reduce retries to 10, 5, and then 1 item so one problematic item can
+  be isolated without silently advancing the source cursor.
 - Three consecutive monitoring failures mark monitoring as interrupted and
   surface remediation in the Alert Center.
+- Each classifier receives only `get_turn_context` and the scoped
+  `list_unread` tool. Message fields are treated as untrusted data.
 
 ### Outlook
 
@@ -339,7 +344,7 @@ The installer:
   the installation directory.
 
 Add `-InstallSpeechModels` to download the optional local voice models, or
-`-NoLaunch` to install without starting Peggy. Use `-Version v0.1.0` to install
+`-NoLaunch` to install without starting Peggy. Use `-Version v0.1.2` to install
 a specific release.
 
 This repository is currently private. Authenticate GitHub CLI with repository
@@ -813,7 +818,7 @@ Remove-Item Env:\PEGGY_MESSAGE_PROVIDER
 | WorkIQ terms error | Review the terms and run `workiq accept-eula` |
 | WorkIQ consent fails | Ask a Microsoft Entra administrator to grant the Work IQ application permissions required by your tenant |
 | Monitoring classification repeatedly fails after installation | Run `copilot --version` and confirm version 1.0.81 or later. Run `copilot update stable`, restart Peggy, or rerun `install.ps1 -InstallPrerequisites` |
-| Monitoring interrupted | Open the Alert Center for remediation; Peggy keeps retrying after three consecutive failures |
+| Monitoring interrupted | Open the Alert Center for remediation. Peggy retries in a fresh Copilot session and reduces the batch to isolate problematic input |
 | Speech models missing | Run `.\scripts\Install-SpeechModels.ps1` |
 | Incomplete model directory | Rerun the installer with `-Force` |
 | Speech host missing | Rebuild/publish `Peggy.Tray` or set `PEGGY_SPEECH_HOST_PATH` |
