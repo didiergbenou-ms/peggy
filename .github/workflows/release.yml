@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build Windows release
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Run regression suite
+        shell: pwsh
+        run: >
+          dotnet run
+          --project .\src\Peggy.Core.Tests\Peggy.Core.Tests.csproj
+          -c Release
+
+      - name: Publish self-contained package
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $tag = $env:TAG
+          if ($tag -notmatch "^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$") {
+            throw "Release tag '$tag' is not a supported semantic version."
+          }
+          $version = $tag.Substring(1)
+          $publishDirectory = Join-Path $env:RUNNER_TEMP "peggy-win-x64"
+
+          dotnet publish .\src\Peggy.Tray\Peggy.Tray.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:Version=$version `
+            -p:ContinuousIntegrationBuild=true `
+            -o $publishDirectory
+
+          New-Item `
+            -ItemType Directory `
+            -Path (Join-Path $publishDirectory "scripts") `
+            -Force | Out-Null
+          Copy-Item .\install.ps1 $publishDirectory
+          Copy-Item .\README.md $publishDirectory
+          Copy-Item .\THIRD-PARTY-NOTICES.txt $publishDirectory
+          Copy-Item `
+            .\scripts\Install-SpeechModels.ps1 `
+            (Join-Path $publishDirectory "scripts")
+          Set-Content `
+            -LiteralPath (Join-Path $publishDirectory "version.txt") `
+            -Value $tag `
+            -Encoding ascii
+
+          $archive = Join-Path $env:RUNNER_TEMP "peggy-win-x64.zip"
+          Compress-Archive `
+            -Path (Join-Path $publishDirectory "*") `
+            -DestinationPath $archive `
+            -CompressionLevel Optimal
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content `
+            -LiteralPath (Join-Path $env:RUNNER_TEMP "peggy-win-x64.sha256") `
+            -Value "$hash  peggy-win-x64.zip" `
+            -Encoding ascii
+
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $tag = $env:TAG
+          $assets = @(
+            (Join-Path $env:RUNNER_TEMP "peggy-win-x64.zip"),
+            (Join-Path $env:RUNNER_TEMP "peggy-win-x64.sha256"),
+            ".\install.ps1"
+          )
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assets --clobber
+          } else {
+            $arguments = @(
+              "release", "create", $tag
+            ) + $assets + @(
+              "--verify-tag",
+              "--generate-notes",
+              "--title", "Peggy $tag"
+            )
+            if ($tag.Contains("-")) {
+              $arguments += "--prerelease"
+            }
+            & gh @arguments
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub release creation failed."
+          }

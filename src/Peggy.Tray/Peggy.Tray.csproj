@@ -55,7 +55,7 @@
     </PropertyGroup>
     <MSBuild Projects="..\Peggy.Mcp\Peggy.Mcp.csproj"
              Targets="Publish"
-             Properties="Configuration=$(Configuration);TargetFramework=net10.0;PublishDir=$(PeggyMcpPublishDir);SelfContained=false" />
+             Properties="Configuration=$(Configuration);TargetFramework=net10.0;PublishDir=$(PeggyMcpPublishDir);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained)" />
   </Target>
 
   <Target Name="PublishPeggySpeechHost" AfterTargets="Publish">
@@ -64,7 +64,7 @@
     </PropertyGroup>
     <MSBuild Projects="..\Peggy.Speech.Host\Peggy.Speech.Host.csproj"
              Targets="Publish"
-             Properties="Configuration=$(Configuration);TargetFramework=net10.0-windows;PublishDir=$(PeggySpeechHostPublishDir);SelfContained=false" />
+             Properties="Configuration=$(Configuration);TargetFramework=net10.0-windows;PublishDir=$(PeggySpeechHostPublishDir);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained)" />
   </Target>
 
 </Project>

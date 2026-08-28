@@ -288,14 +288,15 @@ Peggy opens or persists them.
 ## Prerequisites
 
 1. **Windows x64.**
-2. **.NET 10 SDK** for development, or the .NET 10 Desktop Runtime for a
-   framework-dependent published build.
+2. **.NET 10 SDK** for development, or the .NET 10 Desktop Runtime only for a
+   framework-dependent published build. GitHub Release packages are
+   self-contained.
 3. **GitHub Copilot CLI** installed, authenticated, and available on `PATH`.
 4. **Node.js 18 or later with npm** for standalone WorkIQ installation.
 5. A **Work IQ usage-based billing plan** with the user assigned.
 6. **Administrative consent** for the Work IQ application in the Microsoft
    Entra tenant.
-7. `curl.exe` and `tar.exe` for the speech-model installer.
+7. `curl.exe` and `tar.exe` only for the optional speech-model installer.
 8. **Classic Outlook desktop** for Microsoft To Do task reads and actions.
 9. A microphone and audio output device for voice features.
 
@@ -311,9 +312,48 @@ Peggy resolves standalone WorkIQ in this order:
 
 ## Quick start
 
+### Install from a GitHub Release
+
+Download `install.ps1` from the latest GitHub Release, then run:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\install.ps1 `
+    -InstallPrerequisites
+```
+
+The installer:
+
+- Downloads the latest self-contained Windows x64 package.
+- Verifies its SHA-256 checksum before extraction.
+- Installs for the current user under `%LOCALAPPDATA%\Programs\Peggy`.
+- Creates a Start menu shortcut and launches Peggy.
+- Can install PowerShell 7, Node.js LTS, and GitHub Copilot CLI through WinGet
+  when `-InstallPrerequisites` is present.
+- Preserves encrypted Peggy state during upgrades because state lives outside
+  the installation directory.
+
+Add `-InstallSpeechModels` to download the optional local voice models, or
+`-NoLaunch` to install without starting Peggy. Use `-Version v0.1.0` to install
+a specific release.
+
+This repository is currently private. Authenticate GitHub CLI with repository
+access (`gh auth login`) or set `GH_TOKEN` before running the installer. If the
+repository becomes public, neither is required. The installer does not persist
+the token.
+
+The package and checksum can also be downloaded manually:
+
+```powershell
+.\install.ps1 `
+    -PackagePath .\peggy-win-x64.zip `
+    -ChecksumPath .\peggy-win-x64.sha256
+```
+
+### Build from source
+
 Open PowerShell in the repository root.
 
-### 1. Install standalone WorkIQ
+#### 1. Install standalone WorkIQ
 
 Peggy can run this installation from its first-run window. To install it
 yourself:
@@ -323,7 +363,7 @@ npm install -g @microsoft/workiq
 workiq version
 ```
 
-### 2. Install local speech models
+#### 2. Install local speech models
 
 ```powershell
 .\scripts\Install-SpeechModels.ps1
@@ -339,7 +379,7 @@ verifies every SHA-256 digest, and installs them under:
 Voice is optional. To run without the models, start Peggy and disable local
 speech in Settings.
 
-### 3. Build and run
+#### 3. Build and run
 
 ```powershell
 dotnet restore .\src\Peggy.Tray\Peggy.Tray.csproj
@@ -349,7 +389,7 @@ dotnet run --project .\src\Peggy.Tray\Peggy.Tray.csproj -c Release
 The tray project automatically builds and packages the MCP server and speech
 host beside the tray executable.
 
-### 4. Connect Microsoft 365
+#### 4. Connect Microsoft 365
 
 On first launch, Peggy opens **Connect Microsoft 365**:
 
@@ -584,6 +624,25 @@ Peggy.Speech.Host\
 
 Both helper projects are published automatically by the tray project's MSBuild
 targets.
+
+### GitHub Releases
+
+Pushing a semantic version tag creates a GitHub Release:
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow runs the regression suite and publishes:
+
+- `peggy-win-x64.zip`, a self-contained package for Windows x64.
+- `peggy-win-x64.sha256`, the package checksum used by `install.ps1`.
+- `install.ps1`, the current-user bootstrap installer.
+
+Release packages are checksum-verified but not Authenticode-signed. Windows
+SmartScreen can therefore show an unknown-publisher warning until a code-signing
+certificate is added to the release pipeline.
 
 ## Testing
 
