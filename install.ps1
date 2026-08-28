@@ -444,6 +444,10 @@ function Stop-InstalledPeggy {
         return
     }
     $expectedPath = [IO.Path]::GetFullPath($Executable)
+    $installRoot = (
+        [IO.Path]::GetDirectoryName($expectedPath).TrimEnd('\', '/') +
+        [IO.Path]::DirectorySeparatorChar
+    )
     $processes = Get-Process | Where-Object {
         try {
             -not [string]::IsNullOrWhiteSpace($_.Path) -and
@@ -453,9 +457,75 @@ function Stop-InstalledPeggy {
         }
     }
     foreach ($process in $processes) {
+        $managedHelperNames = @(
+            'copilot.exe',
+            'peggy-mcp.exe',
+            'peggy-speech-host.exe',
+            'workiq.exe'
+        )
+        $managedHelperIds = @(
+            Get-CimInstance Win32_Process `
+                -Filter "ParentProcessId = $($process.Id)" `
+                -ErrorAction Stop |
+                Where-Object {
+                    $managedHelperNames -contains $_.Name
+                } |
+                Select-Object -ExpandProperty ProcessId
+        )
+
         Write-Step "Stopping Peggy process $($process.Id)"
-        Stop-Process -Id $process.Id -ErrorAction Stop
-        $process.WaitForExit(10000)
+        Stop-Process -Id $process.Id -Force -ErrorAction Stop
+        if (-not $process.WaitForExit(10000)) {
+            throw "Peggy process $($process.Id) did not stop."
+        }
+
+        foreach ($helperId in $managedHelperIds) {
+            $helper = Get-Process `
+                -Id $helperId `
+                -ErrorAction SilentlyContinue
+            if ($null -ne $helper) {
+                Write-Step "Stopping Peggy helper process $helperId"
+                Stop-Process -Id $helperId -Force -ErrorAction Stop
+                if (-not $helper.WaitForExit(10000)) {
+                    throw "Peggy helper process $helperId did not stop."
+                }
+            }
+        }
+    }
+
+    $installedHelpers = @(
+        Get-Process | Where-Object {
+            try {
+                -not [string]::IsNullOrWhiteSpace($_.Path) -and
+                    [IO.Path]::GetFullPath($_.Path).StartsWith(
+                        $installRoot,
+                        [StringComparison]::OrdinalIgnoreCase)
+            } catch {
+                $false
+            }
+        }
+    )
+    foreach ($helper in $installedHelpers) {
+        Write-Step "Stopping Peggy helper process $($helper.Id)"
+        Stop-Process -Id $helper.Id -Force -ErrorAction Stop
+        if (-not $helper.WaitForExit(10000)) {
+            throw "Peggy helper process $($helper.Id) did not stop."
+        }
+    }
+    $remainingHelpers = @(
+        Get-Process | Where-Object {
+            try {
+                -not [string]::IsNullOrWhiteSpace($_.Path) -and
+                    [IO.Path]::GetFullPath($_.Path).StartsWith(
+                        $installRoot,
+                        [StringComparison]::OrdinalIgnoreCase)
+            } catch {
+                $false
+            }
+        }
+    )
+    if ($remainingHelpers.Count -gt 0) {
+        throw 'Peggy helper processes are still using the install directory.'
     }
 }
 

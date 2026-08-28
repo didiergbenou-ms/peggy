@@ -1173,6 +1173,22 @@ public sealed class CopilotRunner : IAsyncDisposable
 
     private static string ResolveCopilot()
     {
+        var configuredPath = Environment.GetEnvironmentVariable(
+            "PEGGY_COPILOT_PATH");
+        if (!string.IsNullOrWhiteSpace(configuredPath))
+        {
+            var expanded = Path.GetFullPath(
+                Environment.ExpandEnvironmentVariables(
+                    configuredPath.Trim().Trim('"')));
+            if (!File.Exists(expanded))
+            {
+                throw new FileNotFoundException(
+                    "PEGGY_COPILOT_PATH does not identify copilot.exe.",
+                    expanded);
+            }
+            return expanded;
+        }
+
         var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
         foreach (var directory in path.Split(Path.PathSeparator))
         {
@@ -1188,6 +1204,29 @@ public sealed class CopilotRunner : IAsyncDisposable
             }
             catch (ArgumentException)
             {
+            }
+        }
+
+        var localAppData = Environment.GetFolderPath(
+            Environment.SpecialFolder.LocalApplicationData);
+        foreach (var candidate in new[]
+                 {
+                     Path.Combine(
+                         localAppData,
+                         "Microsoft",
+                         "WinGet",
+                         "Links",
+                         "copilot.exe"),
+                     Path.Combine(
+                         localAppData,
+                         "Microsoft",
+                         "WindowsApps",
+                         "copilot.exe")
+                 })
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
             }
         }
 

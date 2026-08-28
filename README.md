@@ -344,7 +344,7 @@ The installer:
   the installation directory.
 
 Add `-InstallSpeechModels` to download the optional local voice models, or
-`-NoLaunch` to install without starting Peggy. Use `-Version v0.1.2` to install
+`-NoLaunch` to install without starting Peggy. Use `-Version v0.1.3` to install
 a specific release.
 
 This repository is currently private. Authenticate GitHub CLI with repository
@@ -712,6 +712,7 @@ external writes.
 | `PEGGY_WORKIQ_ACCOUNT` | Optional account override for automation or migration | Encrypted account selected during first-run sign-in |
 | `PEGGY_WORKIQ_PATH` | Explicit `workiq.exe` or compatible wrapper path | Auto-detected |
 | `PEGGY_MESSAGE_PROVIDER` | `workiq` or `mock` | `workiq` |
+| `PEGGY_COPILOT_PATH` | Explicit `copilot.exe` path | `PATH`, then the current user's WinGet links |
 | `PEGGY_COPILOT_MODEL` | Process-level Copilot model override | Saved setting, initially `gpt-5.4` |
 | `PEGGY_STATE_PATH` | Alternate DPAPI-encrypted state path | `%LOCALAPPDATA%\Peggy\state.dat` |
 | `PEGGY_SPEECH_MODELS` | Alternate local speech-model directory | `%LOCALAPPDATA%\Peggy\models` |

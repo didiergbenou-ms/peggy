@@ -949,6 +949,8 @@ internal static class AssistantBehaviorSmokeTests
 
         var previousModel = Environment.GetEnvironmentVariable(
             "PEGGY_COPILOT_MODEL");
+        var previousCopilotPath = Environment.GetEnvironmentVariable(
+            "PEGGY_COPILOT_PATH");
         try
         {
             Environment.SetEnvironmentVariable(
@@ -965,12 +967,35 @@ internal static class AssistantBehaviorSmokeTests
                 "environment-model",
                 resolvedModel,
                 "The documented Copilot model environment override was ignored.");
+
+            var explicitCopilotPath = Path.Combine(directory, "copilot.exe");
+            File.WriteAllText(explicitCopilotPath, "test executable");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_COPILOT_PATH",
+                explicitCopilotPath);
+            TestAssert.Equal(
+                explicitCopilotPath,
+                InvokePrivate<string>(
+                    typeof(CopilotRunner),
+                    "ResolveCopilot"),
+                "The explicit Copilot executable override was ignored.");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_COPILOT_PATH",
+                Path.Combine(directory, "missing-copilot.exe"));
+            TestAssert.Throws<FileNotFoundException>(
+                () => InvokePrivate<string>(
+                    typeof(CopilotRunner),
+                    "ResolveCopilot"),
+                "An invalid explicit Copilot executable was silently ignored.");
         }
         finally
         {
             Environment.SetEnvironmentVariable(
                 "PEGGY_COPILOT_MODEL",
                 previousModel);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_COPILOT_PATH",
+                previousCopilotPath);
         }
     }
 
