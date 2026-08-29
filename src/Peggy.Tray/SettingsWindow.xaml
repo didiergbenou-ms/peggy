@@ -161,18 +161,34 @@
           <CheckBox x:Name="PausedCheck" Content="Pause monitoring"/>
         </StackPanel>
 
-        <GroupBox Header="Full-channel watchlist" Padding="10">
+        <GroupBox Header="Teams channel monitoring" Padding="10">
           <Grid>
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <TextBlock x:Name="ChannelStatus"
-                       Text="Loading joined Teams channels..."
-                       Foreground="#6f625b" Margin="0,0,0,8"/>
-            <ScrollViewer Grid.Row="1" MaxHeight="230"
+                       Text="Loading joined Teams..."
+                       TextWrapping="Wrap"
+                       Foreground="#6f625b" Margin="0,0,0,10"/>
+            <TextBlock Grid.Row="1"
+                       x:Name="SelectedChannelStatus"
+                       Text="Selected full channels"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,5"/>
+            <StackPanel Grid.Row="2"
+                        x:Name="SelectedChannelsPanel"
+                        Margin="0,0,0,10"/>
+            <TextBlock Grid.Row="3"
+                       Text="Joined teams"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,5"/>
+            <ScrollViewer Grid.Row="4" MaxHeight="320"
                           VerticalScrollBarVisibility="Auto">
-              <StackPanel x:Name="ChannelsPanel"/>
+              <StackPanel x:Name="TeamsPanel"/>
             </ScrollViewer>
           </Grid>
         </GroupBox>

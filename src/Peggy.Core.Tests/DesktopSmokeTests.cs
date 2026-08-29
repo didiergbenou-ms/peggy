@@ -894,9 +894,10 @@ internal static class DesktopSmokeTests
                 }
             ]
         };
+        var provider = new MockMessageProvider();
         var window = new SettingsWindow(
             initial,
-            new MockMessageProvider(),
+            provider,
             "person@example.com");
         window.Loaded += (_, _) =>
             window.Dispatcher.BeginInvoke(
@@ -931,25 +932,46 @@ internal static class DesktopSmokeTests
                     Find<ComboBox>(
                         window,
                         "SpeechInputGain").SelectedIndex = 3;
-                    var channelPanel = Find<StackPanel>(
+                    WaitWithDispatcher(InvokeInstancePrivate<Task>(
                         window,
-                        "ChannelsPanel");
-                    var channelCheck = Descendants<CheckBox>(channelPanel)
-                        .FirstOrDefault();
-                    if (channelCheck is not null)
-                    {
-                        channelCheck.IsChecked = true;
-                    }
-                    var unavailableCheck =
-                        Descendants<CheckBox>(channelPanel)
-                            .FirstOrDefault(check => string.Equals(
-                                check.Content?.ToString(),
-                                "Unavailable / Preserved",
-                                StringComparison.Ordinal));
-                    if (unavailableCheck is not null)
-                    {
-                        unavailableCheck.IsChecked = false;
-                    }
+                        "LoadTeamsAsync"));
+                    var teamsPanel = Find<StackPanel>(
+                        window,
+                        "TeamsPanel");
+                    TestAssert.True(
+                        provider.ListJoinedTeamsCallCount > 0 &&
+                        provider.ListTeamChannelsCallCount == 0 &&
+                        Descendants<Expander>(teamsPanel).Count() == 2,
+                        "Settings eagerly loaded every team's channels.");
+                    var engineering = Descendants<Expander>(teamsPanel)
+                        .First(expander =>
+                            expander.Tag is TeamsTeamInfo
+                            {
+                                TeamId: "mock-team"
+                            });
+                    WaitWithDispatcher(InvokeInstancePrivate<Task>(
+                        window,
+                        "LoadTeamChannelsAsync",
+                        engineering.Tag!));
+                    TestAssert.Equal(
+                        1,
+                        provider.ListTeamChannelsCallCount,
+                        "Expanding one team did not load exactly that team.");
+                    Descendants<CheckBox>(engineering)
+                        .First(check => string.Equals(
+                            check.Content?.ToString(),
+                            "General",
+                            StringComparison.Ordinal))
+                        .IsChecked = true;
+                    var selectedPanel = Find<StackPanel>(
+                        window,
+                        "SelectedChannelsPanel");
+                    Descendants<Button>(selectedPanel)
+                        .First(button => string.Equals(
+                            button.Tag?.ToString(),
+                            "unavailable-team\nunavailable-channel",
+                            StringComparison.Ordinal))
+                        .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
 
                     InvokeInstancePrivate(
                         window,
@@ -988,6 +1010,12 @@ internal static class DesktopSmokeTests
             1,
             window.SavedSettings.TeamsChannelWatchlist.Count,
             "Settings could not remove an unavailable watched channel.");
+        TestAssert.True(
+            window.SavedSettings.TeamsChannelWatchlist[0].TeamId ==
+                "mock-team" &&
+            window.SavedSettings.TeamsChannelWatchlist[0].ChannelId ==
+                "mock-channel",
+            "Settings did not persist the selected team channel.");
     }
 
     private static void TestWorkIqSignInWindow()

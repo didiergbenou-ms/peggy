@@ -344,7 +344,7 @@ The installer:
   the installation directory.
 
 Add `-InstallSpeechModels` to download the optional local voice models, or
-`-NoLaunch` to install without starting Peggy. Use `-Version v0.1.3` to install
+`-NoLaunch` to install without starting Peggy. Use `-Version v0.1.4` to install
 a specific release.
 
 This repository is currently private. Authenticate GitHub CLI with repository
@@ -504,7 +504,12 @@ not leave a partially applied identity, model, or source scope.
 | Monitoring schedule | Local 24-hour wake and sleep times |
 | Start at Windows sign-in | Manages the current user's `Run` registry entry |
 | Pause monitoring | Persists a manual pause independently of scheduled sleep |
-| Full-channel watchlist | Selects joined Teams channels for structured delta monitoring |
+| Teams channel monitoring | Loads joined teams first, then loads channels only when a team is expanded |
+
+Selected channels are always listed at the top of Settings and can be removed
+without loading their team. Selecting a channel enables full structured delta
+monitoring for that channel. Mentions and replies in participated threads remain
+monitored across Teams.
 
 ## Supported actions
 

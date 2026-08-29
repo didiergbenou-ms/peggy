@@ -12,14 +12,17 @@ namespace Peggy.Tray;
 public partial class SettingsWindow : Window
 {
     private readonly IMessageProvider _provider;
-    private readonly HashSet<string> _selectedChannels;
-    private readonly HashSet<string> _unavailableChannelKeys =
+    private readonly Dictionary<string, TeamsChannelWatch> _selectedChannels;
+    private readonly Dictionary<string, CheckBox> _channelChecks =
         new(StringComparer.Ordinal);
-    private readonly List<TeamsChannelWatch> _originalWatchlist;
+    private readonly Dictionary<string, StackPanel> _teamPanels =
+        new(StringComparer.Ordinal);
+    private readonly HashSet<string> _loadedTeamIds =
+        new(StringComparer.Ordinal);
+    private readonly HashSet<string> _loadingTeamIds =
+        new(StringComparer.Ordinal);
     private readonly string _pinnedAccount;
-    private readonly List<(CheckBox CheckBox, TeamsChannelInfo Channel)> _channelChecks = [];
     private readonly CancellationTokenSource _loadCancellation = new();
-    private bool _channelsLoaded;
     private bool _closed;
 
     public SettingsWindow(
@@ -67,13 +70,16 @@ public partial class SettingsWindow : Window
             SpeechInputGain,
             settings.SpeechInputGain.ToString(
                 System.Globalization.CultureInfo.InvariantCulture));
-        _originalWatchlist = settings.TeamsChannelWatchlist
-            .Select(CloneWatch)
-            .ToList();
-        _selectedChannels = _originalWatchlist
-            .Select(item => ChannelKey(item.TeamId, item.ChannelId))
-            .ToHashSet(StringComparer.Ordinal);
-        Loaded += async (_, _) => await LoadChannelsAsync();
+        _selectedChannels = settings.TeamsChannelWatchlist
+            .GroupBy(
+                item => ChannelKey(item.TeamId, item.ChannelId),
+                StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => CloneWatch(group.First()),
+                StringComparer.Ordinal);
+        RenderSelectedChannels();
+        Loaded += async (_, _) => await LoadTeamsAsync();
         Closed += (_, _) =>
         {
             _closed = true;
@@ -84,89 +90,52 @@ public partial class SettingsWindow : Window
 
     public PeggySettings? SavedSettings { get; private set; }
 
-    private async System.Threading.Tasks.Task LoadChannelsAsync()
+    private async System.Threading.Tasks.Task LoadTeamsAsync()
     {
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
                 _loadCancellation.Token);
             timeout.CancelAfter(TimeSpan.FromSeconds(60));
-            var channels = await _provider.ListChannelsAsync(timeout.Token);
+            var teams = await _provider.ListJoinedTeamsAsync(timeout.Token);
             if (_closed)
             {
                 return;
             }
 
-            ChannelsPanel.Children.Clear();
+            TeamsPanel.Children.Clear();
+            _teamPanels.Clear();
+            _loadedTeamIds.Clear();
+            _loadingTeamIds.Clear();
             _channelChecks.Clear();
-            foreach (var teamGroup in channels.GroupBy(
-                         channel => channel.TeamName,
-                         StringComparer.OrdinalIgnoreCase))
+            foreach (var team in teams)
             {
-                ChannelsPanel.Children.Add(new TextBlock
+                var channelPanel = new StackPanel
                 {
-                    Text = teamGroup.Key,
-                    FontWeight = FontWeights.SemiBold,
-                    Margin = new Thickness(0, 8, 0, 3)
+                    Margin = new Thickness(12, 3, 0, 7)
+                };
+                channelPanel.Children.Add(new TextBlock
+                {
+                    Text = "Expand this team to load its channels.",
+                    Foreground = System.Windows.Media.Brushes.DimGray
                 });
-                foreach (var channel in teamGroup)
+                _teamPanels[team.TeamId] = channelPanel;
+                var expander = new Expander
                 {
-                    var checkBox = new CheckBox
-                    {
-                        Content = channel.ChannelName,
-                        IsChecked = _selectedChannels.Contains(
-                            ChannelKey(channel.TeamId, channel.ChannelId)),
-                        Margin = new Thickness(12, 2, 0, 2)
-                    };
-                    _channelChecks.Add((checkBox, channel));
-                    ChannelsPanel.Children.Add(checkBox);
-                }
+                    Header = team.TeamName,
+                    Tag = team,
+                    Content = channelPanel,
+                    Margin = new Thickness(0, 1, 0, 1)
+                };
+                expander.Expanded += async (_, _) =>
+                    await LoadTeamChannelsAsync(team);
+                TeamsPanel.Children.Add(expander);
             }
-            var availableKeys = channels
-                .Select(channel => ChannelKey(
-                    channel.TeamId,
-                    channel.ChannelId))
-                .ToHashSet(StringComparer.Ordinal);
-            var unavailable = _originalWatchlist
-                .Where(item => !availableKeys.Contains(
-                    ChannelKey(item.TeamId, item.ChannelId)))
-                .ToList();
-            if (unavailable.Count > 0)
-            {
-                ChannelsPanel.Children.Add(new TextBlock
-                {
-                    Text = "Unavailable saved channels",
-                    FontWeight = FontWeights.SemiBold,
-                    Margin = new Thickness(0, 12, 0, 3)
-                });
-                foreach (var watched in unavailable)
-                {
-                    var channel = new TeamsChannelInfo(
-                        watched.TeamId,
-                        "Unavailable saved channels",
-                        watched.ChannelId,
-                        watched.DisplayName);
-                    var key = ChannelKey(
-                        channel.TeamId,
-                        channel.ChannelId);
-                    _unavailableChannelKeys.Add(key);
-                    var checkBox = new CheckBox
-                    {
-                        Content = watched.DisplayName,
-                        IsChecked = true,
-                        ToolTip = "This saved channel is not in the current " +
-                                  "catalog. Clear it to remove it.",
-                        Margin = new Thickness(12, 2, 0, 2)
-                    };
-                    _channelChecks.Add((checkBox, channel));
-                    ChannelsPanel.Children.Add(checkBox);
-                }
-            }
-            _channelsLoaded = true;
-            ChannelStatus.Text = channels.Count == 0
-                ? "No joined channels were returned."
-                : "Only selected channels have their full activity evaluated. " +
-                  "Mentions and participated-thread replies remain monitored everywhere.";
+            ChannelStatus.Text = teams.Count == 0
+                ? "No joined Teams were returned."
+                : $"{teams.Count} joined teams loaded. Expand only the teams " +
+                  "whose channels you want to configure. Selected channels " +
+                  "receive full activity monitoring.";
         }
         catch (OperationCanceledException) when (_closed)
         {
@@ -174,13 +143,236 @@ public partial class SettingsWindow : Window
         catch (OperationCanceledException)
         {
             ChannelStatus.Text =
-                "Channels took too long to load. Close and reopen Settings to retry.";
+                "Joined teams took too long to load. Close and reopen Settings " +
+                "to retry.";
         }
         catch (Exception ex)
         {
             ChannelStatus.Text =
-                $"Channels could not be loaded: {ex.Message}";
+                $"Joined teams could not be loaded: {ex.Message}";
         }
+    }
+
+    private async System.Threading.Tasks.Task LoadTeamChannelsAsync(
+        TeamsTeamInfo team)
+    {
+        if (_closed ||
+            _loadedTeamIds.Contains(team.TeamId) ||
+            !_loadingTeamIds.Add(team.TeamId) ||
+            !_teamPanels.TryGetValue(team.TeamId, out var channelPanel))
+        {
+            return;
+        }
+
+        ShowTeamMessage(channelPanel, "Loading channels...", null);
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
+                _loadCancellation.Token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(60));
+            var channels = await _provider.ListTeamChannelsAsync(
+                team.TeamId,
+                team.TeamName,
+                timeout.Token);
+            if (_closed)
+            {
+                return;
+            }
+
+            channelPanel.Children.Clear();
+            if (channels.Count == 0)
+            {
+                channelPanel.Children.Add(new TextBlock
+                {
+                    Text = "No channels were returned for this team.",
+                    Foreground = System.Windows.Media.Brushes.DimGray
+                });
+            }
+            foreach (var channel in channels)
+            {
+                AddChannelCheckBox(channelPanel, channel);
+            }
+            var availableKeys = channels
+                .Select(channel => ChannelKey(
+                    channel.TeamId,
+                    channel.ChannelId))
+                .ToHashSet(StringComparer.Ordinal);
+            if (_selectedChannels.Values.Any(item =>
+                    string.Equals(
+                        item.TeamId,
+                        team.TeamId,
+                        StringComparison.Ordinal) &&
+                    !availableKeys.Contains(
+                        ChannelKey(item.TeamId, item.ChannelId))))
+            {
+                channelPanel.Children.Add(new TextBlock
+                {
+                    Text = "A saved channel from this team is not currently " +
+                           "available. It remains selected above until removed.",
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = System.Windows.Media.Brushes.DimGray,
+                    FontSize = 11,
+                    Margin = new Thickness(0, 6, 0, 0)
+                });
+            }
+            _loadedTeamIds.Add(team.TeamId);
+        }
+        catch (OperationCanceledException) when (_closed)
+        {
+        }
+        catch (OperationCanceledException)
+        {
+            ShowTeamMessage(
+                channelPanel,
+                "Channels took too long to load.",
+                team);
+        }
+        catch (Exception ex)
+        {
+            ShowTeamMessage(
+                channelPanel,
+                $"Channels could not be loaded: {ex.Message}",
+                team);
+        }
+        finally
+        {
+            _loadingTeamIds.Remove(team.TeamId);
+        }
+    }
+
+    private void AddChannelCheckBox(
+        Panel channelPanel,
+        TeamsChannelInfo channel)
+    {
+        var key = ChannelKey(channel.TeamId, channel.ChannelId);
+        var checkBox = new CheckBox
+        {
+            Content = channel.ChannelName,
+            IsChecked = _selectedChannels.ContainsKey(key),
+            Margin = new Thickness(0, 2, 0, 2)
+        };
+        checkBox.Checked += (_, _) =>
+        {
+            _selectedChannels[key] = new TeamsChannelWatch
+            {
+                TeamId = channel.TeamId,
+                ChannelId = channel.ChannelId,
+                DisplayName = $"{channel.TeamName} / {channel.ChannelName}"
+            };
+            RenderSelectedChannels();
+        };
+        checkBox.Unchecked += (_, _) =>
+        {
+            _selectedChannels.Remove(key);
+            RenderSelectedChannels();
+        };
+        _channelChecks[key] = checkBox;
+        channelPanel.Children.Add(checkBox);
+    }
+
+    private async void RetryTeamChannels_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: TeamsTeamInfo team })
+        {
+            await LoadTeamChannelsAsync(team);
+        }
+    }
+
+    private void ShowTeamMessage(
+        Panel panel,
+        string message,
+        TeamsTeamInfo? retryTeam)
+    {
+        panel.Children.Clear();
+        panel.Children.Add(new TextBlock
+        {
+            Text = message,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = System.Windows.Media.Brushes.DimGray
+        });
+        if (retryTeam is null)
+        {
+            return;
+        }
+
+        var retry = new Button
+        {
+            Content = "Retry",
+            Tag = retryTeam,
+            Width = 72,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Padding = new Thickness(8, 4, 8, 4),
+            Margin = new Thickness(0, 6, 0, 0)
+        };
+        retry.Click += RetryTeamChannels_Click;
+        panel.Children.Add(retry);
+    }
+
+    private void RenderSelectedChannels()
+    {
+        SelectedChannelsPanel.Children.Clear();
+        SelectedChannelStatus.Text =
+            $"Selected full channels ({_selectedChannels.Count})";
+        if (_selectedChannels.Count == 0)
+        {
+            SelectedChannelsPanel.Children.Add(new TextBlock
+            {
+                Text = "None selected. Mentions and replies in participated " +
+                       "threads are still monitored across Teams.",
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = System.Windows.Media.Brushes.DimGray,
+                FontSize = 11
+            });
+            return;
+        }
+
+        foreach (var pair in _selectedChannels
+                     .OrderBy(
+                         item => item.Value.DisplayName,
+                         StringComparer.OrdinalIgnoreCase))
+        {
+            var row = new DockPanel
+            {
+                Margin = new Thickness(0, 2, 0, 2)
+            };
+            var remove = new Button
+            {
+                Content = "Remove",
+                Tag = pair.Key,
+                MinWidth = 68,
+                Padding = new Thickness(7, 3, 7, 3),
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+            remove.Click += RemoveSelectedChannel_Click;
+            DockPanel.SetDock(remove, Dock.Right);
+            row.Children.Add(remove);
+            row.Children.Add(new TextBlock
+            {
+                Text = pair.Value.DisplayName,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            SelectedChannelsPanel.Children.Add(row);
+        }
+    }
+
+    private void RemoveSelectedChannel_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string key })
+        {
+            return;
+        }
+
+        _selectedChannels.Remove(key);
+        if (_channelChecks.TryGetValue(key, out var checkBox))
+        {
+            checkBox.IsChecked = false;
+        }
+        RenderSelectedChannels();
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
@@ -301,52 +493,12 @@ public partial class SettingsWindow : Window
     }
 
     private List<TeamsChannelWatch> GetSavedWatchlist()
-    {
-        if (!_channelsLoaded)
-        {
-            return _originalWatchlist
-                .Select(CloneWatch)
-                .ToList();
-        }
-
-        var representedKeys = _channelChecks
-            .Select(item => ChannelKey(
-                item.Channel.TeamId,
-                item.Channel.ChannelId))
-            .ToHashSet(StringComparer.Ordinal);
-        return _channelChecks
-            .Where(item => item.CheckBox.IsChecked == true)
-            .Select(item => new TeamsChannelWatch
-            {
-                TeamId = item.Channel.TeamId,
-                ChannelId = item.Channel.ChannelId,
-                DisplayName = GetWatchDisplayName(item.Channel)
-            })
-            .Concat(_originalWatchlist
-                .Where(item => !representedKeys.Contains(
-                    ChannelKey(item.TeamId, item.ChannelId)))
-                .Select(CloneWatch))
-            .GroupBy(
-                item => ChannelKey(item.TeamId, item.ChannelId),
-                StringComparer.Ordinal)
-            .Select(group => group.First())
+        => _selectedChannels.Values
+            .OrderBy(
+                item => item.DisplayName,
+                StringComparer.OrdinalIgnoreCase)
+            .Select(CloneWatch)
             .ToList();
-    }
-
-    private string GetWatchDisplayName(TeamsChannelInfo channel)
-    {
-        var key = ChannelKey(channel.TeamId, channel.ChannelId);
-        if (_unavailableChannelKeys.Contains(key))
-        {
-            return _originalWatchlist.First(item =>
-                string.Equals(
-                    ChannelKey(item.TeamId, item.ChannelId),
-                    key,
-                    StringComparison.Ordinal)).DisplayName;
-        }
-
-        return $"{channel.TeamName} / {channel.ChannelName}";
-    }
 
     private static TeamsChannelWatch CloneWatch(TeamsChannelWatch item)
         => new()

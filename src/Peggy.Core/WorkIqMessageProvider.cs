@@ -42,13 +42,10 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     private readonly PeggySettings _settings;
     private readonly SemaphoreSlim _identityLock = new(1, 1);
     private readonly SemaphoreSlim _folderLock = new(1, 1);
-    private readonly SemaphoreSlim _channelCatalogLock = new(1, 1);
     private string? _currentUserId;
     private string _outlookAccount;
     private IReadOnlyList<MailFolder>? _monitoredMailFolders;
     private DateTimeOffset? _monitoredMailFoldersLoadedUtc;
-    private IReadOnlyList<TeamsChannel>? _channelCatalog;
-    private DateTimeOffset? _channelCatalogLoadedUtc;
 
     public WorkIqMessageProvider(
         string? executablePath = null,
@@ -271,19 +268,48 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             ct);
     }
 
-    public async Task<IReadOnlyList<TeamsChannelInfo>> ListChannelsAsync(
+    public async Task<IReadOnlyList<TeamsTeamInfo>> ListJoinedTeamsAsync(
         CancellationToken ct = default)
     {
         await GetCurrentUserIdAsync(ct);
-        var channels = await GetChannelCatalogAsync(ct);
+        var teams = await GetJoinedTeamsCoreAsync(ct);
+        return teams
+            .Select(team => new TeamsTeamInfo(
+                team.Id!,
+                team.DisplayName ?? "(unnamed team)"))
+            .OrderBy(team => team.TeamName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<TeamsChannelInfo>> ListTeamChannelsAsync(
+        string teamId,
+        string teamName,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(teamId))
+        {
+            throw new ArgumentException(
+                "A Teams team ID is required.",
+                nameof(teamId));
+        }
+
+        await GetCurrentUserIdAsync(ct);
+        var normalizedTeamName = string.IsNullOrWhiteSpace(teamName)
+            ? "(unnamed team)"
+            : teamName.Trim();
+        var channels = await GetTeamChannelsCoreAsync(
+            teamId,
+            normalizedTeamName,
+            ct);
         return channels
             .Select(channel => new TeamsChannelInfo(
                 channel.TeamId!,
-                channel.TeamDisplayName ?? "(unnamed team)",
+                channel.TeamDisplayName ?? normalizedTeamName,
                 channel.Id!,
                 channel.DisplayName ?? "(unnamed channel)"))
-            .OrderBy(channel => channel.TeamName, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(channel => channel.ChannelName, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(
+                channel => channel.ChannelName,
+                StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
 
@@ -3348,69 +3374,40 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             $"&$filter={filter}&$expand=replies";
     }
 
-    private async Task<IReadOnlyList<TeamsChannel>> GetChannelCatalogAsync(
+    private async Task<IReadOnlyList<Team>> GetJoinedTeamsCoreAsync(
         CancellationToken ct)
     {
-        if (_channelCatalog is not null &&
-            IsCatalogFresh(_channelCatalogLoadedUtc))
+        var teams = await FetchAllPagesAsync<Team>(
+            "/me/joinedTeams?$select=id,displayName",
+            "joined Teams catalog",
+            ct);
+        return teams
+            .Where(team => !string.IsNullOrWhiteSpace(team.Id))
+            .DistinctBy(team => team.Id, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private async Task<IReadOnlyList<TeamsChannel>> GetTeamChannelsCoreAsync(
+        string teamId,
+        string teamName,
+        CancellationToken ct)
+    {
+        var escapedTeamId = Uri.EscapeDataString(teamId);
+        var channels = await FetchAllPagesAsync<TeamsChannel>(
+            $"/teams/{escapedTeamId}/channels?$select=id,displayName",
+            $"channels for team '{teamName}'",
+            ct);
+        var available = channels
+            .Where(channel => !string.IsNullOrWhiteSpace(channel.Id))
+            .DistinctBy(channel => channel.Id, StringComparer.Ordinal)
+            .ToList();
+        foreach (var channel in available)
         {
-            return _channelCatalog;
+            channel.TeamId = teamId;
+            channel.TeamDisplayName = teamName;
         }
 
-        await _channelCatalogLock.WaitAsync(ct);
-        try
-        {
-            if (_channelCatalog is not null &&
-                IsCatalogFresh(_channelCatalogLoadedUtc))
-            {
-                return _channelCatalog;
-            }
-
-            var teams = (await FetchAllPagesAsync<Team>(
-                    "/me/joinedTeams?$select=id,displayName",
-                    "joined Teams catalog",
-                    ct))
-                .Where(team => !string.IsNullOrWhiteSpace(team.Id))
-                .ToList();
-            using var concurrency = new SemaphoreSlim(4, 4);
-            var channelTasks = teams.Select(async team =>
-            {
-                await concurrency.WaitAsync(ct);
-                try
-                {
-                    var teamId = Uri.EscapeDataString(team.Id!);
-                    var teamChannels = await FetchAllPagesAsync<TeamsChannel>(
-                        $"/teams/{teamId}/channels?$select=id,displayName",
-                        $"channels for team '{team.DisplayName}'",
-                        ct);
-                    foreach (var channel in teamChannels.Where(channel =>
-                                 !string.IsNullOrWhiteSpace(channel.Id)))
-                    {
-                        channel.TeamId = team.Id;
-                        channel.TeamDisplayName = team.DisplayName;
-                    }
-
-                    return teamChannels
-                        .Where(channel => !string.IsNullOrWhiteSpace(channel.Id))
-                        .ToList();
-                }
-                finally
-                {
-                    concurrency.Release();
-                }
-            });
-            var channels = (await Task.WhenAll(channelTasks))
-                .SelectMany(teamChannels => teamChannels)
-                .ToList();
-
-            _channelCatalog = channels;
-            _channelCatalogLoadedUtc = DateTimeOffset.UtcNow;
-            return _channelCatalog;
-        }
-        finally
-        {
-            _channelCatalogLock.Release();
-        }
+        return available;
     }
 
     private static bool IsCatalogFresh(DateTimeOffset? loadedUtc)

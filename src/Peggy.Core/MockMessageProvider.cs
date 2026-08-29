@@ -12,6 +12,10 @@ public sealed class MockMessageProvider : IMessageProvider
         new();
     private readonly List<MessageThread> _threads;
 
+    public int ListJoinedTeamsCallCount { get; private set; }
+
+    public int ListTeamChannelsCallCount { get; private set; }
+
     public MockMessageProvider()
     {
         var now = DateTimeOffset.Now;
@@ -194,17 +198,45 @@ public sealed class MockMessageProvider : IMessageProvider
                 .ToList());
     }
 
-    public Task<IReadOnlyList<TeamsChannelInfo>> ListChannelsAsync(
+    public Task<IReadOnlyList<TeamsTeamInfo>> ListJoinedTeamsAsync(
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        ListJoinedTeamsCallCount++;
+        return Task.FromResult<IReadOnlyList<TeamsTeamInfo>>(
+        [
+            new TeamsTeamInfo("mock-team", "Engineering"),
+            new TeamsTeamInfo("mock-operations", "Operations")
+        ]);
+    }
+
+    public Task<IReadOnlyList<TeamsChannelInfo>> ListTeamChannelsAsync(
+        string teamId,
+        string teamName,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        ListTeamChannelsCallCount++;
+        if (!string.Equals(
+                teamId,
+                "mock-team",
+                StringComparison.Ordinal))
+        {
+            return Task.FromResult<IReadOnlyList<TeamsChannelInfo>>([]);
+        }
+
         return Task.FromResult<IReadOnlyList<TeamsChannelInfo>>(
         [
             new TeamsChannelInfo(
-                "mock-team",
-                "Engineering",
+                teamId,
+                teamName,
                 "mock-channel",
-                "General")
+                "General"),
+            new TeamsChannelInfo(
+                teamId,
+                teamName,
+                "mock-incidents",
+                "Incidents")
         ]);
     }
 

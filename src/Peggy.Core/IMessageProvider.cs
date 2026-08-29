@@ -27,7 +27,12 @@ public interface IMessageProvider
         int limit,
         CancellationToken ct = default);
 
-    Task<IReadOnlyList<TeamsChannelInfo>> ListChannelsAsync(
+    Task<IReadOnlyList<TeamsTeamInfo>> ListJoinedTeamsAsync(
+        CancellationToken ct = default);
+
+    Task<IReadOnlyList<TeamsChannelInfo>> ListTeamChannelsAsync(
+        string teamId,
+        string teamName,
         CancellationToken ct = default);
 
     Task<string> AskWorkAsync(

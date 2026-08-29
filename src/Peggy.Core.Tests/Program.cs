@@ -557,8 +557,14 @@ static async Task TestLiveReadSurfacesAsync(bool channelsOnly)
     var unreadTeams = await provider.ListUnreadAsync(
         MessageSource.Teams,
         10);
-    Console.WriteLine("Reading the Teams channel catalog...");
-    var channels = await provider.ListChannelsAsync();
+    Console.WriteLine("Reading joined Teams...");
+    var teams = await provider.ListJoinedTeamsAsync();
+    Console.WriteLine("Reading one team's channels...");
+    var channels = teams.Count == 0
+        ? Array.Empty<TeamsChannelInfo>()
+        : await provider.ListTeamChannelsAsync(
+            teams[0].TeamId,
+            teams[0].TeamName);
     Console.WriteLine("Reading upcoming calendar events...");
     var events = await provider.ListUpcomingEventsAsync(
         DateTimeOffset.UtcNow,
@@ -571,7 +577,8 @@ static async Task TestLiveReadSurfacesAsync(bool channelsOnly)
     Console.WriteLine(
         $"Live read surfaces passed: {total} changes in {batches} batches, " +
         $"{unreadEmail.Count} unread emails, {unreadTeams.Count} unread Teams messages, " +
-        $"{channels.Count} channels, {events.Count} events, {tasks.Count} tasks.");
+        $"{teams.Count} teams, {channels.Count} sampled team channels, " +
+        $"{events.Count} events, {tasks.Count} tasks.");
     File.Delete(statePath);
 }
 

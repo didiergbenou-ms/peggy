@@ -2331,9 +2331,21 @@ internal static class CoreBehaviorSmokeTests
             (await provider.ListTasksAsync(false, 20)).Count,
             "Mock task listing failed.");
         TestAssert.Equal(
-            1,
-            (await provider.ListChannelsAsync()).Count,
-            "Mock channel listing failed.");
+            2,
+            (await provider.ListJoinedTeamsAsync()).Count,
+            "Mock joined-team listing failed.");
+        TestAssert.Equal(
+            2,
+            (await provider.ListTeamChannelsAsync(
+                "mock-team",
+                "Engineering")).Count,
+            "Mock per-team channel listing failed.");
+        TestAssert.Equal(
+            0,
+            (await provider.ListTeamChannelsAsync(
+                "missing-team",
+                "Missing")).Count,
+            "Mock channel listing returned another team's channels.");
 
         var marked = await provider.MarkReadAsync("m-1001");
         TestAssert.True(marked.Success, "Mock mark-read failed.");

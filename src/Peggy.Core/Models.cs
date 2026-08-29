@@ -117,6 +117,10 @@ public sealed record TaskItem(
     bool IsCompleted,
     string ListName);
 
+public sealed record TeamsTeamInfo(
+    string TeamId,
+    string TeamName);
+
 public sealed record TeamsChannelInfo(
     string TeamId,
     string TeamName,
