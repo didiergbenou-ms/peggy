@@ -17,12 +17,17 @@ public partial class SettingsWindow : Window
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, StackPanel> _teamPanels =
         new(StringComparer.Ordinal);
+    private readonly Dictionary<string, IReadOnlyList<TeamsChannelInfo>>
+        _loadedChannelsByTeam = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _teamNames =
+        new(StringComparer.Ordinal);
     private readonly HashSet<string> _loadedTeamIds =
         new(StringComparer.Ordinal);
     private readonly HashSet<string> _loadingTeamIds =
         new(StringComparer.Ordinal);
     private readonly string _pinnedAccount;
     private readonly CancellationTokenSource _loadCancellation = new();
+    private bool _updatingSelectionControls;
     private bool _closed;
 
     public SettingsWindow(
@@ -105,11 +110,14 @@ public partial class SettingsWindow : Window
 
             TeamsPanel.Children.Clear();
             _teamPanels.Clear();
+            _loadedChannelsByTeam.Clear();
+            _teamNames.Clear();
             _loadedTeamIds.Clear();
             _loadingTeamIds.Clear();
             _channelChecks.Clear();
             foreach (var team in teams)
             {
+                _teamNames[team.TeamId] = team.TeamName;
                 var channelPanel = new StackPanel
                 {
                     Margin = new Thickness(12, 3, 0, 7)
@@ -131,6 +139,7 @@ public partial class SettingsWindow : Window
                     await LoadTeamChannelsAsync(team);
                 TeamsPanel.Children.Add(expander);
             }
+            RenderSelectedChannels();
             ChannelStatus.Text = teams.Count == 0
                 ? "No joined Teams were returned."
                 : $"{teams.Count} joined teams loaded. Expand only the teams " +
@@ -180,6 +189,7 @@ public partial class SettingsWindow : Window
             }
 
             channelPanel.Children.Clear();
+            _loadedChannelsByTeam[team.TeamId] = channels;
             if (channels.Count == 0)
             {
                 channelPanel.Children.Add(new TextBlock
@@ -187,6 +197,10 @@ public partial class SettingsWindow : Window
                     Text = "No channels were returned for this team.",
                     Foreground = System.Windows.Media.Brushes.DimGray
                 });
+            }
+            if (channels.Count > 0)
+            {
+                AddTeamSelectionControls(channelPanel, team);
             }
             foreach (var channel in channels)
             {
@@ -253,6 +267,10 @@ public partial class SettingsWindow : Window
         };
         checkBox.Checked += (_, _) =>
         {
+            if (_updatingSelectionControls)
+            {
+                return;
+            }
             _selectedChannels[key] = new TeamsChannelWatch
             {
                 TeamId = channel.TeamId,
@@ -263,11 +281,120 @@ public partial class SettingsWindow : Window
         };
         checkBox.Unchecked += (_, _) =>
         {
+            if (_updatingSelectionControls)
+            {
+                return;
+            }
             _selectedChannels.Remove(key);
             RenderSelectedChannels();
         };
         _channelChecks[key] = checkBox;
         channelPanel.Children.Add(checkBox);
+    }
+
+    private void AddTeamSelectionControls(
+        Panel channelPanel,
+        TeamsTeamInfo team)
+    {
+        var actions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(0, 0, 0, 5)
+        };
+        var selectAll = new Button
+        {
+            Content = "Select all channels",
+            Tag = team,
+            Padding = new Thickness(7, 3, 7, 3),
+            Margin = new Thickness(0, 0, 6, 0)
+        };
+        selectAll.Click += SelectAllTeamChannels_Click;
+        actions.Children.Add(selectAll);
+        var clear = new Button
+        {
+            Content = "Deselect team",
+            Tag = team.TeamId,
+            Padding = new Thickness(7, 3, 7, 3)
+        };
+        clear.Click += DeselectTeam_Click;
+        actions.Children.Add(clear);
+        channelPanel.Children.Add(actions);
+    }
+
+    private void SelectAllTeamChannels_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: TeamsTeamInfo team } ||
+            !_loadedChannelsByTeam.TryGetValue(
+                team.TeamId,
+                out var channels))
+        {
+            return;
+        }
+
+        _updatingSelectionControls = true;
+        try
+        {
+            foreach (var channel in channels)
+            {
+                var key = ChannelKey(channel.TeamId, channel.ChannelId);
+                _selectedChannels[key] = new TeamsChannelWatch
+                {
+                    TeamId = channel.TeamId,
+                    ChannelId = channel.ChannelId,
+                    DisplayName =
+                        $"{channel.TeamName} / {channel.ChannelName}"
+                };
+                if (_channelChecks.TryGetValue(key, out var checkBox))
+                {
+                    checkBox.IsChecked = true;
+                }
+            }
+        }
+        finally
+        {
+            _updatingSelectionControls = false;
+        }
+        RenderSelectedChannels();
+    }
+
+    private void DeselectTeam_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: string teamId })
+        {
+            DeselectTeam(teamId);
+        }
+    }
+
+    private void DeselectTeam(string teamId)
+    {
+        var keys = _selectedChannels
+            .Where(pair => string.Equals(
+                pair.Value.TeamId,
+                teamId,
+                StringComparison.Ordinal))
+            .Select(pair => pair.Key)
+            .ToList();
+        _updatingSelectionControls = true;
+        try
+        {
+            foreach (var key in keys)
+            {
+                _selectedChannels.Remove(key);
+                if (_channelChecks.TryGetValue(key, out var checkBox))
+                {
+                    checkBox.IsChecked = false;
+                }
+            }
+        }
+        finally
+        {
+            _updatingSelectionControls = false;
+        }
+        RenderSelectedChannels();
     }
 
     private async void RetryTeamChannels_Click(
@@ -313,8 +440,15 @@ public partial class SettingsWindow : Window
     private void RenderSelectedChannels()
     {
         SelectedChannelsPanel.Children.Clear();
+        var selectedTeams = _selectedChannels.Values
+            .Select(item => item.TeamId)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
         SelectedChannelStatus.Text =
-            $"Selected full channels ({_selectedChannels.Count})";
+            $"Selected monitoring: {selectedTeams} " +
+            $"{(selectedTeams == 1 ? "team" : "teams")}, " +
+            $"{_selectedChannels.Count} " +
+            $"{(_selectedChannels.Count == 1 ? "channel" : "channels")}";
         if (_selectedChannels.Count == 0)
         {
             SelectedChannelsPanel.Children.Add(new TextBlock
@@ -328,34 +462,91 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        foreach (var pair in _selectedChannels
+        foreach (var teamGroup in _selectedChannels
+                     .GroupBy(
+                         pair => pair.Value.TeamId,
+                         StringComparer.Ordinal)
                      .OrderBy(
-                         item => item.Value.DisplayName,
+                         group => GetTeamName(group.First().Value),
                          StringComparer.OrdinalIgnoreCase))
         {
-            var row = new DockPanel
+            var teamHeader = new DockPanel
             {
-                Margin = new Thickness(0, 2, 0, 2)
+                Margin = new Thickness(0, 4, 0, 2)
             };
-            var remove = new Button
+            var deselectTeam = new Button
             {
-                Content = "Remove",
-                Tag = pair.Key,
-                MinWidth = 68,
+                Content = "Deselect team",
+                Tag = teamGroup.Key,
                 Padding = new Thickness(7, 3, 7, 3),
                 Margin = new Thickness(8, 0, 0, 0)
             };
-            remove.Click += RemoveSelectedChannel_Click;
-            DockPanel.SetDock(remove, Dock.Right);
-            row.Children.Add(remove);
-            row.Children.Add(new TextBlock
+            deselectTeam.Click += DeselectTeam_Click;
+            DockPanel.SetDock(deselectTeam, Dock.Right);
+            teamHeader.Children.Add(deselectTeam);
+            teamHeader.Children.Add(new TextBlock
             {
-                Text = pair.Value.DisplayName,
+                Text = GetTeamName(teamGroup.First().Value),
+                FontWeight = FontWeights.SemiBold,
                 TextWrapping = TextWrapping.Wrap,
                 VerticalAlignment = VerticalAlignment.Center
             });
-            SelectedChannelsPanel.Children.Add(row);
+            SelectedChannelsPanel.Children.Add(teamHeader);
+
+            foreach (var pair in teamGroup.OrderBy(
+                         item => item.Value.DisplayName,
+                         StringComparer.OrdinalIgnoreCase))
+            {
+                var row = new DockPanel
+                {
+                    Margin = new Thickness(12, 2, 0, 2)
+                };
+                var remove = new Button
+                {
+                    Content = "Remove",
+                    Tag = pair.Key,
+                    MinWidth = 68,
+                    Padding = new Thickness(7, 3, 7, 3),
+                    Margin = new Thickness(8, 0, 0, 0)
+                };
+                remove.Click += RemoveSelectedChannel_Click;
+                DockPanel.SetDock(remove, Dock.Right);
+                row.Children.Add(remove);
+                row.Children.Add(new TextBlock
+                {
+                    Text = GetChannelName(pair.Value),
+                    TextWrapping = TextWrapping.Wrap,
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+                SelectedChannelsPanel.Children.Add(row);
+            }
         }
+    }
+
+    private string GetTeamName(TeamsChannelWatch item)
+    {
+        if (_teamNames.TryGetValue(item.TeamId, out var teamName))
+        {
+            return teamName;
+        }
+
+        var separator = item.DisplayName.IndexOf(
+            " / ",
+            StringComparison.Ordinal);
+        return separator > 0
+            ? item.DisplayName[..separator]
+            : item.DisplayName;
+    }
+
+    private static string GetChannelName(TeamsChannelWatch item)
+    {
+        var separator = item.DisplayName.IndexOf(
+            " / ",
+            StringComparison.Ordinal);
+        return separator >= 0 &&
+               separator + 3 < item.DisplayName.Length
+            ? item.DisplayName[(separator + 3)..]
+            : item.DisplayName;
     }
 
     private void RemoveSelectedChannel_Click(
@@ -370,7 +561,15 @@ public partial class SettingsWindow : Window
         _selectedChannels.Remove(key);
         if (_channelChecks.TryGetValue(key, out var checkBox))
         {
-            checkBox.IsChecked = false;
+            _updatingSelectionControls = true;
+            try
+            {
+                checkBox.IsChecked = false;
+            }
+            finally
+            {
+                _updatingSelectionControls = false;
+            }
         }
         RenderSelectedChannels();
     }

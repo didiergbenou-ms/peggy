@@ -957,19 +957,45 @@ internal static class DesktopSmokeTests
                         1,
                         provider.ListTeamChannelsCallCount,
                         "Expanding one team did not load exactly that team.");
-                    Descendants<CheckBox>(engineering)
+                    var general = Descendants<CheckBox>(engineering)
                         .First(check => string.Equals(
                             check.Content?.ToString(),
                             "General",
-                            StringComparison.Ordinal))
-                        .IsChecked = true;
+                            StringComparison.Ordinal));
+                    var incidents = Descendants<CheckBox>(engineering)
+                        .First(check => string.Equals(
+                            check.Content?.ToString(),
+                            "Incidents",
+                            StringComparison.Ordinal));
+                    FindButton(
+                            engineering,
+                            "Select all channels")
+                        .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    TestAssert.True(
+                        general.IsChecked == true &&
+                        incidents.IsChecked == true,
+                        "Team-level selection did not select every channel.");
+                    FindButton(
+                            engineering,
+                            "Deselect team")
+                        .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    TestAssert.True(
+                        general.IsChecked == false &&
+                        incidents.IsChecked == false,
+                        "Team-level deselection did not clear every channel.");
+                    general.IsChecked = true;
                     var selectedPanel = Find<StackPanel>(
                         window,
                         "SelectedChannelsPanel");
                     Descendants<Button>(selectedPanel)
-                        .First(button => string.Equals(
+                        .First(button =>
+                            string.Equals(
+                                button.Content?.ToString(),
+                                "Deselect team",
+                                StringComparison.Ordinal) &&
+                            string.Equals(
                             button.Tag?.ToString(),
-                            "unavailable-team\nunavailable-channel",
+                            "unavailable-team",
                             StringComparison.Ordinal))
                         .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
 

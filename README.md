@@ -119,7 +119,9 @@ Peggy monitors:
 - Any additional Inbox-relative folders configured in Settings.
 
 Outlook cursors use message activity boundaries and delta links where
-available. Source references are verified before they are attached to alerts.
+available. Source references are verified before they are attached to alerts,
+including regional HTTPS Outlook on the web links under
+`*.mail.microsoft.com`.
 
 ### Teams chats
 
@@ -508,8 +510,10 @@ not leave a partially applied identity, model, or source scope.
 
 Selected channels are always listed at the top of Settings and can be removed
 without loading their team. Selecting a channel enables full structured delta
-monitoring for that channel. Mentions and replies in participated threads remain
-monitored across Teams.
+monitoring for that channel. Each loaded team also provides **Select all
+channels** and **Deselect team** controls, and every selected team can be
+deselected from the summary without loading it. Mentions and replies in
+participated threads remain monitored across Teams.
 
 ## Supported actions
 

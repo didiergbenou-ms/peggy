@@ -186,6 +186,73 @@ internal static class AssistantBehaviorSmokeTests
             alert.SourceReference,
             "A message URL did not replace an opaque Copilot source reference.");
 
+        var regionalManager = new PeggyStateManager(
+            new EncryptedStateStore(
+                Path.Combine(directory, "regional-alert-state.dat")));
+        await regionalManager.InitializeAsync();
+        var regionalAlerts = new AlertManager(regionalManager);
+        const string regionalSourceUrl =
+            "https://emea.mail.microsoft.com/owa/message-regional";
+        var regionalMessage = message with
+        {
+            Id = "regional-message",
+            ThreadId = "regional-thread",
+            WebUrl = regionalSourceUrl
+        };
+        var regionalDecision = decision with
+        {
+            ThreadId = "regional-thread",
+            MessageIds = ["regional-message"]
+        };
+        var regionalCreated = regionalAlerts.Apply(
+            [regionalDecision],
+            [regionalMessage],
+            now);
+        TestAssert.Equal(
+            regionalSourceUrl,
+            regionalCreated.MaterialUpdates.Single().SourceReference,
+            "A regional Microsoft Outlook web link was rejected.");
+        TestAssert.Throws<InvalidDataException>(
+            () => regionalAlerts.Apply(
+                [
+                    decision with
+                    {
+                        ThreadId = "lookalike-thread",
+                        MessageIds = ["lookalike-message"]
+                    }
+                ],
+                [
+                    message with
+                    {
+                        Id = "lookalike-message",
+                        ThreadId = "lookalike-thread",
+                        WebUrl =
+                            "https://emea.mail.microsoft.com.evil.example/owa/message"
+                    }
+                ],
+                now),
+            "A lookalike Outlook host was accepted.");
+        TestAssert.Throws<InvalidDataException>(
+            () => regionalAlerts.Apply(
+                [
+                    decision with
+                    {
+                        ThreadId = "insecure-thread",
+                        MessageIds = ["insecure-message"]
+                    }
+                ],
+                [
+                    message with
+                    {
+                        Id = "insecure-message",
+                        ThreadId = "insecure-thread",
+                        WebUrl =
+                            "http://emea.mail.microsoft.com/owa/message"
+                    }
+                ],
+                now),
+            "An insecure Outlook source link was accepted.");
+
         var unchanged = alerts.Apply(
             [decision],
             [message with { WebUrl = null }],

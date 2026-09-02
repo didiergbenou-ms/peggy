@@ -12,6 +12,7 @@ internal static class AlertSourceLink
         "outlook.office.com",
         "outlook.office365.com",
         "outlook.live.com",
+        "mail.microsoft.com",
         "teams.microsoft.com",
         "teams.cloud.microsoft",
         "teams.live.com"
@@ -66,14 +67,10 @@ internal static class AlertSourceLink
                 value?.Trim(),
                 UriKind.Absolute,
                 out var candidate) &&
-            (string.Equals(
-                 candidate.Scheme,
-                 Uri.UriSchemeHttps,
-                 StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(
-                 candidate.Scheme,
-                 Uri.UriSchemeHttp,
-                 StringComparison.OrdinalIgnoreCase)) &&
+            string.Equals(
+                candidate.Scheme,
+                Uri.UriSchemeHttps,
+                StringComparison.OrdinalIgnoreCase) &&
             SupportedHosts.Any(host =>
                 string.Equals(
                     candidate.Host,
