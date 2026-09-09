@@ -40,14 +40,20 @@ public sealed class PeggyStateManager
     public async Task PinWorkIqAccountAsync(
         string account,
         CancellationToken ct = default)
+        => await PinWorkIqIdentityAsync(
+            account,
+            mailbox: null,
+            ct);
+
+    public async Task PinWorkIqIdentityAsync(
+        string account,
+        string? mailbox,
+        CancellationToken ct = default)
     {
-        var normalized = account?.Trim();
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            throw new ArgumentException(
-                "A verified Microsoft 365 account is required.",
-                nameof(account));
-        }
+        var normalized = WorkIqSetupService.NormalizeAccount(account);
+        var normalizedMailbox = string.IsNullOrWhiteSpace(mailbox)
+            ? normalized
+            : WorkIqSetupService.NormalizeAccount(mailbox);
 
         await _stateGate.WaitAsync(ct);
         try
@@ -65,7 +71,9 @@ public sealed class PeggyStateManager
             }
 
             var previous = State.PinnedAccount;
+            var previousMailbox = State.PinnedMailbox;
             State.PinnedAccount = normalized;
+            State.PinnedMailbox = normalizedMailbox;
             try
             {
                 await _store.SaveAsync(State, ct);
@@ -73,6 +81,40 @@ public sealed class PeggyStateManager
             catch
             {
                 State.PinnedAccount = previous;
+                State.PinnedMailbox = previousMailbox;
+                throw;
+            }
+        }
+        finally
+        {
+            _stateGate.Release();
+        }
+    }
+
+    public async Task RecordWorkIqEulaAcceptanceAsync(
+        string version,
+        CancellationToken ct = default)
+    {
+        var normalized = version?.Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            throw new ArgumentException(
+                "An accepted WorkIQ version is required.",
+                nameof(version));
+        }
+
+        await _stateGate.WaitAsync(ct);
+        try
+        {
+            var previous = State.WorkIqEulaAcceptedVersion;
+            State.WorkIqEulaAcceptedVersion = normalized;
+            try
+            {
+                await _store.SaveAsync(State, ct);
+            }
+            catch
+            {
+                State.WorkIqEulaAcceptedVersion = previous;
                 throw;
             }
         }
@@ -84,7 +126,8 @@ public sealed class PeggyStateManager
 
     public async Task ApplySettingsAsync(
         PeggySettings settings,
-        bool resetMonitoring,
+        bool resetOutlookMonitoring,
+        bool resetTeamsMonitoring,
         bool resetCopilotSession,
         string copilotSessionId,
         decimal copilotSessionCredits,
@@ -100,6 +143,9 @@ public sealed class PeggyStateManager
             {
                 Version = previous.Version,
                 PinnedAccount = previous.PinnedAccount,
+                PinnedMailbox = previous.PinnedMailbox,
+                WorkIqEulaAcceptedVersion =
+                    previous.WorkIqEulaAcceptedVersion,
                 Settings = settings,
                 CopilotSessionDate = resetCopilotSession
                     ? DateOnly.FromDateTime(nowUtc.ToLocalTime().DateTime)
@@ -110,10 +156,13 @@ public sealed class PeggyStateManager
                 CopilotSessionCredits = resetCopilotSession
                     ? copilotSessionCredits
                     : previous.CopilotSessionCredits,
-                MonitoringCursor = resetMonitoring
-                    ? CreateRebasedMonitoringCursor(
+                MonitoringCursor =
+                    resetOutlookMonitoring || resetTeamsMonitoring
+                    ? CreateSettingsAdjustedMonitoringCursor(
                         previous.MonitoringCursor,
-                        nowUtc)
+                        nowUtc,
+                        resetOutlookMonitoring,
+                        resetTeamsMonitoring)
                     : previous.MonitoringCursor,
                 LastSuccessfulMonitoringUtc =
                     previous.LastSuccessfulMonitoringUtc,
@@ -179,9 +228,112 @@ public sealed class PeggyStateManager
         {
             InitialScanStartedUtc = nowUtc.AddMinutes(
                 -PeggyDefaults.StartupLookbackMinutes),
+            OutlookScanStartedUtc = nowUtc.AddMinutes(
+                -PeggyDefaults.StartupLookbackMinutes),
+            TeamsScanStartedUtc = nowUtc.AddMinutes(
+                -PeggyDefaults.StartupLookbackMinutes),
             ParticipatedChannelThreads = participatedThreads
         };
     }
+
+    private static MonitoringCursorState CreateSettingsAdjustedMonitoringCursor(
+        MonitoringCursorState current,
+        DateTimeOffset nowUtc,
+        bool resetOutlook,
+        bool resetTeams)
+    {
+        var cursor = CloneMonitoringCursor(current);
+        var baseline = nowUtc.AddMinutes(
+            -PeggyDefaults.StartupLookbackMinutes);
+        cursor.Initialized = false;
+        if (resetOutlook)
+        {
+            cursor.InitialOutlookScanComplete = false;
+            cursor.OutlookScanStartedUtc = baseline;
+            cursor.OutlookWatermarkUtc = null;
+            cursor.OutlookBoundaryMessageIds.Clear();
+            cursor.OutlookDeltaLinks.Clear();
+        }
+        if (resetTeams)
+        {
+            cursor.TeamsScanStartedUtc = baseline;
+            cursor.TeamsWatermarkUtc = null;
+            cursor.TeamsBoundaryMessageIds.Clear();
+            cursor.TeamsSearchWindowEndUtc = null;
+            cursor.TeamsSearchOffset = 0;
+            cursor.TeamsSearchProcessedHitIds.Clear();
+            cursor.DirectChatWatermarkUtc = null;
+            cursor.DirectChatBoundaryMessageIds.Clear();
+            cursor.DirectChatScanWindowEndUtc = null;
+            cursor.DirectChatProcessedMessageIds.Clear();
+            cursor.PromptWatermarkUtc = null;
+            cursor.ChannelWatermarksUtc.Clear();
+            cursor.ChannelBoundaryMessageIds.Clear();
+            cursor.ChannelDeltaLinks.Clear();
+            cursor.ChannelPageSizes.Clear();
+            cursor.ChannelScanResumeKey = null;
+            cursor.ChannelContinuationPass = false;
+        }
+        return cursor;
+    }
+
+    private static MonitoringCursorState CloneMonitoringCursor(
+        MonitoringCursorState cursor)
+        => new()
+        {
+            Initialized = cursor.Initialized,
+            InitialOutlookScanComplete = cursor.InitialOutlookScanComplete,
+            InitialScanStartedUtc = cursor.InitialScanStartedUtc,
+            OutlookScanStartedUtc = cursor.OutlookScanStartedUtc,
+            TeamsScanStartedUtc = cursor.TeamsScanStartedUtc,
+            TeamsWatermarkUtc = cursor.TeamsWatermarkUtc,
+            TeamsBoundaryMessageIds =
+                cursor.TeamsBoundaryMessageIds.ToList(),
+            TeamsSearchWindowEndUtc = cursor.TeamsSearchWindowEndUtc,
+            TeamsSearchOffset = cursor.TeamsSearchOffset,
+            TeamsSearchProcessedHitIds =
+                cursor.TeamsSearchProcessedHitIds.ToList(),
+            DirectChatWatermarkUtc = cursor.DirectChatWatermarkUtc,
+            DirectChatBoundaryMessageIds =
+                cursor.DirectChatBoundaryMessageIds.ToList(),
+            DirectChatScanWindowEndUtc =
+                cursor.DirectChatScanWindowEndUtc,
+            DirectChatProcessedMessageIds =
+                cursor.DirectChatProcessedMessageIds.ToList(),
+            PromptWatermarkUtc = cursor.PromptWatermarkUtc,
+            OutlookWatermarkUtc = cursor.OutlookWatermarkUtc,
+            OutlookBoundaryMessageIds =
+                cursor.OutlookBoundaryMessageIds.ToList(),
+            OutlookDeltaLinks = new Dictionary<string, string>(
+                cursor.OutlookDeltaLinks,
+                StringComparer.Ordinal),
+            ChannelWatermarksUtc =
+                new Dictionary<string, DateTimeOffset>(
+                    cursor.ChannelWatermarksUtc,
+                    StringComparer.Ordinal),
+            ChannelBoundaryMessageIds =
+                cursor.ChannelBoundaryMessageIds.ToDictionary(
+                    pair => pair.Key,
+                    pair => pair.Value.ToList(),
+                    StringComparer.Ordinal),
+            ChannelDeltaLinks = new Dictionary<string, string>(
+                cursor.ChannelDeltaLinks,
+                StringComparer.Ordinal),
+            ChannelPageSizes = new Dictionary<string, int>(
+                cursor.ChannelPageSizes,
+                StringComparer.Ordinal),
+            ChannelScanResumeKey = cursor.ChannelScanResumeKey,
+            ChannelContinuationPass = cursor.ChannelContinuationPass,
+            ParticipatedChannelThreads = cursor.ParticipatedChannelThreads
+                .Select(thread => new ParticipatedChannelThread
+                {
+                    TeamId = thread.TeamId,
+                    ChannelId = thread.ChannelId,
+                    RootMessageId = thread.RootMessageId,
+                    LastActivityUtc = thread.LastActivityUtc
+                })
+                .ToList()
+        };
 
     public bool EnsureDailySession()
     {

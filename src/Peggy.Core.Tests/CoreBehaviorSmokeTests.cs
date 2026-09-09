@@ -20,10 +20,12 @@ internal static class CoreBehaviorSmokeTests
         TestConfiguredStatePath(directory);
         TestWorkIqTransportClassification();
         await TestWorkIqRetryPolicyAsync(directory);
+        await TestOutlookSelfAuthoredFilteringAsync(directory);
         await TestStructuredTeamsMonitoringAsync(directory);
         await TestStructuredSearchTransportRetryAsync(directory);
         await TestStructuredTeamsCrossPathIdentityAsync(directory);
         await TestChannelDeltaContinuationAsync(directory);
+        await TestTeamsMonitoringScopesAsync(directory);
         await TestLiveActionTransportAsync();
         TestActionPolicy();
         await TestMockProviderAsync();
@@ -151,6 +153,7 @@ internal static class CoreBehaviorSmokeTests
                 RootMessageId = "root",
                 LastActivityUtc = now
             });
+        await manager.RecordWorkIqEulaAcceptanceAsync("1.0.0-test");
         var original = manager.State;
         var originalSessionId = original.CopilotSessionId;
         await manager.ApplySettingsAsync(
@@ -159,7 +162,8 @@ internal static class CoreBehaviorSmokeTests
                 CopilotModel = "replacement-model",
                 MonitoringPaused = true
             },
-            resetMonitoring: true,
+            resetOutlookMonitoring: true,
+            resetTeamsMonitoring: true,
             resetCopilotSession: true,
             Guid.NewGuid().ToString(),
             copilotSessionCredits: 0,
@@ -170,6 +174,7 @@ internal static class CoreBehaviorSmokeTests
             manager.State.Alerts[0].Summary == "Original alert" &&
             manager.State.CopilotSessionId != originalSessionId &&
             manager.State.CopilotSessionCredits == 0 &&
+            manager.State.WorkIqEulaAcceptedVersion == "1.0.0-test" &&
             manager.State.MonitoringCursor.ParticipatedChannelThreads.Count == 1 &&
             manager.State.Settings.MonitoringPaused,
             "A persisted settings candidate was not committed atomically. " +
@@ -178,8 +183,39 @@ internal static class CoreBehaviorSmokeTests
             $"alerts={manager.State.Alerts.Count}, " +
             $"sessionChanged={manager.State.CopilotSessionId != originalSessionId}, " +
             $"credits={manager.State.CopilotSessionCredits}, " +
+            $"eulaVersion={manager.State.WorkIqEulaAcceptedVersion}, " +
             $"threads={manager.State.MonitoringCursor.ParticipatedChannelThreads.Count}, " +
             $"paused={manager.State.Settings.MonitoringPaused}.");
+        await TestAssert.ThrowsAsync<ArgumentException>(
+            () => manager.RecordWorkIqEulaAcceptanceAsync(string.Empty),
+            "An empty accepted WorkIQ version was persisted.");
+
+        var preservedOutlookWatermark = now.AddMinutes(-2);
+        manager.State.MonitoringCursor.OutlookWatermarkUtc =
+            preservedOutlookWatermark;
+        manager.State.MonitoringCursor.OutlookDeltaLinks["inbox"] =
+            "outlook-delta";
+        manager.State.MonitoringCursor.TeamsWatermarkUtc = now.AddMinutes(-3);
+        manager.State.MonitoringCursor.DirectChatWatermarkUtc =
+            now.AddMinutes(-3);
+        await manager.ApplySettingsAsync(
+            manager.State.Settings,
+            resetOutlookMonitoring: false,
+            resetTeamsMonitoring: true,
+            resetCopilotSession: false,
+            manager.State.CopilotSessionId,
+            manager.State.CopilotSessionCredits,
+            now);
+        TestAssert.True(
+            manager.State.MonitoringCursor.OutlookWatermarkUtc ==
+                preservedOutlookWatermark &&
+            manager.State.MonitoringCursor.OutlookDeltaLinks["inbox"] ==
+                "outlook-delta" &&
+            manager.State.MonitoringCursor.TeamsWatermarkUtc is null &&
+            manager.State.MonitoringCursor.DirectChatWatermarkUtc is null &&
+            manager.State.MonitoringCursor.ParticipatedChannelThreads.Count == 1,
+            "A Teams-only settings reset altered Outlook progress or lost " +
+            "participated threads.");
 
         var blockedPath = Path.Combine(directory, "blocked-settings-state");
         Directory.CreateDirectory(blockedPath);
@@ -192,7 +228,8 @@ internal static class CoreBehaviorSmokeTests
                 {
                     CopilotModel = "must-not-commit"
                 },
-                resetMonitoring: false,
+                resetOutlookMonitoring: false,
+                resetTeamsMonitoring: false,
                 resetCopilotSession: false,
                 liveState.CopilotSessionId,
                 liveState.CopilotSessionCredits,
@@ -241,6 +278,10 @@ internal static class CoreBehaviorSmokeTests
             normalizedSettings.SpeechVoiceId == 0 &&
             normalizedSettings.SpeechSpeed == 1.15F &&
             normalizedSettings.SpeechTuningVersion == 3 &&
+            normalizedSettings.TeamsScope ==
+                TeamsMonitoringScope.AllActivity &&
+            normalizedSettings.TeamsTeamWatchlist is not null &&
+            normalizedSettings.TeamsChannelWatchlist is not null &&
             normalizedSettings.MonitoringScheduleEnabled &&
             normalizedSettings.MonitoringWakeMinute ==
                 PeggyDefaults.DefaultWakeMinute &&
@@ -257,6 +298,41 @@ internal static class CoreBehaviorSmokeTests
             1,
             state.AuditLog.Count,
             "State retention did not prune expired audit entries.");
+
+        var teamsState = new PeggyStateDocument
+        {
+            Settings = new PeggySettings
+            {
+                TeamsScope = (TeamsMonitoringScope)99,
+                TeamsTeamWatchlist =
+                [
+                    new TeamsTeamWatch
+                    {
+                        TeamId = "team",
+                        DisplayName = "Team",
+                        ExcludedChannelIds = ["excluded", "excluded"]
+                    }
+                ],
+                TeamsChannelWatchlist =
+                [
+                    new TeamsChannelWatch
+                    {
+                        TeamId = "team",
+                        ChannelId = "excluded",
+                        DisplayName = "Team / Excluded"
+                    }
+                ]
+            }
+        };
+        EncryptedStateStore.NormalizeAndPrune(teamsState, now);
+        TestAssert.True(
+            teamsState.Settings.TeamsScope ==
+                TeamsMonitoringScope.AllActivity &&
+            teamsState.Settings.TeamsTeamWatchlist.Single()
+                .ExcludedChannelIds.SequenceEqual(["excluded"]) &&
+            teamsState.Settings.TeamsChannelWatchlist.Count == 0,
+            "Teams scope migration did not restore the safe default or " +
+            "normalize whole-team precedence.");
 
         TestAssert.Throws<InvalidDataException>(
             () => EncryptedStateStore.NormalizeAndPrune(
@@ -500,6 +576,13 @@ internal static class CoreBehaviorSmokeTests
                 "verified@example.com",
                 manager.State.PinnedAccount,
                 "The verified WorkIQ account was not pinned.");
+            await manager.PinWorkIqIdentityAsync(
+                "verified@example.com",
+                "mailbox@example.com");
+            TestAssert.Equal(
+                "mailbox@example.com",
+                manager.State.PinnedMailbox,
+                "The verified WorkIQ mailbox was not pinned.");
             await TestAssert.ThrowsAsync<InvalidOperationException>(
                 () => manager.PinWorkIqAccountAsync("other@example.com"),
                 "Peggy allowed an existing account pin to change.");
@@ -521,23 +604,50 @@ internal static class CoreBehaviorSmokeTests
                 logPath);
             var identity = await new WorkIqSetupService().SignInAsync(
                 "signin@tenant.example");
+            var setup = new WorkIqSetupService();
+            var restored = await setup.TryRestoreAcceptedEulaAsync(
+                "1.0.0-test",
+                new InvalidOperationException(
+                    "Run workiq accept-eula."));
+            var changedTermsRestored =
+                await setup.TryRestoreAcceptedEulaAsync(
+                    "0.9.0-test",
+                    new InvalidOperationException(
+                        "The End User License must be accepted."));
+            var unrelatedRestored =
+                await setup.TryRestoreAcceptedEulaAsync(
+                    "1.0.0-test",
+                    new InvalidOperationException("Unrelated failure."));
             var commands = File.ReadAllLines(logPath);
             TestAssert.True(
                 identity.Account == "signin@tenant.example" &&
                 identity.Mail == "mailbox@example.com" &&
-                commands.Length == 4 &&
-                commands[0] == "accept-eula" &&
-                commands[1].StartsWith(
+                identity.EulaAcceptedVersion == "1.0.0-test" &&
+                restored &&
+                !changedTermsRestored &&
+                !unrelatedRestored &&
+                commands.Length == 13 &&
+                commands[0] == "version" &&
+                commands[1] == "accept-eula" &&
+                commands[2] == "version" &&
+                commands[3].StartsWith(
                     "auth login --account signin@tenant.example",
                     StringComparison.Ordinal) &&
-                commands[2].StartsWith(
+                commands[4].StartsWith(
                     "auth consent --account signin@tenant.example",
                     StringComparison.Ordinal) &&
-                commands[3].StartsWith(
+                commands[5].StartsWith(
                     "fetch /me?$select=id,mail,userPrincipalName",
-                    StringComparison.Ordinal),
-                "Standalone WorkIQ sign-in did not perform EULA, login, " +
-                "consent, and account verification in order.");
+                    StringComparison.Ordinal) &&
+                commands[6] == "version" &&
+                commands[7] == "accept-eula" &&
+                commands[8] == "version" &&
+                commands[9] == "version" &&
+                commands[10] == "accept-eula" &&
+                commands[11] == "version" &&
+                commands[12] == "version",
+                "Standalone WorkIQ EULA version binding, sign-in, or safe " +
+                "restoration did not run in order.");
         }
         finally
         {
@@ -648,6 +758,139 @@ internal static class CoreBehaviorSmokeTests
             "The WorkIQ EULA error is not actionable.");
     }
 
+    private static async Task TestOutlookSelfAuthoredFilteringAsync(
+        string directory)
+    {
+        var executable = Environment.ProcessPath
+            ?? throw new InvalidOperationException(
+                "The test executable path is unavailable.");
+        var logPath = Path.Combine(
+            directory,
+            "outlook-self-filter-requests.log");
+        var previousScenario = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SCENARIO");
+        var previousLog = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_LOG");
+        var previousMail = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_MAIL");
+        var previousActivity = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_OUTLOOK_ACTIVITY_UTC");
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                "outlook-self-filter");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                logPath);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_MAIL",
+                "mailbox@example.com");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_OUTLOOK_ACTIVITY_UTC",
+                now.ToString("O"));
+
+            var provider = new WorkIqMessageProvider(
+                executablePath: executable,
+                settings: new PeggySettings
+                {
+                    TeamsScope = TeamsMonitoringScope.Off
+                });
+            var cursor = new MonitoringCursorState
+            {
+                Initialized = true,
+                InitialScanStartedUtc = now.AddMinutes(-10),
+                OutlookScanStartedUtc = now.AddMinutes(-10),
+                TeamsScanStartedUtc = now.AddMinutes(-10),
+                InitialOutlookScanComplete = true,
+                OutlookWatermarkUtc = now.AddMinutes(-5)
+            };
+            var batch = await provider.GetChangesAsync(
+                cursor,
+                100,
+                now);
+            TestAssert.True(
+                batch.Messages is
+                [
+                    {
+                        From: "External sender"
+                    }
+                ] &&
+                batch.Cursor.OutlookWatermarkUtc >= now.AddMinutes(-1),
+                "Outlook monitoring admitted a message authored by the " +
+                "current user or failed to advance its cursor.");
+
+            var unread = await provider.ListUnreadAsync(
+                MessageSource.Email,
+                1);
+            TestAssert.True(
+                unread is
+                [
+                    {
+                        From: "External sender"
+                    }
+                ],
+                "The unread Outlook path admitted a self-authored message.");
+
+            var thread = await provider.GetThreadAsync(
+                OpaqueIdentifier.Encode(
+                    "email-thread:",
+                    "case-thread"));
+            TestAssert.True(
+                thread is { Messages.Count: 3 } &&
+                thread.Messages.Any(message =>
+                    message.From == "Current user") &&
+                thread.Messages.Any(message =>
+                    message.From == "Support mailbox"),
+                "Filtering removed self-authored messages from full thread " +
+                "context.");
+
+            var requests = File.ReadAllLines(logPath)
+                .Where(request =>
+                    request.Contains(
+                        "/mailFolders/",
+                        StringComparison.Ordinal) &&
+                    request.Contains(
+                        "/messages?",
+                        StringComparison.Ordinal))
+                .ToList();
+            TestAssert.True(
+                requests.Count > 0 &&
+                requests.All(request =>
+                    request.Contains(
+                        "from,sender",
+                        StringComparison.Ordinal)),
+                "Outlook monitoring did not request the actual sender needed " +
+                "for delegated-message filtering.");
+            TestAssert.True(
+                File.ReadAllLines(logPath).Any(request =>
+                    request.StartsWith(
+                        "fetch /me?$select=",
+                        StringComparison.Ordinal) &&
+                    request.Contains(
+                        "proxyAddresses",
+                        StringComparison.Ordinal)),
+                "Outlook monitoring did not load the current user's X500 " +
+                "aliases.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                previousScenario);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                previousLog);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_MAIL",
+                previousMail);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_OUTLOOK_ACTIVITY_UTC",
+                previousActivity);
+        }
+    }
+
     private static async Task TestChannelDeltaContinuationAsync(
         string directory)
     {
@@ -671,6 +914,8 @@ internal static class CoreBehaviorSmokeTests
                 executablePath: executable,
                 settings: new PeggySettings
                 {
+                    TeamsScope =
+                        TeamsMonitoringScope.SelectedTeamsAndChannels,
                     TeamsChannelWatchlist =
                     [
                         new TeamsChannelWatch
@@ -750,11 +995,11 @@ internal static class CoreBehaviorSmokeTests
                         StringComparison.OrdinalIgnoreCase)),
                 "A Teams read used an unsupported secondary ID sort.");
             TestAssert.True(
-                File.ReadAllLines(logPath).Any(request =>
-                    request.StartsWith(
+                File.ReadAllLines(logPath).All(request =>
+                    !request.StartsWith(
                         "do-action /search/query",
                         StringComparison.Ordinal)),
-                "Structured Teams discovery did not cover chats and channels.");
+                "Selected-only Teams monitoring used broad structured search.");
             TestAssert.True(
                 File.ReadAllLines(logPath)
                     .Where(request =>
@@ -874,6 +1119,177 @@ internal static class CoreBehaviorSmokeTests
             Environment.SetEnvironmentVariable(
                 "PEGGY_FAKE_WORKIQ_LOG",
                 previousLog);
+        }
+    }
+
+    private static async Task TestTeamsMonitoringScopesAsync(
+        string directory)
+    {
+        var executable = Environment.ProcessPath
+            ?? throw new InvalidOperationException(
+                "The test executable path is unavailable.");
+        var logPath = Path.Combine(directory, "teams-scope-requests.log");
+        var previousScenario = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SCENARIO");
+        var previousLog = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_LOG");
+        var previousChatActivity = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_CHAT_ACTIVITY_UTC");
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                "channel-delta");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                logPath);
+            var now = DateTimeOffset.UtcNow;
+            var selectedTeamProvider = new WorkIqMessageProvider(
+                executablePath: executable,
+                settings: new PeggySettings
+                {
+                    TeamsScope =
+                        TeamsMonitoringScope.SelectedTeamsAndChannels,
+                    TeamsTeamWatchlist =
+                    [
+                        new TeamsTeamWatch
+                        {
+                            TeamId = "team-1",
+                            DisplayName = "Test team",
+                            ExcludedChannelIds = ["channel-2"]
+                        }
+                    ],
+                    TeamsChannelWatchlist =
+                    [
+                        new TeamsChannelWatch
+                        {
+                            TeamId = "team-1",
+                            ChannelId = "channel-2",
+                            DisplayName = "Test team / Test channel 2"
+                        }
+                    ]
+                });
+            var first = await selectedTeamProvider.GetChangesAsync(
+                new MonitoringCursorState
+                {
+                    InitialScanStartedUtc = now.AddMinutes(-5)
+                },
+                100,
+                now);
+            var firstRequests = File.ReadAllLines(logPath);
+            TestAssert.True(
+                first.Messages.Count == 2 &&
+                first.Messages.Select(message => message.ChannelId)
+                    .ToHashSet(StringComparer.Ordinal)
+                    .SetEquals(["channel-1", "channel-3"]) &&
+                firstRequests.Count(request => request.StartsWith(
+                    "fetch /teams/team-1/channels?",
+                    StringComparison.Ordinal)) == 1 &&
+                firstRequests.All(request =>
+                    !request.Contains(
+                        "/channels/channel-2/messages",
+                        StringComparison.Ordinal) &&
+                    !request.StartsWith(
+                        "do-action /search/query",
+                        StringComparison.Ordinal)),
+                "Whole-team scope did not honor channel exclusions or used " +
+                "broad search.");
+
+            await selectedTeamProvider.GetChangesAsync(
+                first.Cursor,
+                100,
+                now.AddSeconds(1));
+            TestAssert.Equal(
+                1,
+                File.ReadAllLines(logPath).Count(request =>
+                    request.StartsWith(
+                        "fetch /teams/team-1/channels?",
+                        StringComparison.Ordinal)),
+                "Whole-team channel discovery was not cached.");
+
+            File.WriteAllText(logPath, string.Empty);
+            var offProvider = new WorkIqMessageProvider(
+                executablePath: executable,
+                settings: new PeggySettings
+                {
+                    TeamsScope = TeamsMonitoringScope.Off
+                });
+            await offProvider.GetChangesAsync(
+                new MonitoringCursorState
+                {
+                    InitialScanStartedUtc = now.AddMinutes(-5),
+                    ChannelScanResumeKey = "team-1\nchannel-1",
+                    ChannelContinuationPass = true
+                },
+                100,
+                now);
+            var offRequests = File.ReadAllLines(logPath);
+            TestAssert.True(
+                offRequests.All(request =>
+                    !request.Contains("/teams/", StringComparison.Ordinal) &&
+                    !request.Contains("/me/chats", StringComparison.Ordinal) &&
+                    !request.Contains("/search/query", StringComparison.Ordinal)),
+                "Teams Off followed a stale Teams continuation or retrieved " +
+                "Teams activity.");
+
+            File.WriteAllText(logPath, string.Empty);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                "selected-chat-scope");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_CHAT_ACTIVITY_UTC",
+                DateTimeOffset.UtcNow.AddMinutes(-1).ToString("O"));
+            var directChatProvider = new WorkIqMessageProvider(
+                executablePath: executable,
+                settings: new PeggySettings
+                {
+                    TeamsScope =
+                        TeamsMonitoringScope.SelectedTeamsAndChannels,
+                    MonitorTeamsChatsInSelectedScope = true
+                });
+            var directFirst = await directChatProvider.GetChangesAsync(
+                new MonitoringCursorState
+                {
+                    InitialScanStartedUtc = now.AddMinutes(-5)
+                },
+                1,
+                DateTimeOffset.UtcNow.AddMinutes(1));
+            var directSecond = await directChatProvider.GetChangesAsync(
+                directFirst.Cursor,
+                100,
+                DateTimeOffset.UtcNow.AddMinutes(1));
+            var directRequests = File.ReadAllLines(logPath);
+            TestAssert.True(
+                directFirst.HasMore &&
+                directFirst.Messages.Count == 1 &&
+                directFirst.Cursor.DirectChatScanWindowEndUtc is not null &&
+                directFirst.Cursor.DirectChatProcessedMessageIds.Count == 1 &&
+                !directSecond.HasMore &&
+                directSecond.Messages.Count == 1 &&
+                directSecond.Cursor.DirectChatScanWindowEndUtc is null &&
+                directSecond.Cursor.DirectChatProcessedMessageIds.Count == 0 &&
+                directFirst.Messages[0].Id != directSecond.Messages[0].Id &&
+                directFirst.Messages[0].ChannelId is null &&
+                directFirst.Messages[0].WebUrl is not null &&
+                directRequests.Any(request => request.StartsWith(
+                    "fetch /me/chats?",
+                    StringComparison.Ordinal)) &&
+                directRequests.All(request =>
+                    !request.Contains("/search/query", StringComparison.Ordinal)),
+                "Selected direct-chat monitoring did not stay independent " +
+                "from broad Teams search.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                previousScenario);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                previousLog);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_CHAT_ACTIVITY_UTC",
+                previousChatActivity);
         }
     }
 

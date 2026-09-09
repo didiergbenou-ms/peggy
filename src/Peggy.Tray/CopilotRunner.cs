@@ -421,7 +421,12 @@ public sealed class CopilotRunner : IAsyncDisposable
                 ";",
                 _settings.AdditionalOutlookFolders),
             ["PEGGY_TEAMS_WATCHLIST"] = JsonSerializer.Serialize(
-                _settings.TeamsChannelWatchlist)
+                _settings.TeamsChannelWatchlist),
+            ["PEGGY_TEAMS_TEAM_WATCHLIST"] = JsonSerializer.Serialize(
+                _settings.TeamsTeamWatchlist),
+            ["PEGGY_TEAMS_SCOPE"] = _settings.TeamsScope.ToString(),
+            ["PEGGY_TEAMS_MONITOR_CHATS"] =
+                _settings.MonitorTeamsChatsInSelectedScope.ToString()
         };
         if (!string.IsNullOrWhiteSpace(_account))
         {

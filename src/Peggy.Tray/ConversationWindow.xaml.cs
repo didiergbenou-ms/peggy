@@ -30,6 +30,8 @@ public partial class ConversationWindow : Window
     public ConversationWindow()
     {
         InitializeComponent();
+        Loaded += (_, _) =>
+            PeggyWindowLayout.ConstrainToWorkArea(this);
         Closing += (_, args) =>
         {
             if (_ending)
@@ -103,6 +105,7 @@ public partial class ConversationWindow : Window
         CancelTranscriptButton.Visibility = Visibility.Collapsed;
         TranscriptReviewCountdown.Text =
             "Listening locally. Nothing has been sent.";
+        ScrollTranscriptToEnd();
     }
 
     public void SetThinking()
@@ -144,6 +147,7 @@ public partial class ConversationWindow : Window
             "Please wait");
         TranscriptReviewText.Focus();
         TranscriptReviewText.SelectAll();
+        ScrollTranscriptToEnd();
         if (autoSubmit)
         {
             StartTranscriptAutoSubmit(completion);
@@ -209,6 +213,7 @@ public partial class ConversationWindow : Window
         TypedApprovalPanel.Visibility = Visibility.Collapsed;
         TypedConfirmation.Clear();
         ActionCard.Visibility = Visibility.Visible;
+        ScrollTranscriptToEnd();
     }
 
     public void RequireTypedConfirmation(WorkActionRequest request)
@@ -220,6 +225,7 @@ public partial class ConversationWindow : Window
             request.TypedConfirmationPhrase;
         TypedConfirmation.Clear();
         TypedConfirmation.Focus();
+        ScrollTranscriptToEnd();
     }
 
     public void HideAction()
@@ -248,13 +254,36 @@ public partial class ConversationWindow : Window
         string text,
         Color color)
     {
+        var isUser = string.Equals(
+            speaker,
+            "You",
+            StringComparison.Ordinal);
         var border = new Border
         {
-            Background = Brushes.White,
-            CornerRadius = new CornerRadius(9),
-            Padding = new Thickness(12),
-            Margin = new Thickness(0, 0, 0, 10)
+            Background = isUser
+                ? new SolidColorBrush(Color.FromRgb(234, 242, 248))
+                : TryFindResource("PeggySurfaceBrush") as Brush
+                  ?? Brushes.White,
+            BorderBrush = isUser
+                ? new SolidColorBrush(Color.FromRgb(190, 211, 225))
+                : TryFindResource("PeggyBorderBrush") as Brush
+                  ?? new SolidColorBrush(Color.FromRgb(229, 219, 211)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = isUser
+                ? new CornerRadius(12, 12, 3, 12)
+                : new CornerRadius(12, 12, 12, 3),
+            Padding = new Thickness(13, 11, 13, 12),
+            Margin = isUser
+                ? new Thickness(54, 0, 0, 11)
+                : new Thickness(0, 0, 54, 11),
+            HorizontalAlignment = isUser
+                ? HorizontalAlignment.Right
+                : HorizontalAlignment.Left,
+            MaxWidth = 450
         };
+        border.SetResourceReference(
+            UIElement.EffectProperty,
+            "PeggyCardShadow");
         var panel = new StackPanel();
         panel.Children.Add(new TextBlock
         {
@@ -269,13 +298,19 @@ public partial class ConversationWindow : Window
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 4, 0, 0),
             FontSize = 14,
-            Foreground = new SolidColorBrush(Color.FromRgb(45, 42, 39))
+            LineHeight = 20,
+            Foreground = TryFindResource("PeggyTextBrush") as Brush
+                         ?? new SolidColorBrush(Color.FromRgb(45, 42, 39))
         });
         border.Child = panel;
         TranscriptPanel.Children.Add(border);
         Dispatcher.BeginInvoke(() =>
             TranscriptScroll.ScrollToEnd());
     }
+
+    private void ScrollTranscriptToEnd()
+        => Dispatcher.BeginInvoke(() =>
+            TranscriptScroll.ScrollToEnd());
 
     private void SetStatus(string status, string microphoneText)
     {

@@ -7,9 +7,12 @@ namespace Peggy.Core;
 public sealed record WorkIqAccountIdentity(
     string Account,
     string? Mail,
-    string? UserPrincipalName);
+    string? UserPrincipalName)
+{
+    public string EulaAcceptedVersion { get; init; } = string.Empty;
+}
 
-public sealed class WorkIqSetupException : InvalidOperationException
+public class WorkIqSetupException : InvalidOperationException
 {
     public WorkIqSetupException(string message)
         : base(message)
@@ -18,6 +21,14 @@ public sealed class WorkIqSetupException : InvalidOperationException
 
     public WorkIqSetupException(string message, Exception innerException)
         : base(message, innerException)
+    {
+    }
+}
+
+public sealed class WorkIqEulaChangedException : WorkIqSetupException
+{
+    public WorkIqEulaChangedException(string message)
+        : base(message)
     {
     }
 }
@@ -37,6 +48,13 @@ public sealed class WorkIqSetupService
         CancellationToken ct = default)
     {
         var executable = RequireExecutable();
+        return await GetVersionAsync(executable, ct);
+    }
+
+    private static async Task<string> GetVersionAsync(
+        string executable,
+        CancellationToken ct)
+    {
         var result = await RunProcessAsync(
             executable,
             ["version"],
@@ -97,12 +115,23 @@ public sealed class WorkIqSetupService
         }
     }
 
-    public async Task<WorkIqAccountIdentity> SignInAsync(
-        string expectedAccount,
+    public async Task<string> AcceptEulaAsync(
+        string? expectedVersion = null,
         CancellationToken ct = default)
     {
-        var normalized = NormalizeAccount(expectedAccount);
         var executable = RequireExecutable();
+        using var executableLock = OpenExecutableLock(executable);
+        var installedVersion = await GetVersionAsync(executable, ct);
+        if (!string.IsNullOrWhiteSpace(expectedVersion) &&
+            !string.Equals(
+                installedVersion,
+                expectedVersion.Trim(),
+                StringComparison.Ordinal))
+        {
+            throw new WorkIqEulaChangedException(
+                "The installed WorkIQ version changed. Review and accept its " +
+                "current EULA before Peggy continues.");
+        }
 
         await RunRequiredCommandAsync(
             executable,
@@ -110,6 +139,94 @@ public sealed class WorkIqSetupService
             TimeSpan.FromSeconds(30),
             "WorkIQ EULA acceptance failed",
             ct);
+        var acceptedVersion = await GetVersionAsync(executable, ct);
+        if (!string.Equals(
+                installedVersion,
+                acceptedVersion,
+                StringComparison.Ordinal))
+        {
+            throw new WorkIqEulaChangedException(
+                "The installed WorkIQ version changed during EULA acceptance. " +
+                "Review and accept its current EULA before Peggy continues.");
+        }
+        return installedVersion;
+    }
+
+    private static FileStream OpenExecutableLock(string executable)
+    {
+        try
+        {
+            return new FileStream(
+                executable,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read);
+        }
+        catch (Exception ex) when (
+            ex is IOException or UnauthorizedAccessException)
+        {
+            throw new WorkIqSetupException(
+                "Peggy could not lock the installed WorkIQ build while " +
+                "verifying its accepted EULA version.",
+                ex);
+        }
+    }
+
+    public async Task<bool> TryRestoreAcceptedEulaAsync(
+        string? acceptedVersion,
+        Exception failure,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(failure);
+        if (string.IsNullOrWhiteSpace(acceptedVersion) ||
+            !IsEulaAcceptanceRequired(failure))
+        {
+            return false;
+        }
+
+        try
+        {
+            await AcceptEulaAsync(acceptedVersion, ct);
+            return true;
+        }
+        catch (WorkIqSetupException)
+        {
+            return false;
+        }
+    }
+
+    public static bool IsEulaAcceptanceRequired(Exception failure)
+    {
+        ArgumentNullException.ThrowIfNull(failure);
+        for (Exception? current = failure;
+             current is not null;
+             current = current.InnerException)
+        {
+            if (IsEulaAcceptanceRequired(current.Message))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static bool IsEulaAcceptanceRequired(string? message)
+        => !string.IsNullOrWhiteSpace(message) &&
+           (message.Contains(
+                "accept-eula",
+                StringComparison.OrdinalIgnoreCase) ||
+            message.Contains(
+                "End User License",
+                StringComparison.OrdinalIgnoreCase));
+
+    public async Task<WorkIqAccountIdentity> SignInAsync(
+        string expectedAccount,
+        CancellationToken ct = default)
+    {
+        var normalized = NormalizeAccount(expectedAccount);
+        var executable = RequireExecutable();
+
+        var acceptedVersion = await AcceptEulaAsync(ct: ct);
         await RunRequiredCommandAsync(
             executable,
             ["auth", "login", "--account", normalized],
@@ -123,7 +240,12 @@ public sealed class WorkIqSetupService
             "Microsoft 365 permission consent failed",
             ct);
 
-        return await VerifyAccountAsync(normalized, ct);
+        var identity = await VerifyAccountAsync(normalized, ct);
+        await AcceptEulaAsync(acceptedVersion, ct);
+        return identity with
+        {
+            EulaAcceptedVersion = acceptedVersion
+        };
     }
 
     public async Task<WorkIqAccountIdentity> VerifyAccountAsync(

@@ -13,6 +13,7 @@ param(
     [string]$ChecksumPath,
     [switch]$InstallPrerequisites,
     [switch]$InstallSpeechModels,
+    [switch]$SkipSpeechModels,
     [switch]$NoShortcut,
     [switch]$NoLaunch
 )
@@ -556,6 +557,10 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
     throw "Invalid GitHub repository name '$Repository'."
 }
+if ($InstallSpeechModels -and $SkipSpeechModels) {
+    throw 'InstallSpeechModels and SkipSpeechModels cannot be used together.'
+}
+$shouldInstallSpeechModels = -not $SkipSpeechModels
 
 $InstallDirectory = Assert-InstallDirectory -Path $InstallDirectory
 Refresh-ProcessPath
@@ -641,7 +646,8 @@ try {
     $requiredFiles = @(
         'peggy-tray.exe',
         'Peggy.Mcp\peggy-mcp.exe',
-        'Peggy.Speech.Host\peggy-speech-host.exe'
+        'Peggy.Speech.Host\peggy-speech-host.exe',
+        'scripts\Install-SpeechModels.ps1'
     )
     foreach ($requiredFile in $requiredFiles) {
         if (-not (Test-Path -LiteralPath (
@@ -649,6 +655,14 @@ try {
             ))) {
             throw "Peggy package is missing '$requiredFile'."
         }
+    }
+
+    if ($shouldInstallSpeechModels) {
+        $speechInstaller = Join-Path (
+            Join-Path $payloadDirectory 'scripts'
+        ) 'Install-SpeechModels.ps1'
+        Write-Step 'Installing local voice models (about 803 MiB on first install)'
+        & $speechInstaller
     }
 
     $installedExecutable = Join-Path $InstallDirectory 'peggy-tray.exe'
@@ -699,17 +713,6 @@ try {
         New-PeggyShortcut `
             -Executable $installedExecutable `
             -WorkingDirectory $InstallDirectory
-    }
-
-    if ($InstallSpeechModels) {
-        $speechInstaller = Join-Path (
-            Join-Path $InstallDirectory 'scripts'
-        ) 'Install-SpeechModels.ps1'
-        if (-not (Test-Path -LiteralPath $speechInstaller)) {
-            throw 'The release does not contain the speech-model installer.'
-        }
-        Write-Step 'Installing optional speech models'
-        & $speechInstaller
     }
 
     Write-Host ''

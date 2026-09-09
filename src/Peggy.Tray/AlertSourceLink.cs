@@ -80,15 +80,138 @@ internal static class AlertSourceLink
                     "." + host,
                     StringComparison.OrdinalIgnoreCase)) &&
             (!IsTeamsHost(candidate.Host) ||
-             IsSpecificTeamsMessageUri(candidate)))
+             IsSpecificTeamsMessageUri(candidate)) &&
+            (!IsOutlookHost(candidate.Host) ||
+             IsSpecificOutlookMessageUri(candidate)))
         {
-            uri = candidate;
+            uri = NormalizeOutlookUri(candidate);
             return true;
         }
 
         uri = null!;
         return false;
     }
+
+    private static Uri NormalizeOutlookUri(Uri uri)
+    {
+        if (!string.Equals(
+                uri.Host,
+                "mail.microsoft.com",
+                StringComparison.OrdinalIgnoreCase) &&
+            !uri.Host.EndsWith(
+                ".mail.microsoft.com",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return uri;
+        }
+
+        return new UriBuilder(uri)
+        {
+            Host = "outlook.office.com",
+            Port = -1
+        }.Uri;
+    }
+
+    public static Uri ScopeOutlookMailbox(Uri uri, string? mailbox)
+    {
+        uri = NormalizeOutlookUri(uri);
+        if (!IsWorkOutlookHost(uri.Host) ||
+            string.IsNullOrWhiteSpace(mailbox))
+        {
+            return uri;
+        }
+
+        var itemId = GetOutlookItemId(uri);
+        if (!IsSafeOpaqueItemId(itemId))
+        {
+            return uri;
+        }
+
+        var escapedMailbox = Uri.EscapeDataString(mailbox.Trim());
+        var escapedItemId = Uri.EscapeDataString(itemId!);
+        return new Uri(
+            $"https://outlook.office.com/mail/{escapedMailbox}/" +
+            $"deeplink/read/{escapedItemId}",
+            UriKind.Absolute);
+    }
+
+    private static string? GetOutlookItemId(Uri uri)
+    {
+        var query = uri.Query.TrimStart('?');
+        foreach (var part in query.Split(
+                     '&',
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = part.IndexOf('=');
+            if (separator <= 0 ||
+                !string.Equals(
+                    Uri.UnescapeDataString(part[..separator]),
+                    "ItemID",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            try
+            {
+                return Uri.UnescapeDataString(part[(separator + 1)..]);
+            }
+            catch (UriFormatException)
+            {
+                return null;
+            }
+        }
+
+        const string marker = "/deeplink/read/";
+        var markerIndex = uri.AbsolutePath.IndexOf(
+            marker,
+            StringComparison.OrdinalIgnoreCase);
+        if (markerIndex < 0)
+        {
+            return null;
+        }
+
+        var encodedId = uri.AbsolutePath[(markerIndex + marker.Length)..]
+            .TrimEnd('/');
+        try
+        {
+            return Uri.UnescapeDataString(encodedId);
+        }
+        catch (UriFormatException)
+        {
+            return null;
+        }
+    }
+
+    private static bool IsSafeOpaqueItemId(string? itemId)
+        => !string.IsNullOrWhiteSpace(itemId) &&
+           itemId.Length <= 4096 &&
+           itemId.All(character =>
+               char.IsAsciiLetterOrDigit(character) ||
+               character is '+' or '/' or '=' or '-' or '_');
+
+    private static bool IsOutlookHost(string host)
+        => !IsTeamsHost(host);
+
+    private static bool IsSpecificOutlookMessageUri(Uri uri)
+        => IsSafeOpaqueItemId(GetOutlookItemId(uri));
+
+    private static bool IsWorkOutlookHost(string host)
+        => string.Equals(
+               host,
+               "outlook.office.com",
+               StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(
+               host,
+               "outlook.office365.com",
+               StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(
+               host,
+               "mail.microsoft.com",
+               StringComparison.OrdinalIgnoreCase) ||
+           host.EndsWith(
+               ".mail.microsoft.com",
+               StringComparison.OrdinalIgnoreCase);
 
     private static bool IsTeamsHost(string host)
         => host.EndsWith(

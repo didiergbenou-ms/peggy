@@ -13,7 +13,10 @@ public partial class SettingsWindow : Window
 {
     private readonly IMessageProvider _provider;
     private readonly Dictionary<string, TeamsChannelWatch> _selectedChannels;
+    private readonly Dictionary<string, TeamsTeamWatch> _selectedTeams;
     private readonly Dictionary<string, CheckBox> _channelChecks =
+        new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CheckBox> _teamChecks =
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, StackPanel> _teamPanels =
         new(StringComparer.Ordinal);
@@ -83,7 +86,19 @@ public partial class SettingsWindow : Window
                 group => group.Key,
                 group => CloneWatch(group.First()),
                 StringComparer.Ordinal);
+        _selectedTeams = settings.TeamsTeamWatchlist
+            .GroupBy(item => item.TeamId, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => CloneTeamWatch(group.First()),
+                StringComparer.Ordinal);
+        SelectComboItem(TeamsScopeCombo, settings.TeamsScope.ToString());
+        MonitorTeamsChatsCheck.IsChecked =
+            settings.MonitorTeamsChatsInSelectedScope;
+        UpdateTeamsScopeControls();
         RenderSelectedChannels();
+        Loaded += (_, _) =>
+            PeggyWindowLayout.ConstrainToWorkArea(this);
         Loaded += async (_, _) => await LoadTeamsAsync();
         Closed += (_, _) =>
         {
@@ -94,6 +109,38 @@ public partial class SettingsWindow : Window
     }
 
     public PeggySettings? SavedSettings { get; private set; }
+
+    public WorkIqAccountIdentity? ReauthenticatedIdentity { get; private set; }
+
+    private void TeamsScope_Changed(object sender, RoutedEventArgs e)
+        => UpdateTeamsScopeControls();
+
+    private void UpdateTeamsScopeControls()
+    {
+        if (TeamsScopeCombo is null ||
+            MonitorTeamsChatsCheck is null ||
+            TeamsSelectionPanel is null)
+        {
+            return;
+        }
+
+        var scope = GetSelectedTeamsScope();
+        MonitorTeamsChatsCheck.IsEnabled =
+            scope == TeamsMonitoringScope.SelectedTeamsAndChannels;
+        TeamsSelectionPanel.IsEnabled =
+            scope != TeamsMonitoringScope.Off;
+        TeamsScopeDescription.Text = scope switch
+        {
+            TeamsMonitoringScope.AllActivity =>
+                "Monitor new activity across Teams. Selected sources below " +
+                "also receive full channel delta monitoring.",
+            TeamsMonitoringScope.SelectedTeamsAndChannels =>
+                "Monitor only the accessible teams and channels selected " +
+                "below. New channels are included for a fully selected team.",
+            _ => "Do not retrieve or classify Microsoft Teams messages."
+        };
+        UpdateTeamsScopeWarning();
+    }
 
     private async System.Threading.Tasks.Task LoadTeamsAsync()
     {
@@ -115,6 +162,7 @@ public partial class SettingsWindow : Window
             _loadedTeamIds.Clear();
             _loadingTeamIds.Clear();
             _channelChecks.Clear();
+            _teamChecks.Clear();
             foreach (var team in teams)
             {
                 _teamNames[team.TeamId] = team.TeamName;
@@ -128,9 +176,24 @@ public partial class SettingsWindow : Window
                     Foreground = System.Windows.Media.Brushes.DimGray
                 });
                 _teamPanels[team.TeamId] = channelPanel;
+                var teamCheck = new CheckBox
+                {
+                    Content = team.TeamName,
+                    Tag = team,
+                    IsThreeState = true,
+                    IsChecked = GetTeamSelectionState(team.TeamId),
+                    FontWeight = FontWeights.SemiBold
+                };
+                teamCheck.Checked += (_, _) =>
+                    ApplyTeamCheckSelection(team, teamCheck);
+                teamCheck.Unchecked += (_, _) =>
+                    ApplyTeamCheckSelection(team, teamCheck);
+                teamCheck.Indeterminate += (_, _) =>
+                    ApplyTeamCheckSelection(team, teamCheck);
+                _teamChecks[team.TeamId] = teamCheck;
                 var expander = new Expander
                 {
-                    Header = team.TeamName,
+                    Header = teamCheck,
                     Tag = team,
                     Content = channelPanel,
                     Margin = new Thickness(0, 1, 0, 1)
@@ -143,8 +206,7 @@ public partial class SettingsWindow : Window
             ChannelStatus.Text = teams.Count == 0
                 ? "No joined Teams were returned."
                 : $"{teams.Count} joined teams loaded. Expand only the teams " +
-                  "whose channels you want to configure. Selected channels " +
-                  "receive full activity monitoring.";
+                  "whose channels you want to configure.";
         }
         catch (OperationCanceledException) when (_closed)
         {
@@ -262,7 +324,9 @@ public partial class SettingsWindow : Window
         var checkBox = new CheckBox
         {
             Content = channel.ChannelName,
-            IsChecked = _selectedChannels.ContainsKey(key),
+            IsChecked = IsChannelSelected(
+                channel.TeamId,
+                channel.ChannelId),
             Margin = new Thickness(0, 2, 0, 2)
         };
         checkBox.Checked += (_, _) =>
@@ -271,12 +335,8 @@ public partial class SettingsWindow : Window
             {
                 return;
             }
-            _selectedChannels[key] = new TeamsChannelWatch
-            {
-                TeamId = channel.TeamId,
-                ChannelId = channel.ChannelId,
-                DisplayName = $"{channel.TeamName} / {channel.ChannelName}"
-            };
+            SelectChannel(channel);
+            UpdateTeamCheckState(channel.TeamId);
             RenderSelectedChannels();
         };
         checkBox.Unchecked += (_, _) =>
@@ -285,7 +345,8 @@ public partial class SettingsWindow : Window
             {
                 return;
             }
-            _selectedChannels.Remove(key);
+            DeselectChannel(channel);
+            UpdateTeamCheckState(channel.TeamId);
             RenderSelectedChannels();
         };
         _channelChecks[key] = checkBox;
@@ -303,7 +364,7 @@ public partial class SettingsWindow : Window
         };
         var selectAll = new Button
         {
-            Content = "Select all channels",
+            Content = "Select entire team",
             Tag = team,
             Padding = new Thickness(7, 3, 7, 3),
             Margin = new Thickness(0, 0, 6, 0)
@@ -325,32 +386,41 @@ public partial class SettingsWindow : Window
         object sender,
         RoutedEventArgs e)
     {
-        if (sender is not Button { Tag: TeamsTeamInfo team } ||
-            !_loadedChannelsByTeam.TryGetValue(
-                team.TeamId,
-                out var channels))
+        if (sender is not Button { Tag: TeamsTeamInfo team })
         {
             return;
         }
 
+        SelectTeam(team);
+    }
+
+    private void SelectTeam(TeamsTeamInfo team)
+    {
+        _selectedTeams[team.TeamId] = new TeamsTeamWatch
+        {
+            TeamId = team.TeamId,
+            DisplayName = team.TeamName
+        };
+        RemoveExplicitTeamChannels(team.TeamId);
         _updatingSelectionControls = true;
         try
         {
-            foreach (var channel in channels)
+            if (_loadedChannelsByTeam.TryGetValue(
+                    team.TeamId,
+                    out var channels))
             {
-                var key = ChannelKey(channel.TeamId, channel.ChannelId);
-                _selectedChannels[key] = new TeamsChannelWatch
+                foreach (var channel in channels)
                 {
-                    TeamId = channel.TeamId,
-                    ChannelId = channel.ChannelId,
-                    DisplayName =
-                        $"{channel.TeamName} / {channel.ChannelName}"
-                };
-                if (_channelChecks.TryGetValue(key, out var checkBox))
-                {
-                    checkBox.IsChecked = true;
+                    var key = ChannelKey(
+                        channel.TeamId,
+                        channel.ChannelId);
+                    if (_channelChecks.TryGetValue(key, out var checkBox))
+                    {
+                        checkBox.IsChecked = true;
+                    }
                 }
             }
+            UpdateTeamCheckState(team.TeamId);
         }
         finally
         {
@@ -371,6 +441,7 @@ public partial class SettingsWindow : Window
 
     private void DeselectTeam(string teamId)
     {
+        _selectedTeams.Remove(teamId);
         var keys = _selectedChannels
             .Where(pair => string.Equals(
                 pair.Value.TeamId,
@@ -384,17 +455,146 @@ public partial class SettingsWindow : Window
             foreach (var key in keys)
             {
                 _selectedChannels.Remove(key);
-                if (_channelChecks.TryGetValue(key, out var checkBox))
-                {
-                    checkBox.IsChecked = false;
-                }
             }
+            foreach (var pair in _channelChecks.Where(pair =>
+                         pair.Key.StartsWith(
+                             teamId + "\n",
+                             StringComparison.Ordinal)))
+            {
+                pair.Value.IsChecked = false;
+            }
+            UpdateTeamCheckState(teamId);
         }
         finally
         {
             _updatingSelectionControls = false;
         }
         RenderSelectedChannels();
+    }
+
+    private void ApplyTeamCheckSelection(
+        TeamsTeamInfo team,
+        CheckBox checkBox)
+    {
+        if (_updatingSelectionControls)
+        {
+            return;
+        }
+
+        if (checkBox.IsChecked == true)
+        {
+            SelectTeam(team);
+        }
+        else
+        {
+            DeselectTeam(team.TeamId);
+        }
+    }
+
+    private void SelectChannel(TeamsChannelInfo channel)
+    {
+        if (_selectedTeams.TryGetValue(channel.TeamId, out var team))
+        {
+            team.ExcludedChannelIds.RemoveAll(id => string.Equals(
+                id,
+                channel.ChannelId,
+                StringComparison.Ordinal));
+            return;
+        }
+
+        var key = ChannelKey(channel.TeamId, channel.ChannelId);
+        _selectedChannels[key] = new TeamsChannelWatch
+        {
+            TeamId = channel.TeamId,
+            ChannelId = channel.ChannelId,
+            DisplayName = $"{channel.TeamName} / {channel.ChannelName}"
+        };
+    }
+
+    private void DeselectChannel(TeamsChannelInfo channel)
+    {
+        var key = ChannelKey(channel.TeamId, channel.ChannelId);
+        _selectedChannels.Remove(key);
+        if (!_selectedTeams.TryGetValue(channel.TeamId, out var team))
+        {
+            return;
+        }
+
+        if (!team.ExcludedChannelIds.Contains(
+                channel.ChannelId,
+                StringComparer.Ordinal))
+        {
+            team.ExcludedChannelIds.Add(channel.ChannelId);
+        }
+        if (_loadedChannelsByTeam.TryGetValue(
+                channel.TeamId,
+                out var channels) &&
+            channels.All(item => !IsChannelSelected(
+                item.TeamId,
+                item.ChannelId)))
+        {
+            _selectedTeams.Remove(channel.TeamId);
+        }
+    }
+
+    private bool IsChannelSelected(string teamId, string channelId)
+    {
+        if (_selectedTeams.TryGetValue(teamId, out var team))
+        {
+            return !team.ExcludedChannelIds.Contains(
+                channelId,
+                StringComparer.Ordinal);
+        }
+
+        return _selectedChannels.ContainsKey(ChannelKey(teamId, channelId));
+    }
+
+    private bool? GetTeamSelectionState(string teamId)
+    {
+        if (_selectedTeams.TryGetValue(teamId, out var team))
+        {
+            return team.ExcludedChannelIds.Count == 0 ? true : null;
+        }
+
+        return _selectedChannels.Values.Any(item => string.Equals(
+            item.TeamId,
+            teamId,
+            StringComparison.Ordinal))
+            ? null
+            : false;
+    }
+
+    private void UpdateTeamCheckState(string teamId)
+    {
+        if (!_teamChecks.TryGetValue(teamId, out var checkBox))
+        {
+            return;
+        }
+
+        var wasUpdating = _updatingSelectionControls;
+        _updatingSelectionControls = true;
+        try
+        {
+            checkBox.IsChecked = GetTeamSelectionState(teamId);
+        }
+        finally
+        {
+            _updatingSelectionControls = wasUpdating;
+        }
+    }
+
+    private void RemoveExplicitTeamChannels(string teamId)
+    {
+        foreach (var key in _selectedChannels
+                     .Where(pair => string.Equals(
+                         pair.Value.TeamId,
+                         teamId,
+                         StringComparison.Ordinal))
+                     .Select(pair => pair.Key)
+                     .ToList())
+        {
+            _selectedChannels.Remove(key);
+        }
     }
 
     private async void RetryTeamChannels_Click(
@@ -440,21 +640,25 @@ public partial class SettingsWindow : Window
     private void RenderSelectedChannels()
     {
         SelectedChannelsPanel.Children.Clear();
-        var selectedTeams = _selectedChannels.Values
-            .Select(item => item.TeamId)
+        var selectedTeamIds = _selectedTeams.Keys
+            .Concat(_selectedChannels.Values.Select(item => item.TeamId))
             .Distinct(StringComparer.Ordinal)
-            .Count();
+            .ToList();
         SelectedChannelStatus.Text =
-            $"Selected monitoring: {selectedTeams} " +
-            $"{(selectedTeams == 1 ? "team" : "teams")}, " +
-            $"{_selectedChannels.Count} " +
+            $"Selected sources: {selectedTeamIds.Count} " +
+            $"{(selectedTeamIds.Count == 1 ? "team" : "teams")}, " +
+            $"{_selectedTeams.Count} entire, " +
+            $"{_selectedChannels.Count} individual " +
             $"{(_selectedChannels.Count == 1 ? "channel" : "channels")}";
-        if (_selectedChannels.Count == 0)
+        UpdateTeamsScopeWarning();
+        if (selectedTeamIds.Count == 0)
         {
             SelectedChannelsPanel.Children.Add(new TextBlock
             {
-                Text = "None selected. Mentions and replies in participated " +
-                       "threads are still monitored across Teams.",
+                Text = GetSelectedTeamsScope() ==
+                    TeamsMonitoringScope.AllActivity
+                    ? "None selected for full channel delta monitoring."
+                    : "No teams or channels selected.",
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = System.Windows.Media.Brushes.DimGray,
                 FontSize = 11
@@ -462,14 +666,20 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        foreach (var teamGroup in _selectedChannels
-                     .GroupBy(
-                         pair => pair.Value.TeamId,
-                         StringComparer.Ordinal)
-                     .OrderBy(
-                         group => GetTeamName(group.First().Value),
-                         StringComparer.OrdinalIgnoreCase))
+        foreach (var teamId in selectedTeamIds.OrderBy(
+                     GetTeamName,
+                     StringComparer.OrdinalIgnoreCase))
         {
+            _selectedTeams.TryGetValue(teamId, out var wholeTeam);
+            var selectedChannels = _selectedChannels
+                .Where(pair => string.Equals(
+                    pair.Value.TeamId,
+                    teamId,
+                    StringComparison.Ordinal))
+                .OrderBy(
+                    pair => pair.Value.DisplayName,
+                    StringComparer.OrdinalIgnoreCase)
+                .ToList();
             var teamHeader = new DockPanel
             {
                 Margin = new Thickness(0, 4, 0, 2)
@@ -477,7 +687,7 @@ public partial class SettingsWindow : Window
             var deselectTeam = new Button
             {
                 Content = "Deselect team",
-                Tag = teamGroup.Key,
+                Tag = teamId,
                 Padding = new Thickness(7, 3, 7, 3),
                 Margin = new Thickness(8, 0, 0, 0)
             };
@@ -486,16 +696,28 @@ public partial class SettingsWindow : Window
             teamHeader.Children.Add(deselectTeam);
             teamHeader.Children.Add(new TextBlock
             {
-                Text = GetTeamName(teamGroup.First().Value),
+                Text = GetTeamName(teamId),
                 FontWeight = FontWeights.SemiBold,
                 TextWrapping = TextWrapping.Wrap,
                 VerticalAlignment = VerticalAlignment.Center
             });
             SelectedChannelsPanel.Children.Add(teamHeader);
 
-            foreach (var pair in teamGroup.OrderBy(
-                         item => item.Value.DisplayName,
-                         StringComparer.OrdinalIgnoreCase))
+            if (wholeTeam is not null)
+            {
+                SelectedChannelsPanel.Children.Add(new TextBlock
+                {
+                    Text = wholeTeam.ExcludedChannelIds.Count == 0
+                        ? "All accessible channels, including new channels"
+                        : "All accessible channels except " +
+                          $"{wholeTeam.ExcludedChannelIds.Count}",
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = System.Windows.Media.Brushes.DimGray,
+                    FontSize = 11,
+                    Margin = new Thickness(12, 2, 0, 2)
+                });
+            }
+            foreach (var pair in selectedChannels)
             {
                 var row = new DockPanel
                 {
@@ -521,6 +743,28 @@ public partial class SettingsWindow : Window
                 SelectedChannelsPanel.Children.Add(row);
             }
         }
+    }
+
+    private string GetTeamName(string teamId)
+    {
+        if (_teamNames.TryGetValue(teamId, out var teamName))
+        {
+            return teamName;
+        }
+        if (_selectedTeams.TryGetValue(teamId, out var selectedTeam) &&
+            !string.IsNullOrWhiteSpace(selectedTeam.DisplayName))
+        {
+            return selectedTeam.DisplayName;
+        }
+
+        var selectedChannel = _selectedChannels.Values.FirstOrDefault(item =>
+            string.Equals(
+                item.TeamId,
+                teamId,
+                StringComparison.Ordinal));
+        return selectedChannel is null
+            ? teamId
+            : GetTeamName(selectedChannel);
     }
 
     private string GetTeamName(TeamsChannelWatch item)
@@ -571,7 +815,38 @@ public partial class SettingsWindow : Window
                 _updatingSelectionControls = false;
             }
         }
+        var separator = key.IndexOf('\n');
+        if (separator > 0)
+        {
+            UpdateTeamCheckState(key[..separator]);
+        }
         RenderSelectedChannels();
+    }
+
+    private void UpdateTeamsScopeWarning()
+    {
+        if (TeamsScopeWarning is null)
+        {
+            return;
+        }
+
+        var scope = GetSelectedTeamsScope();
+        if (scope != TeamsMonitoringScope.SelectedTeamsAndChannels)
+        {
+            TeamsScopeWarning.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var hasSelectedSources =
+            _selectedTeams.Count > 0 ||
+            _selectedChannels.Count > 0 ||
+            MonitorTeamsChatsCheck.IsChecked == true;
+        TeamsScopeWarningText.Text = hasSelectedSources
+            ? "Only these sources will generate Teams alerts. Unselected " +
+              "teams and channels are not retrieved."
+            : "No Teams sources are selected, so Peggy will not generate " +
+              "Teams alerts.";
+        TeamsScopeWarning.Visibility = Visibility.Visible;
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
@@ -618,10 +893,15 @@ public partial class SettingsWindow : Window
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         var watchlist = GetSavedWatchlist();
+        var teamWatchlist = GetSavedTeamWatchlist();
         SavedSettings = new PeggySettings
         {
             CopilotModel = model,
             AdditionalOutlookFolders = folders,
+            TeamsScope = GetSelectedTeamsScope(),
+            MonitorTeamsChatsInSelectedScope =
+                MonitorTeamsChatsCheck.IsChecked == true,
+            TeamsTeamWatchlist = teamWatchlist,
             TeamsChannelWatchlist = watchlist,
             StartAtSignIn = StartupCheck.IsChecked == true,
             MonitoringPaused = PausedCheck.IsChecked == true,
@@ -650,11 +930,18 @@ public partial class SettingsWindow : Window
             Owner = this
         };
         if (window.ShowDialog() == true &&
-            !string.IsNullOrWhiteSpace(window.AuthenticatedAccount))
+            window.AuthenticatedIdentity is { } identity)
         {
-            AccountStatus.Text =
-                $"Connected as {window.AuthenticatedAccount}";
+            ApplyReauthenticatedIdentity(identity);
         }
+    }
+
+    private void ApplyReauthenticatedIdentity(
+        WorkIqAccountIdentity identity)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ReauthenticatedIdentity = identity;
+        AccountStatus.Text = $"Connected as {identity.Account}";
     }
 
     private void ScheduleEnabledCheck_Changed(
@@ -699,6 +986,14 @@ public partial class SettingsWindow : Window
             .Select(CloneWatch)
             .ToList();
 
+    private List<TeamsTeamWatch> GetSavedTeamWatchlist()
+        => _selectedTeams.Values
+            .OrderBy(
+                item => item.DisplayName,
+                StringComparer.OrdinalIgnoreCase)
+            .Select(CloneTeamWatch)
+            .ToList();
+
     private static TeamsChannelWatch CloneWatch(TeamsChannelWatch item)
         => new()
         {
@@ -706,6 +1001,27 @@ public partial class SettingsWindow : Window
             ChannelId = item.ChannelId,
             DisplayName = item.DisplayName
         };
+
+    private static TeamsTeamWatch CloneTeamWatch(TeamsTeamWatch item)
+        => new()
+        {
+            TeamId = item.TeamId,
+            DisplayName = item.DisplayName,
+            ExcludedChannelIds = item.ExcludedChannelIds
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(id => id, StringComparer.Ordinal)
+                .ToList()
+        };
+
+    private TeamsMonitoringScope GetSelectedTeamsScope()
+    {
+        var item = TeamsScopeCombo.SelectedItem as ComboBoxItem;
+        return Enum.TryParse<TeamsMonitoringScope>(
+            item?.Tag?.ToString(),
+            out var scope)
+            ? scope
+            : TeamsMonitoringScope.AllActivity;
+    }
 
     private static string ChannelKey(string teamId, string channelId)
         => $"{teamId}\n{channelId}";

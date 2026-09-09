@@ -1,0 +1,237 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <SolidColorBrush x:Key="PeggyPageBrush" Color="#F7F3EE"/>
+  <SolidColorBrush x:Key="PeggySurfaceBrush" Color="#FFFEFC"/>
+  <SolidColorBrush x:Key="PeggySoftSurfaceBrush" Color="#FAF7F4"/>
+  <SolidColorBrush x:Key="PeggyTextBrush" Color="#2D2926"/>
+  <SolidColorBrush x:Key="PeggyMutedTextBrush" Color="#756961"/>
+  <SolidColorBrush x:Key="PeggyBorderBrush" Color="#E5DBD3"/>
+  <SolidColorBrush x:Key="PeggyControlBorderBrush" Color="#9B887B"/>
+  <SolidColorBrush x:Key="PeggyBrandBrush" Color="#B84B30"/>
+  <SolidColorBrush x:Key="PeggyBrandDarkBrush" Color="#513B32"/>
+  <SolidColorBrush x:Key="PeggyBrandSoftBrush" Color="#FFF0E9"/>
+  <SolidColorBrush x:Key="PeggyPositiveBrush" Color="#275E3A"/>
+  <SolidColorBrush x:Key="PeggyPositiveSurfaceBrush" Color="#EDF7F0"/>
+  <SolidColorBrush x:Key="PeggyWarningBrush" Color="#7C5200"/>
+  <SolidColorBrush x:Key="PeggyWarningSurfaceBrush" Color="#FFF8DE"/>
+  <SolidColorBrush x:Key="PeggyCriticalBrush" Color="#8B1A12"/>
+  <SolidColorBrush x:Key="PeggyCriticalSurfaceBrush" Color="#FDECEA"/>
+
+  <LinearGradientBrush x:Key="PeggyHeaderBrush"
+                       StartPoint="0,0" EndPoint="1,1">
+    <GradientStop Color="#513B32" Offset="0"/>
+    <GradientStop Color="#704B38" Offset="0.62"/>
+    <GradientStop Color="#8D5438" Offset="1"/>
+  </LinearGradientBrush>
+
+  <DropShadowEffect x:Key="PeggyCardShadow"
+                    Color="#452E22"
+                    BlurRadius="18"
+                    ShadowDepth="3"
+                    Opacity="0.12"/>
+
+  <Style x:Key="PeggyButtonBaseStyle" TargetType="Button">
+    <Setter Property="FontFamily" Value="Segoe UI"/>
+    <Setter Property="FontSize" Value="12"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="MinHeight" Value="34"/>
+    <Setter Property="Padding" Value="13,7"/>
+    <Setter Property="Cursor" Value="Hand"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Grid>
+            <Border x:Name="ButtonBorder"
+                    Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}"
+                    CornerRadius="8"
+                    SnapsToDevicePixels="True"/>
+            <Border x:Name="StateOverlay"
+                    Background="Transparent"
+                    CornerRadius="8"
+                    IsHitTestVisible="False"/>
+            <ContentPresenter HorizontalAlignment="Center"
+                              VerticalAlignment="Center"
+                              Margin="{TemplateBinding Padding}"/>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+              <Setter TargetName="StateOverlay"
+                      Property="Background"
+                      Value="#08000000"/>
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True">
+              <Setter TargetName="StateOverlay"
+                      Property="Background"
+                      Value="#18000000"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+              <Setter Property="Foreground" Value="#62564F"/>
+              <Setter TargetName="ButtonBorder"
+                      Property="Background"
+                      Value="#E8E1DB"/>
+              <Setter TargetName="ButtonBorder"
+                      Property="BorderBrush"
+                      Value="#D4C8BE"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <Style x:Key="PeggySecondaryButtonStyle"
+         TargetType="Button"
+         BasedOn="{StaticResource PeggyButtonBaseStyle}">
+    <Setter Property="Foreground" Value="{StaticResource PeggyBrandDarkBrush}"/>
+    <Setter Property="Background" Value="{StaticResource PeggySoftSurfaceBrush}"/>
+    <Setter Property="BorderBrush" Value="{StaticResource PeggyBorderBrush}"/>
+  </Style>
+
+  <Style TargetType="Button"
+         BasedOn="{StaticResource PeggySecondaryButtonStyle}"/>
+
+  <Style x:Key="PeggyPrimaryButtonStyle"
+         TargetType="Button"
+         BasedOn="{StaticResource PeggyButtonBaseStyle}">
+    <Setter Property="Foreground" Value="White"/>
+    <Setter Property="Background" Value="{StaticResource PeggyBrandBrush}"/>
+    <Setter Property="BorderBrush" Value="{StaticResource PeggyBrandBrush}"/>
+  </Style>
+
+  <Style x:Key="PeggyHeaderButtonStyle"
+         TargetType="Button"
+         BasedOn="{StaticResource PeggyButtonBaseStyle}">
+    <Setter Property="Foreground" Value="White"/>
+    <Setter Property="Background" Value="#1FFFFFFF"/>
+    <Setter Property="BorderBrush" Value="#4AFFFFFF"/>
+  </Style>
+
+  <Style x:Key="PeggyPositiveButtonStyle"
+         TargetType="Button"
+         BasedOn="{StaticResource PeggyButtonBaseStyle}">
+    <Setter Property="Foreground" Value="{StaticResource PeggyPositiveBrush}"/>
+    <Setter Property="Background" Value="{StaticResource PeggyPositiveSurfaceBrush}"/>
+    <Setter Property="BorderBrush" Value="#C6E1CE"/>
+  </Style>
+
+  <Style x:Key="PeggyCriticalButtonStyle"
+         TargetType="Button"
+         BasedOn="{StaticResource PeggyButtonBaseStyle}">
+    <Setter Property="Foreground" Value="{StaticResource PeggyCriticalBrush}"/>
+    <Setter Property="Background" Value="#FFF9F8"/>
+    <Setter Property="BorderBrush" Value="#E7A6A0"/>
+  </Style>
+
+  <Style TargetType="TextBox">
+    <Setter Property="FontFamily" Value="Segoe UI"/>
+    <Setter Property="FontSize" Value="12"/>
+    <Setter Property="Foreground" Value="{StaticResource PeggyTextBrush}"/>
+    <Setter Property="Background" Value="White"/>
+    <Setter Property="BorderBrush"
+            Value="{StaticResource PeggyControlBorderBrush}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Padding" Value="10,8"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="TextBox">
+          <Border x:Name="TextBorder"
+                  Background="{TemplateBinding Background}"
+                  BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}"
+                  CornerRadius="8">
+            <ScrollViewer x:Name="PART_ContentHost"
+                          Margin="{TemplateBinding Padding}"/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsKeyboardFocused" Value="True">
+              <Setter TargetName="TextBorder"
+                      Property="BorderBrush"
+                      Value="{StaticResource PeggyBrandBrush}"/>
+              <Setter TargetName="TextBorder"
+                      Property="BorderThickness"
+                      Value="2"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+              <Setter TargetName="TextBorder" Property="Opacity" Value="0.55"/>
+            </Trigger>
+            <Trigger Property="IsReadOnly" Value="True">
+              <Setter TargetName="TextBorder"
+                      Property="Background"
+                      Value="#F2EEEA"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <Style TargetType="ComboBox">
+    <Setter Property="FontFamily" Value="Segoe UI"/>
+    <Setter Property="FontSize" Value="12"/>
+    <Setter Property="Foreground" Value="{StaticResource PeggyTextBrush}"/>
+    <Setter Property="Background" Value="White"/>
+    <Setter Property="BorderBrush"
+            Value="{StaticResource PeggyControlBorderBrush}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Padding" Value="8,6"/>
+    <Setter Property="MinHeight" Value="34"/>
+  </Style>
+
+  <Style TargetType="CheckBox">
+    <Setter Property="FontFamily" Value="Segoe UI"/>
+    <Setter Property="FontSize" Value="12"/>
+    <Setter Property="Foreground" Value="{StaticResource PeggyTextBrush}"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+  </Style>
+
+  <Style TargetType="GroupBox">
+    <Setter Property="Foreground" Value="{StaticResource PeggyBrandDarkBrush}"/>
+    <Setter Property="FontFamily" Value="Segoe UI"/>
+    <Setter Property="FontSize" Value="13"/>
+    <Setter Property="Padding" Value="16,19,16,16"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="GroupBox">
+          <Grid>
+            <Border Margin="0,9,0,0"
+                    Background="{StaticResource PeggySurfaceBrush}"
+                    BorderBrush="{StaticResource PeggyBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    Effect="{StaticResource PeggyCardShadow}">
+              <ContentPresenter ContentSource="Content"
+                                Margin="{TemplateBinding Padding}"
+                                TextElement.FontWeight="Normal"
+                                TextElement.Foreground="{StaticResource PeggyTextBrush}"/>
+            </Border>
+            <Border HorizontalAlignment="Left"
+                    VerticalAlignment="Top"
+                    Background="{StaticResource PeggyPageBrush}"
+                    Margin="13,0,0,0"
+                    Padding="7,0">
+              <ContentPresenter ContentSource="Header"
+                                RecognizesAccessKey="True"
+                                TextElement.FontWeight="SemiBold"
+                                TextElement.Foreground="{StaticResource PeggyBrandDarkBrush}"/>
+            </Border>
+          </Grid>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <Style TargetType="Expander">
+    <Setter Property="Foreground" Value="{StaticResource PeggyTextBrush}"/>
+    <Setter Property="FontFamily" Value="Segoe UI"/>
+    <Setter Property="FontSize" Value="12"/>
+  </Style>
+
+  <Style TargetType="Separator">
+    <Setter Property="Background" Value="{StaticResource PeggyBorderBrush}"/>
+    <Setter Property="Height" Value="1"/>
+  </Style>
+</ResourceDictionary>

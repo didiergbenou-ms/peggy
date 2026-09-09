@@ -70,7 +70,7 @@ function Install-Archive {
         return
     }
     if ((Test-Path -LiteralPath $target) -and -not $Force) {
-        throw "Incomplete model directory exists: $target. Re-run with -Force."
+        Write-Host "$Name is incomplete and will be repaired."
     }
 
     $archive = Join-Path $Destination "$Name.tar.bz2"
@@ -99,6 +99,13 @@ function Install-Archive {
             $source = $directories[0].FullName
         }
 
+        foreach ($relativePath in $RequiredFiles) {
+            $required = Join-Path $source $relativePath
+            if (-not (Test-Path -LiteralPath $required)) {
+                throw "Downloaded model is missing: $required"
+            }
+        }
+
         if (Test-Path -LiteralPath $target) {
             Remove-Item -LiteralPath $target -Recurse -Force
         }
@@ -121,6 +128,9 @@ function Install-Archive {
     }
 }
 
+if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) {
+    throw 'Windows curl.exe is required to download the speech models.'
+}
 if (-not (Get-Command tar.exe -ErrorAction SilentlyContinue)) {
     throw 'Windows tar.exe is required to extract the speech models.'
 }
@@ -184,7 +194,7 @@ $vadValid = (Test-Path -LiteralPath $vadPath -PathType Leaf) -and (
 )
 if (-not $vadValid) {
     if ((Test-Path -LiteralPath $vadPath) -and -not $Force) {
-        throw "Invalid VAD model exists: $vadPath. Re-run with -Force."
+        Write-Host "$vadName is invalid and will be repaired."
     }
     Get-VerifiedAsset -Url $vadUrl -Sha256 $vadHash -OutputPath $vadPath
 }

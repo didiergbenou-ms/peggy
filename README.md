@@ -47,8 +47,8 @@ remain in a separate local process.
   Attention, and Awareness alerts.
 - Opens alerts in the exact Outlook or Teams source when a verified link is
   available.
-- Supports structured Teams message discovery and explicit full-channel
-  watchlists.
+- Supports All, Selected only, and Off Teams monitoring scopes, with durable
+  whole-team and individual-channel selections.
 - Provides a warmed, persistent Copilot conversation with streamed responses.
 - Runs English speech recognition and synthesis locally with sherpa-onnx.
 - Requires an exact action preview and explicit approval before every write.
@@ -119,14 +119,18 @@ Peggy monitors:
 - Any additional Inbox-relative folders configured in Settings.
 
 Outlook cursors use message activity boundaries and delta links where
-available. Source references are verified before they are attached to alerts,
-including regional HTTPS Outlook on the web links under
-`*.mail.microsoft.com`.
+available. Source references are verified before they are attached to alerts.
+Regional HTTPS links under `*.mail.microsoft.com` are rewritten to the
+equivalent `outlook.office.com` URL to avoid regional endpoint authorization
+failures. When Peggy opens an Outlook link, it extracts the validated Graph
+item ID and builds one modern `/mail/{account}/deeplink/read/{item}` path for
+the pinned mailbox. Legacy OWA query paths, nested schemes, and duplicated
+URLs are never launched.
 
 ### Teams chats
 
-Automatic Teams discovery uses WorkIQ's structured `/search/query` operation
-for newly sent messages in a bounded UTC window. Each search hit carries its message identity,
+The **All Teams activity** scope uses WorkIQ's structured `/search/query`
+operation for newly sent messages in a bounded UTC window. Each search hit carries its message identity,
 timestamp, sender, and exact Teams source link, so Peggy does not depend on a
 natural-language answer to associate content with its source. Search windows
 overlap by ten minutes. Peggy enriches search hits through bounded, batched
@@ -140,6 +144,11 @@ WorkIQ exposes `/search/query` through its generic `do_action` POST transport,
 but the operation is read-only. Peggy does not send or modify a Teams item
 during monitoring.
 
+The **Selected teams and channels only** scope does not run broad Teams
+search. Direct and group chats can be included separately; when enabled,
+Peggy reads only their recent bounded message windows. Meeting chats remain
+excluded from this option. The **Off** scope performs no Teams message reads.
+
 Explicit unread views remain bounded structured WorkIQ reads and compare chat
 activity with the caller's `lastMessageReadDateTime`. Teams links must identify
 a specific `/l/message/` item rather than only a generic chat.
@@ -147,11 +156,14 @@ a specific `/l/message/` item rather than only a generic chat.
 ### Teams channels
 
 - Broad Teams discovery uses structured WorkIQ search for the current monitoring
-  window and discovers messages by sent time.
+  window and discovers messages by sent time only in the All scope.
 - Search results must contain a compatible exact Teams message link before
   Peggy creates an alert.
-- Channels selected in the full-channel watchlist use structured Graph delta
-  scans and include edits to older messages.
+- Selected channels use structured Graph delta scans and include edits to older
+  messages. Selected-only mode bypasses broad search entirely.
+- Selecting an entire team includes all accessible current and future channels.
+  Individual channels can be excluded, and the team catalog refreshes every
+  30 minutes.
 - Known channel participation is retained across monitoring-window rebases.
 
 ### Alert lifecycle
@@ -336,6 +348,7 @@ The installer:
 
 - Downloads the latest self-contained Windows x64 package.
 - Verifies its SHA-256 checksum before extraction.
+- Downloads and verifies about 803 MiB of local English voice models.
 - Installs for the current user under `%LOCALAPPDATA%\Programs\Peggy`.
 - Creates a Start menu shortcut and launches Peggy.
 - Can install PowerShell 7, Node.js LTS, and GitHub Copilot CLI through WinGet
@@ -345,9 +358,10 @@ The installer:
 - Preserves encrypted Peggy state during upgrades because state lives outside
   the installation directory.
 
-Add `-InstallSpeechModels` to download the optional local voice models, or
-`-NoLaunch` to install without starting Peggy. Use `-Version v0.1.4` to install
-a specific release.
+Add `-SkipSpeechModels` to install without the local voice models, or
+`-NoLaunch` to install without starting Peggy. The former
+`-InstallSpeechModels` switch remains accepted for compatibility. Use
+`-Version v0.1.5` to install a specific release.
 
 This repository is currently private. Authenticate GitHub CLI with repository
 access (`gh auth login`) or set `GH_TOKEN` before running the installer. If the
@@ -389,8 +403,9 @@ verifies every SHA-256 digest, and installs them under:
 %LOCALAPPDATA%\Peggy\models
 ```
 
-Voice is optional. To run without the models, start Peggy and disable local
-speech in Settings.
+Voice is optional. The GitHub Release installer includes these models by
+default; use `-SkipSpeechModels` to omit them. Source builds can run without
+the models by disabling local speech in Settings.
 
 #### 3. Build and run
 
@@ -407,7 +422,8 @@ host beside the tray executable.
 On first launch, Peggy opens **Connect Microsoft 365**:
 
 1. Install standalone WorkIQ if it is not already available.
-2. Review and accept the WorkIQ EULA.
+2. Review and accept the WorkIQ EULA. Peggy records the exact accepted WorkIQ
+   build in its encrypted state.
 3. Enter the Microsoft 365 email address Peggy should use.
 4. Select **Sign in** and complete Microsoft sign-in and permission consent in
    the browser.
@@ -419,6 +435,11 @@ must complete tenant consent before verification can succeed.
 
 Use **Microsoft 365 sign-in** from the tray or **Sign in again** in Settings to
 refresh authentication for the pinned account.
+
+If WorkIQ loses its local `I-accept-EULA` setting, Peggy restores it
+automatically only when the installed WorkIQ build exactly matches the build
+whose EULA was accepted. A WorkIQ update requires the user to review and accept
+the current EULA again through **Sign in again**.
 
 ### 5. Add the optional speech-host firewall rule
 
@@ -467,8 +488,8 @@ The Alert Center shows:
 - A concise summary.
 - Why Peggy flagged the item.
 - The verified **Open in Outlook** or **Open in Teams** action.
-- Resolve, dismiss, snooze, feedback, tier correction, context, and
-  conversation controls.
+- Resolve, dismiss, dismiss-all, snooze, feedback, tier correction, context,
+  and conversation controls.
 
 When privacy masking is active, details remain hidden until
 **Reveal details** is explicitly confirmed. A reveal expires after one minute.
@@ -506,14 +527,17 @@ not leave a partially applied identity, model, or source scope.
 | Monitoring schedule | Local 24-hour wake and sleep times |
 | Start at Windows sign-in | Manages the current user's `Run` registry entry |
 | Pause monitoring | Persists a manual pause independently of scheduled sleep |
-| Teams channel monitoring | Loads joined teams first, then loads channels only when a team is expanded |
+| Teams monitoring scope | All Teams activity, selected teams and channels only, or Off |
+| Direct and group chats | Optional in selected-only mode; meeting chats stay excluded |
+| Teams source picker | Loads joined teams first, then loads channels only when a team is expanded |
 
-Selected channels are always listed at the top of Settings and can be removed
-without loading their team. Selecting a channel enables full structured delta
-monitoring for that channel. Each loaded team also provides **Select all
-channels** and **Deselect team** controls, and every selected team can be
-deselected from the summary without loading it. Mentions and replies in
-participated threads remain monitored across Teams.
+Selected sources are always listed at the top of Settings and can be removed
+without loading their team. Selecting an individual channel enables full
+structured delta monitoring for it. Selecting an entire team includes all
+accessible current and future channels; clearing one channel creates a durable
+exclusion. A partially selected team is shown with an indeterminate checkbox.
+Changing Teams scope resets only Teams progress, not Outlook progress. Activity
+accumulated while Teams monitoring is Off is not replayed when it is enabled.
 
 ## Supported actions
 
@@ -699,6 +723,7 @@ Optional live switches use the configured Microsoft 365 or Copilot account:
 | `--live-channels` | Exercises live Teams channel reads |
 | `--live-unread` | Exercises live unread-message retrieval |
 | `--live-monitoring` | Exercises bounded structured monitoring with exact source validation |
+| `--live-outlook-link` | Fetches one private Outlook message, creates a real Peggy alert, and launches the production source URL when enabled |
 | `--live-copilot` | Exercises a live Copilot conversation |
 
 Example:
@@ -708,6 +733,24 @@ dotnet run --project .\src\Peggy.Core.Tests\Peggy.Core.Tests.csproj `
     -c Release `
     -- --live-unread
 ```
+
+The Outlook-link test takes the private message ID only from the environment,
+so it is never committed:
+
+```powershell
+$env:PEGGY_LIVE_OUTLOOK_MESSAGE_ID = '<Graph message ID>'
+$env:PEGGY_LIVE_OUTLOOK_LINK_OUTPUT = "$env:TEMP\peggy-outlook-link.txt"
+$env:PEGGY_LIVE_OUTLOOK_BROWSER_RESULT = "$env:TEMP\peggy-outlook-browser.json"
+dotnet run --project .\src\Peggy.Core.Tests\Peggy.Core.Tests.csproj `
+    -c Release `
+    -- --live-outlook-link
+```
+
+The test launches through Peggy's production Windows shell path, then waits
+for browser automation to return the same per-run nonce, hashes of the
+navigated URL and rendered subject, `unauthorizedFound`, and the observed
+Outlook `GetItem` status codes. It does not pass from URL construction alone
+or from a stale browser result.
 
 The automated action suite uses a fake WorkIQ transport and does not perform
 external writes.
@@ -737,6 +780,9 @@ child processes:
 | --- | --- |
 | `PEGGY_OUTLOOK_FOLDERS` | Semicolon-separated Inbox-relative paths |
 | `PEGGY_TEAMS_WATCHLIST` | JSON array of team/channel watch objects |
+| `PEGGY_TEAMS_TEAM_WATCHLIST` | JSON array of whole-team watch objects and channel exclusions |
+| `PEGGY_TEAMS_SCOPE` | `AllActivity`, `SelectedTeamsAndChannels`, or `Off` |
+| `PEGGY_TEAMS_MONITOR_CHATS` | `true` to include direct and group chats in selected-only mode |
 
 ### Internal bridge variables
 
@@ -825,7 +871,7 @@ Remove-Item Env:\PEGGY_MESSAGE_PROVIDER
 | Connect Microsoft 365 appears | Install standalone WorkIQ if needed, review the EULA, then sign in and grant consent |
 | Authenticated account does not match | Use **Microsoft 365 sign-in** and authenticate as the pinned identity; clear encrypted state before intentionally switching accounts |
 | WorkIQ not found | Select **Install WorkIQ with npm**, run `npm install -g @microsoft/workiq`, or set `PEGGY_WORKIQ_PATH` |
-| WorkIQ terms error | Review the terms and run `workiq accept-eula` |
+| WorkIQ terms error | Open Settings, select **Sign in again**, then review and accept the current terms |
 | WorkIQ consent fails | Ask a Microsoft Entra administrator to grant the Work IQ application permissions required by your tenant |
 | Monitoring classification repeatedly fails after installation | Run `copilot --version` and confirm version 1.0.81 or later. Run `copilot update stable`, restart Peggy, or rerun `install.ps1 -InstallPrerequisites` |
 | Monitoring interrupted | Open the Alert Center for remediation. Peggy retries in a fresh Copilot session and reduces the batch to isolate problematic input |
@@ -847,8 +893,8 @@ Remove-Item Env:\PEGGY_MESSAGE_PROVIDER
 - Framework-dependent publish by default.
 - Microsoft To Do actions target only the default `Tasks` list.
 - Monitoring is polling-based, not real-time.
-- Broad Teams discovery depends on the freshness and availability of WorkIQ
-  structured search.
+- The All Teams activity scope depends on the freshness and availability of
+  WorkIQ structured search.
 - Broad Teams search cannot discover an edit to a message sent before its
   overlap window. Microsoft exposes the all-chat modification feed only to
   application identities, which is incompatible with Peggy's independent

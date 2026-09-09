@@ -197,6 +197,20 @@ public sealed class AlertManager
         alert.UpdatedUtc = nowUtc;
     }
 
+    public int DismissAllActive(DateTimeOffset nowUtc)
+    {
+        var active = _state.State.Alerts
+            .Where(alert => alert.Status == AlertStatus.Active)
+            .ToList();
+        foreach (var alert in active)
+        {
+            alert.Status = AlertStatus.Dismissed;
+            alert.SnoozedUntilUtc = null;
+            alert.UpdatedUtc = nowUtc;
+        }
+        return active.Count;
+    }
+
     public void Snooze(
         string alertId,
         TimeSpan duration,

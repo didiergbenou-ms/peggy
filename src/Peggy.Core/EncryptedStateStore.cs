@@ -169,10 +169,21 @@ public sealed class EncryptedStateStore
             throw new InvalidDataException(
                 "The assistant's encrypted state belongs to a different Microsoft 365 account.");
         }
+        if (string.IsNullOrWhiteSpace(state.PinnedMailbox))
+        {
+            state.PinnedMailbox = state.PinnedAccount;
+        }
+        state.WorkIqEulaAcceptedVersion ??= string.Empty;
 
         state.Settings ??= new PeggySettings();
         state.Settings.AdditionalOutlookFolders ??= [];
+        if (!Enum.IsDefined(state.Settings.TeamsScope))
+        {
+            state.Settings.TeamsScope = TeamsMonitoringScope.AllActivity;
+        }
+        state.Settings.TeamsTeamWatchlist ??= [];
         state.Settings.TeamsChannelWatchlist ??= [];
+        NormalizeTeamsWatchlists(state.Settings);
         if (state.Settings.MonitoringWakeMinute is < 0 or
             >= MonitoringSchedule.MinutesPerDay)
         {
@@ -207,12 +218,18 @@ public sealed class EncryptedStateStore
             1,
             8);
         state.MonitoringCursor ??= new MonitoringCursorState();
+        state.MonitoringCursor.OutlookScanStartedUtc ??=
+            state.MonitoringCursor.InitialScanStartedUtc;
+        state.MonitoringCursor.TeamsScanStartedUtc ??=
+            state.MonitoringCursor.InitialScanStartedUtc;
         if (state.MonitoringCursor.Initialized)
         {
             state.MonitoringCursor.InitialOutlookScanComplete = true;
         }
         state.MonitoringCursor.TeamsBoundaryMessageIds ??= [];
         state.MonitoringCursor.TeamsSearchProcessedHitIds ??= [];
+        state.MonitoringCursor.DirectChatBoundaryMessageIds ??= [];
+        state.MonitoringCursor.DirectChatProcessedMessageIds ??= [];
         state.MonitoringCursor.TeamsSearchOffset = Math.Max(
             0,
             state.MonitoringCursor.TeamsSearchOffset);
@@ -249,6 +266,58 @@ public sealed class EncryptedStateStore
         state.Alerts.RemoveAll(alert =>
             alert.Status != AlertStatus.Active &&
             alert.UpdatedUtc < cutoff);
+    }
+
+    private static void NormalizeTeamsWatchlists(PeggySettings settings)
+    {
+        settings.TeamsTeamWatchlist = settings.TeamsTeamWatchlist
+            .Where(item => !string.IsNullOrWhiteSpace(item.TeamId))
+            .GroupBy(item => item.TeamId.Trim(), StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var item = group.First();
+                return new TeamsTeamWatch
+                {
+                    TeamId = group.Key,
+                    DisplayName = item.DisplayName?.Trim() ?? string.Empty,
+                    ExcludedChannelIds = group
+                        .SelectMany(value => value.ExcludedChannelIds ?? [])
+                        .Where(id => !string.IsNullOrWhiteSpace(id))
+                        .Select(id => id.Trim())
+                        .Distinct(StringComparer.Ordinal)
+                        .OrderBy(id => id, StringComparer.Ordinal)
+                        .ToList()
+                };
+            })
+            .OrderBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.TeamId, StringComparer.Ordinal)
+            .ToList();
+
+        var selectedTeamIds = settings.TeamsTeamWatchlist
+            .Select(item => item.TeamId)
+            .ToHashSet(StringComparer.Ordinal);
+        settings.TeamsChannelWatchlist = settings.TeamsChannelWatchlist
+            .Where(item =>
+                !string.IsNullOrWhiteSpace(item.TeamId) &&
+                !string.IsNullOrWhiteSpace(item.ChannelId) &&
+                !selectedTeamIds.Contains(item.TeamId.Trim()))
+            .GroupBy(
+                item => $"{item.TeamId.Trim()}\n{item.ChannelId.Trim()}",
+                StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var item = group.First();
+                return new TeamsChannelWatch
+                {
+                    TeamId = item.TeamId.Trim(),
+                    ChannelId = item.ChannelId.Trim(),
+                    DisplayName = item.DisplayName?.Trim() ?? string.Empty
+                };
+            })
+            .OrderBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.TeamId, StringComparer.Ordinal)
+            .ThenBy(item => item.ChannelId, StringComparer.Ordinal)
+            .ToList();
     }
 
     private static PeggyStateDocument CreateDefault()

@@ -1,7 +1,10 @@
 using System.Text;
 using System.Text.Json;
 using System.IO;
+using System.Globalization;
+using System.Security.Cryptography;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -22,6 +25,8 @@ if (!liveRun &&
 }
 
 if (TryRenderMascots(args) ||
+    TryRenderAlertCenter(args) ||
+    TryRenderUiSuite(args) ||
     await TryCreateScheduleSmokeStateAsync(args) ||
     TryRunFakeWorkIq(args))
 {
@@ -63,6 +68,12 @@ try
     {
         await TestLiveMonitoringAsync();
     }
+    else if (args.Contains(
+                 "--live-outlook-link",
+                 StringComparer.OrdinalIgnoreCase))
+    {
+        await TestLiveOutlookLinkAsync();
+    }
     Console.WriteLine("All Peggy Core smoke tests passed.");
 }
 finally
@@ -88,6 +99,10 @@ static bool TryRenderMascots(string[] arguments)
     {
         try
         {
+            CultureInfo.CurrentCulture =
+                CultureInfo.GetCultureInfo("en-US");
+            CultureInfo.CurrentUICulture =
+                CultureInfo.GetCultureInfo("en-US");
             var application = new Application
             {
                 ShutdownMode = ShutdownMode.OnExplicitShutdown
@@ -138,6 +153,377 @@ static bool TryRenderMascots(string[] arguments)
 
     Console.WriteLine($"Rendered mascot previews to {directory}.");
     return true;
+}
+
+static bool TryRenderAlertCenter(string[] arguments)
+{
+    const string prefix = "--render-alert-center=";
+    var configured = arguments.FirstOrDefault(argument =>
+        argument.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+    if (configured is null)
+    {
+        return false;
+    }
+
+    var directory = Path.GetFullPath(
+        configured[prefix.Length..].Trim().Trim('"'));
+    Directory.CreateDirectory(directory);
+    Exception? failure = null;
+    var thread = new Thread(() =>
+    {
+        try
+        {
+            CultureInfo.CurrentCulture =
+                CultureInfo.GetCultureInfo("en-US");
+            CultureInfo.CurrentUICulture =
+                CultureInfo.GetCultureInfo("en-US");
+            var application = new Application
+            {
+                ShutdownMode = ShutdownMode.OnExplicitShutdown
+            };
+            var previewLocal = new DateTime(
+                2024,
+                4,
+                8,
+                15,
+                0,
+                0,
+                DateTimeKind.Unspecified);
+            var now = new DateTimeOffset(
+                previewLocal,
+                TimeZoneInfo.Local.GetUtcOffset(previewLocal));
+            var alerts = new[]
+            {
+                new AlertRecord
+                {
+                    ThreadId = "preview-critical",
+                    Source = MessageSource.Email,
+                    Tier = AlertTier.Critical,
+                    Summary =
+                        "Production monitoring is delayed in a primary region",
+                    Reason =
+                        "A live service incident can delay telemetry and " +
+                        "affect active customer investigations.",
+                    SourceReference =
+                        "https://outlook.office.com/mail/deeplink/read/AAMkPreview",
+                    FirstSeenUtc = now.AddMinutes(-18),
+                    LastActivityUtc = now.AddMinutes(-4),
+                    UpdatedUtc = now.AddMinutes(-4)
+                },
+                new AlertRecord
+                {
+                    ThreadId = "preview-attention",
+                    Source = MessageSource.Teams,
+                    Tier = AlertTier.Attention,
+                    Summary =
+                        "Customer escalation needs a response before 4:00 PM",
+                    Reason =
+                        "The latest reply asks for an owner and a recovery " +
+                        "timeline before today's status call.",
+                    SourceReference =
+                        "https://teams.microsoft.com/l/message/thread/message",
+                    FirstSeenUtc = now.AddMinutes(-42),
+                    LastActivityUtc = now.AddMinutes(-12),
+                    UpdatedUtc = now.AddMinutes(-12)
+                }
+            };
+
+            var window = new AlertCenterWindow();
+            window.Show();
+            window.UpdateAlerts(alerts, maskContent: false);
+            PumpDispatcher(TimeSpan.FromMilliseconds(160));
+            SaveWindowContent(
+                window,
+                Path.Combine(directory, "alert-center.png"));
+
+            window.SetMonitoringInterrupted(
+                true,
+                3,
+                now.AddMinutes(-11),
+                "WorkIQ connection needs attention.");
+            PumpDispatcher(TimeSpan.FromMilliseconds(80));
+            SaveWindowContent(
+                window,
+                Path.Combine(directory, "alert-center-health.png"));
+
+            window.SetMonitoringInterrupted(false, 0, now);
+            window.UpdateAlerts([], maskContent: false);
+            PumpDispatcher(TimeSpan.FromMilliseconds(80));
+            SaveWindowContent(
+                window,
+                Path.Combine(directory, "alert-center-empty.png"));
+            window.Close();
+            application.Shutdown();
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+    });
+    thread.SetApartmentState(ApartmentState.STA);
+    thread.Start();
+    thread.Join();
+    if (failure is not null)
+    {
+        throw new InvalidOperationException(
+            "Alert Center previews could not be rendered.",
+            failure);
+    }
+
+    Console.WriteLine($"Rendered Alert Center previews to {directory}.");
+    return true;
+}
+
+static bool TryRenderUiSuite(string[] arguments)
+{
+    const string prefix = "--render-ui-suite=";
+    var configured = arguments.FirstOrDefault(argument =>
+        argument.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+    if (configured is null)
+    {
+        return false;
+    }
+
+    var directory = Path.GetFullPath(
+        configured[prefix.Length..].Trim().Trim('"'));
+    Directory.CreateDirectory(directory);
+    Exception? failure = null;
+    var thread = new Thread(() =>
+    {
+        try
+        {
+            CultureInfo.CurrentCulture =
+                CultureInfo.GetCultureInfo("en-US");
+            CultureInfo.CurrentUICulture =
+                CultureInfo.GetCultureInfo("en-US");
+            var application = new Application
+            {
+                ShutdownMode = ShutdownMode.OnExplicitShutdown
+            };
+            var previewLocal = new DateTime(
+                2024,
+                4,
+                8,
+                15,
+                0,
+                0,
+                DateTimeKind.Unspecified);
+            var now = new DateTimeOffset(
+                previewLocal,
+                TimeZoneInfo.Local.GetUtcOffset(previewLocal));
+
+            var settings = new SettingsWindow(
+                new PeggySettings
+                {
+                    CopilotModel = "gpt-5.4",
+                    MonitoringScheduleEnabled = true,
+                    MonitoringWakeMinute = 7 * 60,
+                    MonitoringSleepMinute = 19 * 60,
+                    SpeechEnabled = true,
+                    TeamsScope =
+                        TeamsMonitoringScope.SelectedTeamsAndChannels,
+                    TeamsTeamWatchlist =
+                    [
+                        new TeamsTeamWatch
+                        {
+                            TeamId = "mock-team",
+                            DisplayName = "Engineering"
+                        }
+                    ]
+                },
+                new MockMessageProvider(),
+                "person@example.com");
+            settings.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(260));
+            if (int.TryParse(
+                    Environment.GetEnvironmentVariable(
+                        "PEGGY_UI_PREVIEW_HOLD_SECONDS"),
+                    out var previewHoldSeconds) &&
+                previewHoldSeconds > 0)
+            {
+                PumpDispatcher(TimeSpan.FromSeconds(
+                    Math.Min(previewHoldSeconds, 120)));
+            }
+            SaveWindowContent(
+                settings,
+                Path.Combine(directory, "settings.png"));
+            settings.Close();
+
+            var conversation = new ConversationWindow();
+            conversation.BeginConversation();
+            conversation.AppendAssistant(
+                "Good morning. I found two items that may need your attention.");
+            conversation.AppendUser(
+                "Summarize the customer escalation and suggest a reply.");
+            conversation.SetListening();
+            conversation.ShowPartialTranscript(
+                "Draft a concise response with the current recovery timeline.");
+            PumpDispatcher(TimeSpan.FromMilliseconds(120));
+            SaveWindowContent(
+                conversation,
+                Path.Combine(directory, "conversation.png"));
+            conversation.ShowAction(new WorkActionRequest
+            {
+                Kind = WorkActionKind.CreateReplyDraft,
+                ExactDescription =
+                    "Create a reply draft for the customer escalation. " +
+                    "The draft will not be sent."
+            });
+            PumpDispatcher(TimeSpan.FromMilliseconds(80));
+            SaveWindowContent(
+                conversation,
+                Path.Combine(directory, "conversation-action.png"));
+            conversation.EndConversation();
+            conversation.Close();
+
+            var alert = new AlertRecord
+            {
+                ThreadId = "context-preview",
+                Source = MessageSource.Email,
+                Tier = AlertTier.Attention,
+                Summary =
+                    "Customer escalation needs a response before 4:00 PM",
+                Reason =
+                    "The latest reply asks for an owner and a recovery " +
+                    "timeline before today's status call.",
+                FirstSeenUtc = now.AddMinutes(-40),
+                LastActivityUtc = now.AddMinutes(-12),
+                UpdatedUtc = now.AddMinutes(-12)
+            };
+            var context = new AlertContextWindow(
+                alert,
+                new MessageThread(
+                    "context-preview",
+                    MessageSource.Email,
+                    "Customer escalation",
+                    [
+                        new Message(
+                            "context-message-1",
+                            MessageSource.Email,
+                            "context-preview",
+                            "Customer contact",
+                            "Customer escalation",
+                            "Can you confirm an owner and the recovery " +
+                            "timeline before our status call?",
+                            now.AddMinutes(-20),
+                            IsRead: false),
+                        new Message(
+                            "context-message-2",
+                            MessageSource.Email,
+                            "context-preview",
+                            "You",
+                            "Customer escalation",
+                            "We are validating the latest telemetry and will " +
+                            "share an update shortly.",
+                            now.AddMinutes(-12),
+                            IsRead: true)
+                    ]),
+                canOpenOriginal: true);
+            context.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(100));
+            SaveWindowContent(
+                context,
+                Path.Combine(directory, "alert-context.png"));
+            context.Close();
+
+            var signIn = new WorkIqSignInWindow(
+                "person@example.com",
+                setup: null,
+                previewMode: true);
+            signIn.SetPreviewInstallationState(
+                "WorkIQ 1.0.0 is ready.",
+                "Ready to connect securely.");
+            signIn.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(120));
+            SaveWindowContent(
+                signIn,
+                Path.Combine(directory, "microsoft-365-connection.png"));
+            signIn.Close();
+
+            var bubble = new SpeechBubbleWindow();
+            bubble.Say(
+                "I found two items that may need your attention.",
+                new Point(420, 420),
+                seconds: 60);
+            PumpDispatcher(TimeSpan.FromMilliseconds(100));
+            SaveWindowContent(
+                bubble,
+                Path.Combine(directory, "speech-bubble.png"));
+            bubble.HideNow();
+            bubble.Close();
+            application.Shutdown();
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+    });
+    thread.SetApartmentState(ApartmentState.STA);
+    thread.Start();
+    thread.Join();
+    if (failure is not null)
+    {
+        throw new InvalidOperationException(
+            "Peggy UI previews could not be rendered.",
+            failure);
+    }
+
+    Console.WriteLine($"Rendered Peggy UI previews to {directory}.");
+    return true;
+}
+
+static void SaveWindowContent(Window window, string path)
+{
+    var content = window.Content as FrameworkElement
+        ?? throw new InvalidOperationException(
+            "The window did not expose renderable content.");
+    if (!window.IsVisible ||
+        content.ActualWidth <= 0 ||
+        content.ActualHeight <= 0)
+    {
+        var constrainedWidth =
+            double.IsNaN(window.Width) || window.Width <= 0
+                ? 760
+                : window.Width;
+        var constrainedHeight =
+            double.IsNaN(window.Height) || window.Height <= 0
+                ? double.PositiveInfinity
+                : window.Height;
+        content.Measure(new Size(
+            constrainedWidth,
+            constrainedHeight));
+        var arrangedWidth =
+            double.IsNaN(window.Width) || window.Width <= 0
+                ? Math.Max(1, content.DesiredSize.Width)
+                : window.Width;
+        var arrangedHeight =
+            double.IsNaN(window.Height) || window.Height <= 0
+                ? Math.Max(1, content.DesiredSize.Height)
+                : window.Height;
+        content.Arrange(new Rect(
+            0,
+            0,
+            arrangedWidth,
+            arrangedHeight));
+        content.UpdateLayout();
+    }
+    var width = Math.Max(
+        1,
+        (int)Math.Ceiling(content.ActualWidth));
+    var height = Math.Max(
+        1,
+        (int)Math.Ceiling(content.ActualHeight));
+    var bitmap = new RenderTargetBitmap(
+        width,
+        height,
+        96,
+        96,
+        PixelFormats.Pbgra32);
+    bitmap.Render(content);
+    var encoder = new PngBitmapEncoder();
+    encoder.Frames.Add(BitmapFrame.Create(bitmap));
+    using var stream = File.Create(path);
+    encoder.Save(stream);
 }
 
 static void PumpDispatcher(TimeSpan duration)
@@ -658,6 +1044,195 @@ static async Task TestLiveMonitoringAsync()
         $"{batches} batch(es), warning={warning ?? "none"}.");
 }
 
+static async Task TestLiveOutlookLinkAsync()
+{
+    var messageId = Environment.GetEnvironmentVariable(
+        "PEGGY_LIVE_OUTLOOK_MESSAGE_ID")?.Trim();
+    var account = Environment.GetEnvironmentVariable(
+        PeggyDefaults.WorkIqAccountEnvironmentVariable)?.Trim();
+    if (string.IsNullOrWhiteSpace(messageId) ||
+        string.IsNullOrWhiteSpace(account))
+    {
+        throw new InvalidOperationException(
+            "Set PEGGY_LIVE_OUTLOOK_MESSAGE_ID and PEGGY_WORKIQ_ACCOUNT " +
+            "before running the live Outlook-link test.");
+    }
+
+    var encodedId = Uri.EscapeDataString(messageId);
+    var client = new WorkIqClient(account: account);
+    var entity = await client.FetchAsync<JsonElement>(
+        $"/me/messages/{encodedId}" +
+        "?$select=id,webLink,subject,receivedDateTime,conversationId",
+        CancellationToken.None);
+    var actualId = entity.GetProperty("id").GetString();
+    var webLink = entity.GetProperty("webLink").GetString();
+    var subject = entity.GetProperty("subject").GetString();
+    var conversationId = entity.GetProperty("conversationId").GetString();
+    var receivedAt = entity.GetProperty("receivedDateTime")
+        .GetDateTimeOffset();
+    var profile = await client.FetchAsync<JsonElement>(
+        "/me?$select=mail,userPrincipalName",
+        CancellationToken.None);
+    var mailbox = profile.TryGetProperty("mail", out var mailProperty)
+        ? mailProperty.GetString()
+        : null;
+    mailbox = string.IsNullOrWhiteSpace(mailbox)
+        ? account
+        : mailbox;
+    Assert(
+        string.Equals(actualId, messageId, StringComparison.Ordinal),
+        "WorkIQ returned a different Outlook message.");
+    Assert(
+        !string.IsNullOrWhiteSpace(webLink) &&
+        !string.IsNullOrWhiteSpace(conversationId),
+        "WorkIQ returned the Outlook message without its source metadata.");
+
+    var statePath = Path.Combine(
+        Path.GetTempPath(),
+        $"peggy-live-outlook-link-{Guid.NewGuid():N}.dat");
+    try
+    {
+        var state = new PeggyStateManager(new EncryptedStateStore(statePath));
+        await state.InitializeAsync();
+        await state.PinWorkIqIdentityAsync(account, mailbox);
+        var reloadedState = new PeggyStateManager(
+            new EncryptedStateStore(statePath));
+        await reloadedState.InitializeAsync();
+        Assert(
+            string.Equals(
+                reloadedState.State.PinnedMailbox,
+                mailbox,
+                StringComparison.OrdinalIgnoreCase),
+            "Peggy did not persist WorkIQ's verified mailbox address.");
+        var message = new Message(
+            actualId!,
+            MessageSource.Email,
+            conversationId!,
+            "Live Outlook source",
+            subject ?? "Outlook message",
+            "Live source-link test",
+            receivedAt,
+            IsRead: false)
+        {
+            WebUrl = webLink
+        };
+        var decision = new AlertDecision(
+            conversationId!,
+            AlertTier.Attention,
+            "Live Outlook source-link test",
+            "Verifies Peggy's production alert-to-browser path.",
+            "opaque-test-reference",
+            [actualId!]);
+        var alert = new AlertManager(reloadedState)
+            .Apply([decision], [message], DateTimeOffset.UtcNow)
+            .MaterialUpdates
+            .Single();
+        Assert(
+            AlertSourceLink.TryCreate(
+                alert.SourceReference,
+                out var sourceUri),
+            "Peggy rejected WorkIQ's live Outlook source link.");
+        var openUri = AlertSourceLauncher.CreateOpenUri(
+            sourceUri,
+            reloadedState.State.PinnedMailbox);
+        Assert(
+            openUri.Scheme == Uri.UriSchemeHttps &&
+            openUri.Host == "outlook.office.com" &&
+            openUri.AbsolutePath.StartsWith(
+                $"/mail/{Uri.EscapeDataString(mailbox)}/deeplink/read/",
+                StringComparison.Ordinal) &&
+            !openUri.AbsoluteUri.Contains(
+                "https://https://",
+                StringComparison.OrdinalIgnoreCase),
+            "Peggy did not produce one canonical account-scoped Outlook link.");
+        Assert(
+            string.Equals(
+                Uri.UnescapeDataString(openUri.Segments[^1]),
+                actualId,
+                StringComparison.Ordinal),
+            "Peggy's browser link did not preserve the exact WorkIQ message ID.");
+
+        var outputPath = Environment.GetEnvironmentVariable(
+            "PEGGY_LIVE_OUTLOOK_LINK_OUTPUT");
+        var browserResultPath = Environment.GetEnvironmentVariable(
+            "PEGGY_LIVE_OUTLOOK_BROWSER_RESULT");
+        if (string.IsNullOrWhiteSpace(outputPath) ||
+            string.IsNullOrWhiteSpace(browserResultPath))
+        {
+            throw new InvalidOperationException(
+                "Set PEGGY_LIVE_OUTLOOK_LINK_OUTPUT and " +
+                "PEGGY_LIVE_OUTLOOK_BROWSER_RESULT for the live browser test.");
+        }
+        outputPath = Path.GetFullPath(outputPath);
+        browserResultPath = Path.GetFullPath(browserResultPath);
+        File.Delete(browserResultPath);
+        var runId = Guid.NewGuid().ToString("N");
+        var expectedSubjectHash = ComputeSha256(subject ?? string.Empty);
+        var expectedUriHash = ComputeSha256(openUri.AbsoluteUri);
+        await File.WriteAllTextAsync(
+            outputPath,
+            JsonSerializer.Serialize(new
+            {
+                runId,
+                uri = openUri.AbsoluteUri,
+                expectedSubjectHash
+            }));
+        AlertSourceLauncher.Open(
+            sourceUri,
+            reloadedState.State.PinnedMailbox);
+
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(3);
+        while (!File.Exists(browserResultPath) &&
+               DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(500);
+        }
+        Assert(
+            File.Exists(browserResultPath),
+            "Browser verification did not finish within three minutes.");
+        using var browserResult = JsonDocument.Parse(
+            await File.ReadAllTextAsync(browserResultPath));
+        var root = browserResult.RootElement;
+        var actualRunId = root.GetProperty("runId").GetString();
+        var navigatedUriHash =
+            root.GetProperty("navigatedUriHash").GetString();
+        var renderedSubjectHash =
+            root.GetProperty("renderedSubjectHash").GetString();
+        var unauthorizedFound =
+            root.GetProperty("unauthorizedFound").GetBoolean();
+        var getItemStatuses = root.GetProperty("getItemStatuses")
+            .EnumerateArray()
+            .Select(status => status.GetInt32())
+            .ToList();
+        Assert(
+            string.Equals(actualRunId, runId, StringComparison.Ordinal) &&
+            string.Equals(
+                navigatedUriHash,
+                expectedUriHash,
+                StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(
+                renderedSubjectHash,
+                expectedSubjectHash,
+                StringComparison.OrdinalIgnoreCase) &&
+            !unauthorizedFound &&
+            getItemStatuses.Count > 0 &&
+            getItemStatuses.All(status => status == 200),
+            "The authenticated Outlook browser did not render the expected " +
+            "message with HTTP 200 GetItem responses.");
+        Console.WriteLine(
+            "Live Outlook link end-to-end test passed: correct message, " +
+            "GetItem HTTP 200, no 401.");
+    }
+    finally
+    {
+        File.Delete(statePath);
+    }
+}
+
+static string ComputeSha256(string value)
+    => Convert.ToHexString(
+        SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+
 static void Assert(bool condition, string message)
 {
     if (!condition)
@@ -798,18 +1373,29 @@ static bool TryRunFakeWorkIq(string[] arguments)
         return true;
     }
 
+    if (string.Equals(
+            scenario,
+            "outlook-self-filter",
+            StringComparison.Ordinal))
+    {
+        HandleFakeOutlookSelfFilterRequest(arguments[0], url);
+        return true;
+    }
+
     if (scenario is "semantic" or "structured-search")
     {
         HandleFakeSemanticReadRequest(arguments[0], url);
         return true;
     }
 
-    if (scenario is "chat-metadata" or "chat-edit")
+    if (scenario is "chat-metadata" or "chat-edit" or
+        "selected-chat-scope")
     {
         HandleFakeChatActivityRequest(
             arguments[0],
             url,
-            isContentEdit: scenario == "chat-edit");
+            isContentEdit: scenario != "chat-metadata",
+            multipleMessages: scenario == "selected-chat-scope");
         return true;
     }
 
@@ -854,6 +1440,184 @@ static bool TryRunFakeWorkIq(string[] arguments)
     Console.WriteLine("""{"value":"ok"}""");
     return true;
 }
+
+static void HandleFakeOutlookSelfFilterRequest(
+    string command,
+    string url)
+{
+    WriteFakeWorkIqLog($"{command} {url}");
+    var activityUtc = DateTimeOffset.TryParse(
+        Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_OUTLOOK_ACTIVITY_UTC"),
+        out var configuredActivity)
+        ? configuredActivity
+        : DateTimeOffset.UtcNow;
+    var currentUserAddress =
+        Environment.GetEnvironmentVariable("PEGGY_FAKE_WORKIQ_MAIL") ??
+        PeggyDefaults.ConfiguredWorkIqAccount;
+    const string currentUserLegacyAddress =
+        "/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP/" +
+        "CN=RECIPIENTS/CN=CURRENT-USER";
+    var external = FakeMonitoredOutlookMessage(
+        "external-message",
+        "External sender",
+        "external@example.com",
+        "external@example.com",
+        activityUtc.AddMinutes(-3),
+        isRead: false);
+    var directSelf = FakeMonitoredOutlookMessage(
+        "direct-self-message",
+        "Current user",
+        currentUserLegacyAddress,
+        currentUserLegacyAddress,
+        activityUtc.AddMinutes(-2),
+        isRead: false);
+    var delegatedSelf = FakeMonitoredOutlookMessage(
+        "delegated-self-message",
+        "Support mailbox",
+        "support@example.com",
+        currentUserLegacyAddress,
+        activityUtc.AddMinutes(-1.5),
+        isRead: true);
+
+    object response;
+    if (url.StartsWith("/me?$select=", StringComparison.Ordinal))
+    {
+        response = new
+        {
+            id = "user-me",
+            mail = currentUserAddress,
+            userPrincipalName = PeggyDefaults.ConfiguredWorkIqAccount,
+            proxyAddresses = new[]
+            {
+                $"SMTP:{currentUserAddress}",
+                $"X500:{currentUserLegacyAddress}"
+            }
+        };
+    }
+    else if (url.StartsWith(
+                 "/me/mailFolders/inbox?",
+                 StringComparison.Ordinal))
+    {
+        response = new
+        {
+            id = "inbox",
+            displayName = "Inbox",
+            childFolderCount = 1
+        };
+    }
+    else if (url.StartsWith(
+                 "/me/mailFolders/inbox/childFolders",
+                 StringComparison.Ordinal))
+    {
+        response = new
+        {
+            value = new[]
+            {
+                new
+                {
+                    id = "cases",
+                    displayName = "Cases",
+                    parentFolderId = "inbox",
+                    childFolderCount = 1
+                }
+            }
+        };
+    }
+    else if (url.StartsWith(
+                 "/me/mailFolders/cases/childFolders",
+                 StringComparison.Ordinal))
+    {
+        response = new
+        {
+            value = new[]
+            {
+                new
+                {
+                    id = "active",
+                    displayName = "Active",
+                    parentFolderId = "cases",
+                    childFolderCount = 0
+                }
+            }
+        };
+    }
+    else if (url.StartsWith(
+                 "/me/mailFolders/inbox/messages?",
+                 StringComparison.Ordinal))
+    {
+        response = new { value = Array.Empty<object>() };
+    }
+    else if (url.StartsWith(
+                 "/me/mailFolders/active/messages?",
+                 StringComparison.Ordinal))
+    {
+        response = new Dictionary<string, object?>
+        {
+            ["value"] = new[] { directSelf, delegatedSelf },
+            ["@odata.nextLink"] =
+                "https://graph.microsoft.com/v1.0/" +
+                "peggy-test-outlook-self-next"
+        };
+    }
+    else if (url.StartsWith(
+                 "/peggy-test-outlook-self-next",
+                 StringComparison.Ordinal))
+    {
+        response = new { value = new[] { external } };
+    }
+    else if (url.StartsWith(
+                 "/me/messages?$filter=",
+                 StringComparison.Ordinal))
+    {
+        response = new
+        {
+            value = new[] { external, directSelf, delegatedSelf }
+        };
+    }
+    else
+    {
+        throw new InvalidOperationException(
+            $"Unexpected Outlook self-filter fake WorkIQ URL: {url}");
+    }
+
+    Console.WriteLine(JsonSerializer.Serialize(response));
+}
+
+static object FakeMonitoredOutlookMessage(
+    string id,
+    string fromName,
+    string fromAddress,
+    string senderAddress,
+    DateTimeOffset receivedDateTime,
+    bool isRead)
+    => new
+    {
+        id,
+        conversationId = "case-thread",
+        from = new
+        {
+            emailAddress = new
+            {
+                name = fromName,
+                address = fromAddress
+            }
+        },
+        sender = new
+        {
+            emailAddress = new
+            {
+                name = fromName,
+                address = senderAddress
+            }
+        },
+        subject = "Support escalation",
+        bodyPreview = "A monitored support message.",
+        webLink =
+            $"https://outlook.office.com/mail/deeplink/read/{id}",
+        receivedDateTime,
+        isRead
+    };
 
 static void HandleFakeChannelDeltaRequest(
     string command,
@@ -1263,7 +2027,8 @@ static void HandleFakeSemanticReadRequest(
 static void HandleFakeChatActivityRequest(
     string command,
     string url,
-    bool isContentEdit)
+    bool isContentEdit,
+    bool multipleMessages)
 {
     WriteFakeWorkIqLog($"{command} {url}");
     object response;
@@ -1341,13 +2106,16 @@ static void HandleFakeChatActivityRequest(
                     {
                         id = "old-chat",
                         topic = "Edited incident chat",
+                        chatType = "oneOnOne",
                         viewpoint = new
                         {
                             lastMessageReadDateTime =
                                 DateTimeOffset.UtcNow.AddYears(-1)
                         },
                         lastMessagePreview = FakeChatActivityMessage(
-                            "old-message",
+                            multipleMessages
+                                ? "chat-message-2"
+                                : "old-message",
                             isContentEdit: true,
                             createdRecently: true)
                     }
@@ -1361,13 +2129,25 @@ static void HandleFakeChatActivityRequest(
     {
         response = new
         {
-            value = new[]
-            {
-                FakeChatActivityMessage(
-                    "old-message",
-                    isContentEdit,
-                    createdRecently: isContentEdit)
-            }
+            value = multipleMessages
+                ? new object[]
+                {
+                    FakeChatActivityMessage(
+                        "chat-message-1",
+                        isContentEdit,
+                        createdRecently: isContentEdit),
+                    FakeChatActivityMessage(
+                        "chat-message-2",
+                        isContentEdit,
+                        createdRecently: isContentEdit)
+                }
+                : new object[]
+                {
+                    FakeChatActivityMessage(
+                        "old-message",
+                        isContentEdit,
+                        createdRecently: isContentEdit)
+                }
         };
     }
     else
@@ -1384,10 +2164,15 @@ static object FakeChatActivityMessage(
     bool isContentEdit,
     bool createdRecently)
 {
+    var configuredActivity = DateTimeOffset.TryParse(
+        Environment.GetEnvironmentVariable("PEGGY_FAKE_CHAT_ACTIVITY_UTC"),
+        out var activity)
+        ? activity
+        : DateTimeOffset.UtcNow.AddMinutes(-1);
     var created = createdRecently
-        ? DateTimeOffset.UtcNow.AddMinutes(-1)
-        : DateTimeOffset.UtcNow.AddMonths(-11);
-    var modified = DateTimeOffset.UtcNow.AddMinutes(-1);
+        ? configuredActivity
+        : configuredActivity.AddMonths(-11);
+    var modified = configuredActivity;
     return new
     {
         id,

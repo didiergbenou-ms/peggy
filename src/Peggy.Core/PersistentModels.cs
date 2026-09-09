@@ -47,11 +47,25 @@ public enum WorkActionKind
     DeleteTask
 }
 
+public enum TeamsMonitoringScope
+{
+    AllActivity,
+    SelectedTeamsAndChannels,
+    Off
+}
+
 public sealed class PeggySettings
 {
     public string CopilotModel { get; set; } = PeggyDefaults.CopilotModel;
 
     public List<string> AdditionalOutlookFolders { get; set; } = [];
+
+    public TeamsMonitoringScope TeamsScope { get; set; } =
+        TeamsMonitoringScope.AllActivity;
+
+    public bool MonitorTeamsChatsInSelectedScope { get; set; }
+
+    public List<TeamsTeamWatch> TeamsTeamWatchlist { get; set; } = [];
 
     public List<TeamsChannelWatch> TeamsChannelWatchlist { get; set; } = [];
 
@@ -82,6 +96,15 @@ public sealed class PeggySettings
     public int SpeechTuningVersion { get; set; }
 }
 
+public sealed class TeamsTeamWatch
+{
+    public string TeamId { get; set; } = string.Empty;
+
+    public string DisplayName { get; set; } = string.Empty;
+
+    public List<string> ExcludedChannelIds { get; set; } = [];
+}
+
 public sealed class TeamsChannelWatch
 {
     public string TeamId { get; set; } = string.Empty;
@@ -99,6 +122,10 @@ public sealed class MonitoringCursorState
 
     public DateTimeOffset? InitialScanStartedUtc { get; set; }
 
+    public DateTimeOffset? OutlookScanStartedUtc { get; set; }
+
+    public DateTimeOffset? TeamsScanStartedUtc { get; set; }
+
     public DateTimeOffset? TeamsWatermarkUtc { get; set; }
 
     public List<string> TeamsBoundaryMessageIds { get; set; } = [];
@@ -108,6 +135,14 @@ public sealed class MonitoringCursorState
     public int TeamsSearchOffset { get; set; }
 
     public List<string> TeamsSearchProcessedHitIds { get; set; } = [];
+
+    public DateTimeOffset? DirectChatWatermarkUtc { get; set; }
+
+    public List<string> DirectChatBoundaryMessageIds { get; set; } = [];
+
+    public DateTimeOffset? DirectChatScanWindowEndUtc { get; set; }
+
+    public List<string> DirectChatProcessedMessageIds { get; set; } = [];
 
     public DateTimeOffset? PromptWatermarkUtc { get; set; }
 
@@ -238,6 +273,10 @@ public sealed class PeggyStateDocument
     public int Version { get; set; } = 1;
 
     public string PinnedAccount { get; set; } = string.Empty;
+
+    public string PinnedMailbox { get; set; } = string.Empty;
+
+    public string WorkIqEulaAcceptedVersion { get; set; } = string.Empty;
 
     public PeggySettings Settings { get; set; } = new();
 

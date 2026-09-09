@@ -27,6 +27,8 @@ public partial class AlertCenterWindow : Window
 
     public event Action<string>? DismissRequested;
 
+    public event Action? DismissAllRequested;
+
     public event Action<string>? SnoozeRequested;
 
     public event Action<string, FeedbackKind>? FeedbackRequested;
@@ -57,8 +59,15 @@ public partial class AlertCenterWindow : Window
             alert.Tier is AlertTier.Critical or AlertTier.Attention);
         var awarenessCount = active.Count(alert =>
             alert.Tier == AlertTier.Awareness);
-        StatusText.Text =
-            $"{persistentCount} active, {awarenessCount} awareness";
+        StatusText.Text = active.Count == 0
+            ? "No active alerts"
+            : $"{persistentCount} active, {awarenessCount} awareness";
+        ListCaptionText.Text = active.Count == 0
+            ? $"{_assistantName} is still watching"
+            : $"{active.Count} " +
+              $"{(active.Count == 1 ? "item" : "items")}, " +
+              "highest priority first";
+        DismissAllButton.IsEnabled = active.Count > 0;
         if (_criticalAlertId is not null &&
             !active.Any(alert =>
                 alert.Tier == AlertTier.Critical &&
@@ -72,13 +81,7 @@ public partial class AlertCenterWindow : Window
 
         if (active.Count == 0)
         {
-            CardsPanel.Children.Add(new TextBlock
-            {
-                Text = "Nothing needs your attention.",
-                Foreground = Brushes.DimGray,
-                FontSize = 15,
-                Margin = new Thickness(4, 18, 4, 4)
-            });
+            CardsPanel.Children.Add(CreateEmptyState());
             return;
         }
 
@@ -90,6 +93,21 @@ public partial class AlertCenterWindow : Window
 
     public void ShowNearTaskbar()
     {
+        var workArea = SystemParameters.WorkArea;
+        var availableHeight = Math.Max(320, workArea.Height - 16);
+        var availableWidth = Math.Max(360, workArea.Width - 16);
+        MinHeight = Math.Min(MinHeight, availableHeight);
+        MaxHeight = availableHeight;
+        MinWidth = Math.Min(MinWidth, availableWidth);
+        MaxWidth = availableWidth;
+        if (Height > availableHeight)
+        {
+            Height = availableHeight;
+        }
+        if (Width > availableWidth)
+        {
+            Width = availableWidth;
+        }
         if (!IsVisible)
         {
             Show();
@@ -98,11 +116,11 @@ public partial class AlertCenterWindow : Window
         var width = ActualWidth > 0 ? ActualWidth : Width;
         var height = ActualHeight > 0 ? ActualHeight : Height;
         Left = Math.Max(
-            SystemParameters.WorkArea.Left + 8,
-            SystemParameters.WorkArea.Right - width - 16);
+            workArea.Left + 8,
+            workArea.Right - width - 16);
         Top = Math.Max(
-            SystemParameters.WorkArea.Top + 8,
-            SystemParameters.WorkArea.Bottom - height - 16);
+            workArea.Top + 8,
+            workArea.Bottom - height - 16);
         Activate();
     }
 
@@ -151,35 +169,81 @@ public partial class AlertCenterWindow : Window
 
     private Border CreateCard(AlertRecord alert, bool maskContent)
     {
+        var tierBrush = GetTierBrush(alert.Tier);
         var border = new Border
         {
-            Background = Brushes.White,
-            BorderBrush = GetTierBrush(alert.Tier),
-            BorderThickness = new Thickness(4, 1, 1, 1),
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(14),
-            Margin = new Thickness(0, 0, 0, 12)
+            Background = GetResourceBrush("SurfaceBrush", Brushes.White),
+            BorderBrush = GetResourceBrush(
+                "BorderBrush",
+                new SolidColorBrush(Color.FromRgb(229, 219, 211))),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            Margin = new Thickness(0, 0, 0, 14),
+            SnapsToDevicePixels = true,
+            Tag = alert.Id
         };
-        var panel = new StackPanel();
-        border.Child = panel;
+        border.SetResourceReference(
+            UIElement.EffectProperty,
+            "CardShadow");
 
-        var header = new DockPanel();
-        panel.Children.Add(header);
-        header.Children.Add(new TextBlock
+        var cardGrid = new Grid();
+        cardGrid.ColumnDefinitions.Add(
+            new ColumnDefinition { Width = new GridLength(5) });
+        cardGrid.ColumnDefinitions.Add(
+            new ColumnDefinition
+            {
+                Width = new GridLength(1, GridUnitType.Star)
+            });
+        cardGrid.Children.Add(new Border
         {
-            Text = $"{alert.Tier} | {GetSourceName(alert.Source)}",
-            Foreground = GetTierBrush(alert.Tier),
-            FontWeight = FontWeights.SemiBold,
-            FontSize = 12
+            Background = tierBrush,
+            CornerRadius = new CornerRadius(14, 0, 0, 14)
         });
+        var panel = new StackPanel
+        {
+            Margin = new Thickness(17, 16, 17, 15)
+        };
+        Grid.SetColumn(panel, 1);
+        cardGrid.Children.Add(panel);
+        border.Child = cardGrid;
+
+        var header = new Grid();
+        header.ColumnDefinitions.Add(
+            new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(
+            new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(
+            new ColumnDefinition
+            {
+                Width = new GridLength(1, GridUnitType.Star)
+            });
+        header.ColumnDefinitions.Add(
+            new ColumnDefinition { Width = GridLength.Auto });
+        panel.Children.Add(header);
+
+        header.Children.Add(CreateBadge(
+            alert.Tier.ToString(),
+            tierBrush,
+            GetTierSurfaceBrush(alert.Tier)));
+        var sourceBadge = CreateBadge(
+            GetSourceName(alert.Source),
+            GetSourceBrush(alert.Source),
+            GetSourceSurfaceBrush(alert.Source));
+        sourceBadge.Margin = new Thickness(7, 0, 0, 0);
+        Grid.SetColumn(sourceBadge, 1);
+        header.Children.Add(sourceBadge);
+
         var time = new TextBlock
         {
-            Text = alert.LastActivityUtc.ToLocalTime().ToString("g"),
-            Foreground = Brushes.Gray,
+            Text = FormatActivityTime(alert.LastActivityUtc),
+            Foreground = GetResourceBrush(
+                "MutedTextBrush",
+                Brushes.DimGray),
             FontSize = 11,
-            HorizontalAlignment = HorizontalAlignment.Right
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center
         };
-        DockPanel.SetDock(time, Dock.Right);
+        Grid.SetColumn(time, 3);
         header.Children.Add(time);
 
         panel.Children.Add(new TextBlock
@@ -188,53 +252,87 @@ public partial class AlertCenterWindow : Window
                 ? "Work item details are hidden while your screen may be visible."
                 : alert.Summary,
             TextWrapping = TextWrapping.Wrap,
-            FontSize = 15,
+            FontSize = 16,
             FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Color.FromRgb(45, 42, 39)),
-            Margin = new Thickness(0, 8, 0, 4)
-        });
-        panel.Children.Add(new TextBlock
-        {
-            Text = $"Why {_assistantName} flagged this",
-            FontSize = 11,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = GetTierBrush(alert.Tier),
-            Margin = new Thickness(0, 4, 0, 3),
-            Visibility = maskContent ||
-                         string.IsNullOrWhiteSpace(alert.Reason)
-                ? Visibility.Collapsed
-                : Visibility.Visible
-        });
-        panel.Children.Add(new TextBlock
-        {
-            Text = maskContent ? string.Empty : alert.Reason,
-            TextWrapping = TextWrapping.Wrap,
-            FontSize = 12,
-            Foreground = Brushes.DimGray,
-            Margin = new Thickness(0, 0, 0, 10)
+            LineHeight = 22,
+            Foreground = GetResourceBrush(
+                "TextBrush",
+                new SolidColorBrush(Color.FromRgb(45, 42, 39))),
+            Margin = new Thickness(0, 12, 0, 0)
         });
 
-        var tierRow = new StackPanel
+        if (!maskContent && !string.IsNullOrWhiteSpace(alert.Reason))
         {
-            Orientation = Orientation.Horizontal,
-            Margin = new Thickness(0, 0, 0, 8)
+            var explanation = new StackPanel();
+            explanation.Children.Add(new TextBlock
+            {
+                Text = $"Why {_assistantName} flagged this",
+                FontSize = 10,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = tierBrush
+            });
+            explanation.Children.Add(new TextBlock
+            {
+                Text = alert.Reason,
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 12,
+                LineHeight = 18,
+                Foreground = GetResourceBrush(
+                    "MutedTextBrush",
+                    Brushes.DimGray),
+                Margin = new Thickness(0, 4, 0, 0)
+            });
+            panel.Children.Add(new Border
+            {
+                Background = new SolidColorBrush(
+                    Color.FromRgb(250, 247, 244)),
+                CornerRadius = new CornerRadius(9),
+                Padding = new Thickness(11, 9, 11, 10),
+                Margin = new Thickness(0, 12, 0, 0),
+                Child = explanation
+            });
+        }
+
+        var tierRow = new DockPanel
+        {
+            Margin = new Thickness(0, 13, 0, 0),
+            LastChildFill = false
         };
-        tierRow.Children.Add(new TextBlock
+        var tierLabel = new TextBlock
         {
-            Text = "Correct tier:",
+            Text = "Priority",
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 8, 0)
-        });
+            Foreground = GetResourceBrush(
+                "MutedTextBrush",
+                Brushes.DimGray),
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 0, 9, 0)
+        };
+        DockPanel.SetDock(tierLabel, Dock.Left);
+        tierRow.Children.Add(tierLabel);
         var tier = new ComboBox
         {
-            Width = 120,
+            Width = 126,
             ItemsSource = Enum.GetValues<AlertTier>(),
             SelectedItem = alert.Tier,
             Tag = alert.Id
         };
+        tier.SetResourceReference(
+            FrameworkElement.StyleProperty,
+            "PriorityComboStyle");
         tier.SelectionChanged += Tier_SelectionChanged;
         tierRow.Children.Add(tier);
         panel.Children.Add(tierRow);
+
+        panel.Children.Add(new Border
+        {
+            Height = 1,
+            Background = GetResourceBrush(
+                "BorderBrush",
+                new SolidColorBrush(Color.FromRgb(229, 219, 211))),
+            Margin = new Thickness(0, 14, 0, 13)
+        });
 
         var actions = new WrapPanel();
         panel.Children.Add(actions);
@@ -243,7 +341,8 @@ public partial class AlertCenterWindow : Window
             actions.Children.Add(CreateButton(
                 "Reveal details",
                 alert.Id,
-                (_, _) => RevealRequested?.Invoke()));
+                (_, _) => RevealRequested?.Invoke(),
+                "PrimaryActionButtonStyle"));
         }
         var sourceName = GetSourceName(alert.Source);
         if (AlertSourceLink.TryCreate(alert.SourceReference, out _))
@@ -251,57 +350,190 @@ public partial class AlertCenterWindow : Window
             var contextButton = CreateButton(
                 $"Open in {sourceName}",
                 alert.Id,
-                (_, id) => ContextRequested?.Invoke(id));
-            contextButton.Foreground = new SolidColorBrush(
-                Color.FromRgb(45, 104, 142));
-            contextButton.FontWeight = FontWeights.SemiBold;
+                (_, id) => ContextRequested?.Invoke(id),
+                "PrimaryActionButtonStyle");
             actions.Children.Add(contextButton);
         }
         actions.Children.Add(CreateButton(
             $"Talk to {_assistantName}",
             alert.Id,
-            (_, id) => ChatRequested?.Invoke(id)));
+            (_, id) => ChatRequested?.Invoke(id),
+            "SecondaryActionButtonStyle"));
         actions.Children.Add(CreateButton(
             "Resolve",
             alert.Id,
-            (_, id) => ResolveRequested?.Invoke(id)));
-        actions.Children.Add(CreateButton(
+            (_, id) => ResolveRequested?.Invoke(id),
+            "PositiveActionButtonStyle"));
+
+        var secondaryActions = new WrapPanel
+        {
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        panel.Children.Add(secondaryActions);
+        secondaryActions.Children.Add(CreateButton(
             "Snooze 1 hour",
             alert.Id,
-            (_, id) => SnoozeRequested?.Invoke(id)));
-        actions.Children.Add(CreateButton(
+            (_, id) => SnoozeRequested?.Invoke(id),
+            "SubtleActionButtonStyle"));
+        secondaryActions.Children.Add(CreateButton(
             "Dismiss",
             alert.Id,
-            (_, id) => DismissRequested?.Invoke(id)));
-        actions.Children.Add(CreateButton(
+            (_, id) => DismissRequested?.Invoke(id),
+            "SubtleActionButtonStyle"));
+
+        var feedbackActions = new WrapPanel
+        {
+            Margin = new Thickness(0, 7, 0, 0)
+        };
+        feedbackActions.Children.Add(new TextBlock
+        {
+            Text = $"Tune {_assistantName}:",
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = GetResourceBrush(
+                "MutedTextBrush",
+                Brushes.DimGray),
+            FontSize = 11,
+            Margin = new Thickness(0, 0, 3, 7)
+        });
+        feedbackActions.Children.Add(CreateButton(
             "Less like this",
             alert.Id,
             (_, id) => FeedbackRequested?.Invoke(
                 id,
-                FeedbackKind.LessLikeThis)));
-        actions.Children.Add(CreateButton(
+                FeedbackKind.LessLikeThis),
+            "TextActionButtonStyle"));
+        feedbackActions.Children.Add(CreateButton(
             "Always alert",
             alert.Id,
             (_, id) => FeedbackRequested?.Invoke(
                 id,
-                FeedbackKind.AlwaysAlert)));
+                FeedbackKind.AlwaysAlert),
+            "TextActionButtonStyle"));
+        panel.Children.Add(feedbackActions);
         return border;
     }
 
-    private static Button CreateButton(
+    private Button CreateButton(
         string text,
         string alertId,
-        Action<Button, string> action)
+        Action<Button, string> action,
+        string styleKey)
     {
         var button = new Button
         {
             Content = text,
             Tag = alertId,
-            Padding = new Thickness(10, 5, 10, 5),
-            Margin = new Thickness(0, 0, 7, 7)
+            Margin = new Thickness(0, 0, 8, 7)
         };
+        button.SetResourceReference(
+            FrameworkElement.StyleProperty,
+            styleKey);
         button.Click += (_, _) => action(button, alertId);
         return button;
+    }
+
+    private Border CreateEmptyState()
+    {
+        var iconGlyph = new DecorativeTextBlock
+        {
+            Text = "\uE73E",
+            FontFamily = new FontFamily("Segoe MDL2 Assets"),
+            FontSize = 22,
+            Foreground = GetResourceBrush(
+                "BrandBrush",
+                new SolidColorBrush(Color.FromRgb(214, 95, 61))),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var icon = new Border
+        {
+            Width = 54,
+            Height = 54,
+            CornerRadius = new CornerRadius(27),
+            Background = new SolidColorBrush(
+                Color.FromRgb(255, 240, 233)),
+            Child = iconGlyph
+        };
+        var content = new StackPanel
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        content.Children.Add(icon);
+        content.Children.Add(new TextBlock
+        {
+            Text = "You're all caught up",
+            FontSize = 17,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = GetResourceBrush(
+                "TextBrush",
+                new SolidColorBrush(Color.FromRgb(45, 41, 38))),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 13, 0, 0)
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = $"{_assistantName} will keep watching for what matters.",
+            FontSize = 12,
+            Foreground = GetResourceBrush(
+                "MutedTextBrush",
+                Brushes.DimGray),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 5, 0, 0)
+        });
+
+        var border = new Border
+        {
+            Height = 230,
+            Background = GetResourceBrush("SurfaceBrush", Brushes.White),
+            BorderBrush = GetResourceBrush(
+                "BorderBrush",
+                new SolidColorBrush(Color.FromRgb(229, 219, 211))),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            Child = content
+        };
+        border.SetResourceReference(
+            UIElement.EffectProperty,
+            "CardShadow");
+        return border;
+    }
+
+    private static Border CreateBadge(
+        string text,
+        Brush foreground,
+        Brush background)
+        => new()
+        {
+            Background = background,
+            CornerRadius = new CornerRadius(9),
+            Padding = new Thickness(8, 4, 8, 4),
+            Child = new TextBlock
+            {
+                Text = text,
+                Foreground = foreground,
+                FontSize = 10,
+                FontWeight = FontWeights.SemiBold
+            }
+        };
+
+    private Brush GetResourceBrush(string key, Brush fallback)
+        => TryFindResource(key) as Brush ?? fallback;
+
+    private static string FormatActivityTime(
+        DateTimeOffset activityUtc)
+    {
+        var local = activityUtc.ToLocalTime();
+        var today = DateTimeOffset.Now.Date;
+        if (local.Date == today)
+        {
+            return $"Today, {local:t}";
+        }
+        if (local.Date == today.AddDays(-1))
+        {
+            return $"Yesterday, {local:t}";
+        }
+        return local.ToString("g");
     }
 
     private void Tier_SelectionChanged(
@@ -321,6 +553,9 @@ public partial class AlertCenterWindow : Window
     private void Hide_Click(object sender, RoutedEventArgs e)
         => Hide();
 
+    private void DismissAll_Click(object sender, RoutedEventArgs e)
+        => DismissAllRequested?.Invoke();
+
     private void Retry_Click(object sender, RoutedEventArgs e)
         => RetryRequested?.Invoke();
 
@@ -339,11 +574,33 @@ public partial class AlertCenterWindow : Window
             AlertTier.Critical =>
                 new SolidColorBrush(Color.FromRgb(180, 35, 24)),
             AlertTier.Attention =>
-                new SolidColorBrush(Color.FromRgb(194, 107, 17)),
+                new SolidColorBrush(Color.FromRgb(154, 85, 20)),
             AlertTier.Awareness =>
                 new SolidColorBrush(Color.FromRgb(45, 104, 142)),
             _ => Brushes.Gray
         };
+
+    private static Brush GetTierSurfaceBrush(AlertTier tier)
+        => tier switch
+        {
+            AlertTier.Critical =>
+                new SolidColorBrush(Color.FromRgb(253, 236, 234)),
+            AlertTier.Attention =>
+                new SolidColorBrush(Color.FromRgb(255, 241, 221)),
+            AlertTier.Awareness =>
+                new SolidColorBrush(Color.FromRgb(234, 242, 248)),
+            _ => new SolidColorBrush(Color.FromRgb(242, 239, 236))
+        };
+
+    private static Brush GetSourceBrush(MessageSource source)
+        => source == MessageSource.Email
+            ? new SolidColorBrush(Color.FromRgb(55, 86, 139))
+            : new SolidColorBrush(Color.FromRgb(90, 78, 170));
+
+    private static Brush GetSourceSurfaceBrush(MessageSource source)
+        => source == MessageSource.Email
+            ? new SolidColorBrush(Color.FromRgb(235, 241, 250))
+            : new SolidColorBrush(Color.FromRgb(240, 237, 252));
 
     private static string GetSourceName(MessageSource source)
         => source == MessageSource.Email

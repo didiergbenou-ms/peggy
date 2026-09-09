@@ -192,7 +192,11 @@ internal static class AssistantBehaviorSmokeTests
         await regionalManager.InitializeAsync();
         var regionalAlerts = new AlertManager(regionalManager);
         const string regionalSourceUrl =
-            "https://emea.mail.microsoft.com/owa/message-regional";
+            "https://emea.mail.microsoft.com/owa/?ItemID=" +
+            "AAMkRegional%3D&exvsurl=1&viewmodel=ReadMessageItem";
+        const string canonicalRegionalSourceUrl =
+            "https://outlook.office.com/owa/?ItemID=" +
+            "AAMkRegional%3D&exvsurl=1&viewmodel=ReadMessageItem";
         var regionalMessage = message with
         {
             Id = "regional-message",
@@ -209,9 +213,9 @@ internal static class AssistantBehaviorSmokeTests
             [regionalMessage],
             now);
         TestAssert.Equal(
-            regionalSourceUrl,
+            canonicalRegionalSourceUrl,
             regionalCreated.MaterialUpdates.Single().SourceReference,
-            "A regional Microsoft Outlook web link was rejected.");
+            "A regional Microsoft Outlook web link was not canonicalized.");
         TestAssert.Throws<InvalidDataException>(
             () => regionalAlerts.Apply(
                 [
@@ -345,6 +349,37 @@ internal static class AssistantBehaviorSmokeTests
                 [message],
                 now),
             "An alert decision outside the monitored batch was accepted.");
+        manager.State.Alerts.AddRange(
+        [
+            new AlertRecord
+            {
+                ThreadId = "dismiss-all-active",
+                Status = AlertStatus.Active,
+                SourceReference = sourceUrl,
+                FirstSeenUtc = now,
+                LastActivityUtc = now,
+                UpdatedUtc = now
+            },
+            new AlertRecord
+            {
+                ThreadId = "dismiss-all-snoozed",
+                Status = AlertStatus.Snoozed,
+                SnoozedUntilUtc = now.AddHours(4),
+                SourceReference = sourceUrl,
+                FirstSeenUtc = now,
+                LastActivityUtc = now,
+                UpdatedUtc = now
+            }
+        ]);
+        TestAssert.True(
+            alerts.DismissAllActive(now.AddHours(3)) == 1 &&
+            manager.State.Alerts.Single(item =>
+                item.ThreadId == "dismiss-all-active").Status ==
+                    AlertStatus.Dismissed &&
+            manager.State.Alerts.Single(item =>
+                item.ThreadId == "dismiss-all-snoozed").Status ==
+                    AlertStatus.Snoozed,
+            "Dismiss all did not target only active alerts.");
         manager.State.Alerts.Add(new AlertRecord
         {
             ThreadId = "legacy-chat",

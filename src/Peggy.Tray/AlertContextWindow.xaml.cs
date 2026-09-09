@@ -22,6 +22,8 @@ public partial class AlertContextWindow : Window
         string assistantName = "Peggy")
     {
         InitializeComponent();
+        Loaded += (_, _) =>
+            PeggyWindowLayout.ConstrainToWorkArea(this);
         _assistantName = assistantName;
         Title = $"{assistantName} alert context";
         ReasonHeading.Text = $"Why {assistantName} alerted you";
@@ -82,28 +84,35 @@ public partial class AlertContextWindow : Window
                 : $"{_assistantName} could not retrieve the original thread. The saved " +
                   "summary and flagging reason are shown above.";
             ContextStatus.Visibility = Visibility.Visible;
+            ContextStatusCard.Visibility = Visibility.Visible;
             return;
         }
 
         ContextStatus.Visibility = Visibility.Collapsed;
+        ContextStatusCard.Visibility = Visibility.Collapsed;
         foreach (var message in messages)
         {
             MessagesPanel.Children.Add(CreateMessageCard(message));
         }
     }
 
-    private static Border CreateMessageCard(Message message)
+    private Border CreateMessageCard(Message message)
     {
         var card = new Border
         {
-            Background = Brushes.White,
-            BorderBrush = new SolidColorBrush(
-                Color.FromRgb(216, 206, 198)),
+            Background = TryFindResource("PeggySurfaceBrush") as Brush
+                         ?? Brushes.White,
+            BorderBrush = TryFindResource("PeggyBorderBrush") as Brush
+                          ?? new SolidColorBrush(
+                              Color.FromRgb(229, 219, 211)),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(12),
-            Margin = new Thickness(0, 0, 0, 10)
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(14, 12, 14, 13),
+            Margin = new Thickness(0, 0, 0, 11)
         };
+        card.SetResourceReference(
+            UIElement.EffectProperty,
+            "PeggyCardShadow");
         var panel = new StackPanel();
         card.Child = panel;
 
@@ -113,7 +122,8 @@ public partial class AlertContextWindow : Window
             Text = message.ReceivedAt.ToLocalTime().ToString("g"),
             Foreground = Brushes.Gray,
             FontSize = 11,
-            HorizontalAlignment = HorizontalAlignment.Right
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center
         };
         DockPanel.SetDock(time, Dock.Right);
         header.Children.Add(time);
@@ -135,7 +145,8 @@ public partial class AlertContextWindow : Window
             Foreground = new SolidColorBrush(
                 Color.FromRgb(45, 42, 39)),
             FontSize = 13,
-            Margin = new Thickness(0, 7, 0, 0)
+            LineHeight = 19,
+            Margin = new Thickness(0, 8, 0, 0)
         });
         return card;
     }

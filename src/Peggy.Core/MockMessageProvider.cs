@@ -502,12 +502,21 @@ public sealed class MockMessageProvider : IMessageProvider
             Initialized = cursor.Initialized,
             InitialOutlookScanComplete = cursor.InitialOutlookScanComplete,
             InitialScanStartedUtc = cursor.InitialScanStartedUtc,
+            OutlookScanStartedUtc = cursor.OutlookScanStartedUtc,
+            TeamsScanStartedUtc = cursor.TeamsScanStartedUtc,
             TeamsWatermarkUtc = cursor.TeamsWatermarkUtc,
             TeamsBoundaryMessageIds = cursor.TeamsBoundaryMessageIds.ToList(),
             TeamsSearchWindowEndUtc = cursor.TeamsSearchWindowEndUtc,
             TeamsSearchOffset = cursor.TeamsSearchOffset,
             TeamsSearchProcessedHitIds =
                 cursor.TeamsSearchProcessedHitIds.ToList(),
+            DirectChatWatermarkUtc = cursor.DirectChatWatermarkUtc,
+            DirectChatBoundaryMessageIds =
+                cursor.DirectChatBoundaryMessageIds.ToList(),
+            DirectChatScanWindowEndUtc =
+                cursor.DirectChatScanWindowEndUtc,
+            DirectChatProcessedMessageIds =
+                cursor.DirectChatProcessedMessageIds.ToList(),
             PromptWatermarkUtc = cursor.PromptWatermarkUtc,
             OutlookWatermarkUtc = cursor.OutlookWatermarkUtc,
             OutlookBoundaryMessageIds =

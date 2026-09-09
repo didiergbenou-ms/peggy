@@ -58,9 +58,12 @@ public partial class App : Application
     private bool _checking;
     private bool _restartCheckRequested;
     private bool _restartCheckForced;
+    private bool _workIqEulaRepairRetryPending;
     private bool _quitting;
     private bool _scheduledSleeping;
     private int _monitoringGeneration;
+    private int _monitoringCycleGeneration = -1;
+    private string? _monitoringCycleWarning;
     private string? _monitoringRemediation;
 
     private async void OnStartup(object sender, StartupEventArgs e)
@@ -196,6 +199,10 @@ public partial class App : Application
                 () => UpdateAlertAsync(
                     alertId,
                     AlertStatus.Dismissed),
+                $"{AssistantName} alerts");
+        _alertCenter.DismissAllRequested += () =>
+            RunUiAction(
+                DismissAllAlertsAsync,
                 $"{AssistantName} alerts");
         _alertCenter.SnoozeRequested += alertId =>
             RunUiAction(
@@ -371,6 +378,11 @@ public partial class App : Application
             return;
         }
         _checking = true;
+        if (_monitoringCycleGeneration != generation)
+        {
+            _monitoringCycleGeneration = generation;
+            _monitoringCycleWarning = null;
+        }
         var keepThinkingForContinuation = false;
         var resultAnimationActive = false;
         var checkStage = "preparing";
@@ -410,7 +422,6 @@ public partial class App : Application
 
             var hasMore = true;
             var batches = 0;
-            string? lastWarning = null;
             while (hasMore && batches < 20)
             {
                 batches++;
@@ -423,9 +434,19 @@ public partial class App : Application
                     batchLimit,
                     nowUtc,
                     _shutdown.Token);
-                lastWarning = batch.Warning;
                 if (!string.IsNullOrWhiteSpace(batch.Warning))
                 {
+                    _monitoringCycleWarning = batch.Warning;
+                    if (await TryRestoreWorkIqEulaAsync(
+                            new InvalidOperationException(batch.Warning)))
+                    {
+                        Log("WORKIQ EULA RESTORED acceptedVersion=true");
+                        _monitoringRemediation = null;
+                        _monitoringCycleWarning = null;
+                        _restartCheckRequested = true;
+                        _restartCheckForced |= force;
+                        return;
+                    }
                     _monitoringRemediation = batch.Warning;
                 }
                 if (generation != _monitoringGeneration)
@@ -498,8 +519,12 @@ public partial class App : Application
             }
             else
             {
+                await CaptureObservedWorkIqEulaAcceptanceAsync(
+                    _monitoringCycleWarning);
+                _workIqEulaRepairRetryPending = false;
                 _state.RecordMonitoringSuccess(DateTimeOffset.UtcNow);
-                _monitoringRemediation = lastWarning;
+                _monitoringRemediation = _monitoringCycleWarning;
+                _monitoringCycleWarning = null;
                 await _state.SaveAsync(_shutdown.Token);
                 RefreshUi(showPersistentCards: false);
             }
@@ -519,6 +544,17 @@ public partial class App : Application
                 return;
             }
 
+            if (await TryRestoreWorkIqEulaAsync(ex))
+            {
+                Log("WORKIQ EULA RESTORED acceptedVersion=true");
+                _monitoringRemediation = null;
+                _monitoringCycleWarning = null;
+                _restartCheckRequested = true;
+                _restartCheckForced |= force;
+                return;
+            }
+
+            _workIqEulaRepairRetryPending = false;
             if (ex is CopilotClassificationException classificationFailure)
             {
                 _state.RecordCredit(
@@ -532,6 +568,7 @@ public partial class App : Application
             _monitoringRemediation = GetMonitoringRemediation(
                 ex,
                 checkStage);
+            _monitoringCycleWarning = null;
             try
             {
                 await _state.SaveAsync(_shutdown.Token);
@@ -716,6 +753,16 @@ public partial class App : Application
         RefreshUi(showPersistentCards: false);
     }
 
+    private async Task DismissAllAlertsAsync()
+    {
+        if (_alertManager.DismissAllActive(DateTimeOffset.UtcNow) == 0)
+        {
+            return;
+        }
+        await _state.SaveAsync(_shutdown.Token);
+        RefreshUi(showPersistentCards: false);
+    }
+
     private async Task AddFeedbackAsync(
         string alertId,
         FeedbackKind kind)
@@ -782,7 +829,18 @@ public partial class App : Application
                 ? _alertCenter
                 : null
         };
-        if (window.ShowDialog() != true ||
+        var dialogResult = window.ShowDialog();
+        if (window.ReauthenticatedIdentity is { } identity)
+        {
+            await _state.PinWorkIqIdentityAsync(
+                identity.Account,
+                identity.Mail ?? identity.UserPrincipalName,
+                _shutdown.Token);
+            await _state.RecordWorkIqEulaAcceptanceAsync(
+                identity.EulaAcceptedVersion,
+                _shutdown.Token);
+        }
+        if (dialogResult != true ||
             window.SavedSettings is null)
         {
             return;
@@ -791,10 +849,18 @@ public partial class App : Application
         var previous = _state.State.Settings;
         var updated = window.SavedSettings;
         var wasScheduledSleeping = _scheduledSleeping;
-        var scopeChanged =
+        var outlookScopeChanged =
             !previous.AdditionalOutlookFolders.SequenceEqual(
                 updated.AdditionalOutlookFolders,
-                StringComparer.OrdinalIgnoreCase) ||
+                StringComparer.OrdinalIgnoreCase);
+        var teamsScopeChanged =
+            previous.TeamsScope != updated.TeamsScope ||
+            previous.MonitorTeamsChatsInSelectedScope !=
+                updated.MonitorTeamsChatsInSelectedScope ||
+            !string.Equals(
+                JsonSerializer.Serialize(previous.TeamsTeamWatchlist),
+                JsonSerializer.Serialize(updated.TeamsTeamWatchlist),
+                StringComparison.Ordinal) ||
             !string.Equals(
                 JsonSerializer.Serialize(previous.TeamsChannelWatchlist),
                 JsonSerializer.Serialize(updated.TeamsChannelWatchlist),
@@ -842,7 +908,8 @@ public partial class App : Application
             }
             await _state.ApplySettingsAsync(
                 updated,
-                resetMonitoring: scopeChanged,
+                resetOutlookMonitoring: outlookScopeChanged,
+                resetTeamsMonitoring: teamsScopeChanged,
                 resetCopilotSession: modelChanged,
                 replacementSessionId,
                 replacementSessionCredits,
@@ -941,7 +1008,24 @@ public partial class App : Application
         if (!string.IsNullOrWhiteSpace(account) &&
             setup.TryGetExecutablePath(out _))
         {
-            return true;
+            if (await RestoreRecordedWorkIqEulaAsync(setup))
+            {
+                try
+                {
+                    var identity = await setup.VerifyAccountAsync(
+                        account,
+                        _shutdown.Token);
+                    await _state.PinWorkIqIdentityAsync(
+                        identity.Account,
+                        identity.Mail ?? identity.UserPrincipalName,
+                        _shutdown.Token);
+                    return true;
+                }
+                catch (WorkIqSetupException)
+                {
+                    // Continue to the explicit connection flow.
+                }
+            }
         }
 
         var window = new WorkIqSignInWindow(account, setup);
@@ -951,8 +1035,14 @@ public partial class App : Application
             return false;
         }
 
-        await _state.PinWorkIqAccountAsync(
+        await _state.PinWorkIqIdentityAsync(
             window.AuthenticatedAccount,
+            window.AuthenticatedMailbox,
+            _shutdown.Token);
+        await _state.RecordWorkIqEulaAcceptanceAsync(
+            window.AcceptedEulaVersion
+                ?? throw new InvalidOperationException(
+                    "WorkIQ did not return the accepted EULA version."),
             _shutdown.Token);
         return true;
     }
@@ -980,10 +1070,83 @@ public partial class App : Application
             return;
         }
 
-        await _state.PinWorkIqAccountAsync(
+        await _state.PinWorkIqIdentityAsync(
             window.AuthenticatedAccount,
+            window.AuthenticatedMailbox,
+            _shutdown.Token);
+        await _state.RecordWorkIqEulaAcceptanceAsync(
+            window.AcceptedEulaVersion
+                ?? throw new InvalidOperationException(
+                    "WorkIQ did not return the accepted EULA version."),
             _shutdown.Token);
         Say($"Microsoft 365 is connected as {window.AuthenticatedAccount}.");
+    }
+
+    private async Task<bool> RestoreRecordedWorkIqEulaAsync(
+        WorkIqSetupService setup)
+    {
+        var acceptedVersion = _state.State.WorkIqEulaAcceptedVersion;
+        if (string.IsNullOrWhiteSpace(acceptedVersion))
+        {
+            return true;
+        }
+
+        var installedVersion = await setup.GetVersionAsync(_shutdown.Token);
+        if (!string.Equals(
+                acceptedVersion,
+                installedVersion,
+                StringComparison.Ordinal))
+        {
+            Log("WORKIQ EULA REVIEW REQUIRED versionChanged=true");
+            return false;
+        }
+
+        await setup.AcceptEulaAsync(
+            acceptedVersion,
+            _shutdown.Token);
+        Log("WORKIQ EULA RESTORED AT STARTUP acceptedVersion=true");
+        return true;
+    }
+
+    private async Task<bool> TryRestoreWorkIqEulaAsync(Exception failure)
+    {
+        if (MessageProviderFactory.UsesMockProvider)
+        {
+            return false;
+        }
+
+        if (_workIqEulaRepairRetryPending)
+        {
+            return false;
+        }
+
+        var restored =
+            await new WorkIqSetupService().TryRestoreAcceptedEulaAsync(
+                _state.State.WorkIqEulaAcceptedVersion,
+                failure,
+                _shutdown.Token);
+        _workIqEulaRepairRetryPending = restored;
+        return restored;
+    }
+
+    private async Task CaptureObservedWorkIqEulaAcceptanceAsync(
+        string? warning)
+    {
+        if (MessageProviderFactory.UsesMockProvider ||
+            !string.IsNullOrWhiteSpace(warning) ||
+            !string.IsNullOrWhiteSpace(
+                _state.State.WorkIqEulaAcceptedVersion))
+        {
+            return;
+        }
+
+        var setup = new WorkIqSetupService();
+        var version = await setup.GetVersionAsync(_shutdown.Token);
+        await setup.AcceptEulaAsync(version, _shutdown.Token);
+        await _state.RecordWorkIqEulaAcceptanceAsync(
+            version,
+            _shutdown.Token);
+        Log("WORKIQ EULA ACCEPTANCE CAPTURED versionBound=true");
     }
 
     private async Task OpenAlertContextAsync(string alertId)
@@ -1134,10 +1297,9 @@ public partial class App : Application
             return Task.CompletedTask;
         }
 
-        Process.Start(new ProcessStartInfo(uri.AbsoluteUri)
-        {
-            UseShellExecute = true
-        });
+        AlertSourceLauncher.Open(
+            uri,
+            _state.State.PinnedMailbox);
         return Task.CompletedTask;
     }
 
@@ -1523,8 +1685,8 @@ public partial class App : Application
            exception.Message.Contains(
                "End User License",
                StringComparison.OrdinalIgnoreCase)
-            ? "The WorkIQ EULA must be accepted. Run " +
-              "'workiq accept-eula' after reviewing " +
+            ? "The WorkIQ EULA must be accepted. Open Settings, select " +
+              "'Sign in again', then review and accept " +
               "https://github.com/microsoft/work-iq/tree/main/EULA."
             : null;
 
@@ -1556,6 +1718,18 @@ public partial class App : Application
             CopilotModel = settings.CopilotModel,
             AdditionalOutlookFolders =
                 settings.AdditionalOutlookFolders.ToList(),
+            TeamsScope = settings.TeamsScope,
+            MonitorTeamsChatsInSelectedScope =
+                settings.MonitorTeamsChatsInSelectedScope,
+            TeamsTeamWatchlist = settings.TeamsTeamWatchlist
+                .Select(item => new TeamsTeamWatch
+                {
+                    TeamId = item.TeamId,
+                    DisplayName = item.DisplayName,
+                    ExcludedChannelIds =
+                        item.ExcludedChannelIds.ToList()
+                })
+                .ToList(),
             TeamsChannelWatchlist = settings.TeamsChannelWatchlist
                 .Select(item => new TeamsChannelWatch
                 {

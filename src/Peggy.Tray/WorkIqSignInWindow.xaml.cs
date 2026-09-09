@@ -19,6 +19,14 @@ public partial class WorkIqSignInWindow : Window
     public WorkIqSignInWindow(
         string? expectedAccount = null,
         WorkIqSetupService? setup = null)
+        : this(expectedAccount, setup, previewMode: false)
+    {
+    }
+
+    internal WorkIqSignInWindow(
+        string? expectedAccount,
+        WorkIqSetupService? setup,
+        bool previewMode)
     {
         InitializeComponent();
         _setup = setup ?? new WorkIqSetupService();
@@ -32,7 +40,13 @@ public partial class WorkIqSignInWindow : Window
             SignInButton.Content = "Sign in again";
         }
 
-        Loaded += async (_, _) => await RefreshInstallationStatusAsync();
+        Loaded += (_, _) =>
+            PeggyWindowLayout.ConstrainToWorkArea(this);
+        if (!previewMode)
+        {
+            Loaded += async (_, _) =>
+                await RefreshInstallationStatusAsync();
+        }
         Closed += (_, _) =>
         {
             _lifetimeCancellation.Cancel();
@@ -41,7 +55,23 @@ public partial class WorkIqSignInWindow : Window
         };
     }
 
+    internal void SetPreviewInstallationState(
+        string installationStatus,
+        string operationStatus)
+    {
+        InstallationStatus.Text = installationStatus;
+        OperationStatus.Text = operationStatus;
+        InstallButton.Visibility = Visibility.Collapsed;
+        SignInButton.IsEnabled = true;
+    }
+
     public string? AuthenticatedAccount { get; private set; }
+
+    public string? AuthenticatedMailbox { get; private set; }
+
+    public string? AcceptedEulaVersion { get; private set; }
+
+    public WorkIqAccountIdentity? AuthenticatedIdentity { get; private set; }
 
     private async Task RefreshInstallationStatusAsync()
     {
@@ -128,6 +158,10 @@ public partial class WorkIqSignInWindow : Window
             true,
             "Opening Microsoft sign-in and permission consent. Complete the " +
             "steps in your browser.");
+        AuthenticatedAccount = null;
+        AuthenticatedMailbox = null;
+        AcceptedEulaVersion = null;
+        AuthenticatedIdentity = null;
         using var operation = BeginOperation();
         try
         {
@@ -135,6 +169,9 @@ public partial class WorkIqSignInWindow : Window
                 AccountText.Text,
                 operation.Token);
             AuthenticatedAccount = identity.Account;
+            AuthenticatedMailbox = identity.Mail;
+            AcceptedEulaVersion = identity.EulaAcceptedVersion;
+            AuthenticatedIdentity = identity;
             OperationStatus.Text =
                 $"Verified Microsoft 365 account: {identity.Account}";
             DialogResult = true;
@@ -146,6 +183,10 @@ public partial class WorkIqSignInWindow : Window
         }
         catch (WorkIqSetupException ex)
         {
+            if (ex is WorkIqEulaChangedException)
+            {
+                EulaCheck.IsChecked = false;
+            }
             ShowSetupError(ex);
         }
         finally

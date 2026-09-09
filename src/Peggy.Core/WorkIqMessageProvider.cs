@@ -42,6 +42,11 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     private readonly PeggySettings _settings;
     private readonly SemaphoreSlim _identityLock = new(1, 1);
     private readonly SemaphoreSlim _folderLock = new(1, 1);
+    private readonly SemaphoreSlim _teamCatalogLock = new(1, 1);
+    private readonly Dictionary<string, TeamChannelCatalog>
+        _monitoredTeamCatalogs = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _currentUserEmailAddresses =
+        new(StringComparer.OrdinalIgnoreCase);
     private string? _currentUserId;
     private string _outlookAccount;
     private IReadOnlyList<MailFolder>? _monitoredMailFolders;
@@ -55,6 +60,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         _account = ResolvePinnedAccount(
             account ?? Environment.GetEnvironmentVariable("PEGGY_WORKIQ_ACCOUNT"));
         _outlookAccount = _account;
+        AddCurrentUserEmailAddress(_account);
         _settings = settings ?? ReadSettingsFromEnvironment();
         _client = new WorkIqClient(executablePath, _account);
     }
@@ -99,12 +105,19 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         var updated = CloneCursor(cursor);
         updated.InitialScanStartedUtc ??=
             nowUtc.AddMinutes(-PeggyDefaults.StartupLookbackMinutes);
+        updated.OutlookScanStartedUtc ??= updated.InitialScanStartedUtc;
+        updated.TeamsScanStartedUtc ??= updated.InitialScanStartedUtc;
 
         var currentUserId = await GetCurrentUserIdAsync(ct);
         var messages = new List<Message>();
         string? warning = null;
         bool hasMore;
-        if (!string.IsNullOrWhiteSpace(updated.ChannelScanResumeKey))
+        if (_settings.TeamsScope == TeamsMonitoringScope.Off)
+        {
+            ClearTeamsMonitoringCursor(updated);
+        }
+        if (_settings.TeamsScope != TeamsMonitoringScope.Off &&
+            !string.IsNullOrWhiteSpace(updated.ChannelScanResumeKey))
         {
             hasMore = await CollectChannelChangesAsync(
                 updated,
@@ -115,7 +128,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 ct);
             if (!hasMore && messages.Count < limit)
             {
-                var search = await CollectStructuredTeamsChangesAsync(
+                var search = await CollectConfiguredTeamsDiscoveryAsync(
                     updated,
                     messages,
                     currentUserId,
@@ -137,7 +150,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
             if (!hasMore && messages.Count < limit)
             {
-                var search = await CollectStructuredTeamsChangesAsync(
+                var search = await CollectConfiguredTeamsDiscoveryAsync(
                     updated,
                     messages,
                     currentUserId,
@@ -150,15 +163,18 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
             if (!hasMore && messages.Count < limit)
             {
-                hasMore = await CollectChannelChangesAsync(
-                    updated,
-                    messages,
-                    currentUserId,
-                    limit,
-                    nowUtc,
-                    ct);
+                hasMore = _settings.TeamsScope ==
+                    TeamsMonitoringScope.Off
+                    ? false
+                    : await CollectChannelChangesAsync(
+                        updated,
+                        messages,
+                        currentUserId,
+                        limit,
+                        nowUtc,
+                        ct);
             }
-            else if (!hasMore)
+            else if (!hasMore && HasConfiguredTeamsMonitoring())
             {
                 hasMore = true;
             }
@@ -183,6 +199,56 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             updated,
             hasMore,
             warning);
+    }
+
+    private bool HasConfiguredTeamsMonitoring()
+        => _settings.TeamsScope switch
+        {
+            TeamsMonitoringScope.AllActivity => true,
+            TeamsMonitoringScope.SelectedTeamsAndChannels =>
+                _settings.MonitorTeamsChatsInSelectedScope ||
+                _settings.TeamsTeamWatchlist.Count > 0 ||
+                _settings.TeamsChannelWatchlist.Count > 0,
+            _ => false
+        };
+
+    private async Task<TeamsSearchCollectionResult>
+        CollectConfiguredTeamsDiscoveryAsync(
+            MonitoringCursorState cursor,
+            ICollection<Message> destination,
+            string currentUserId,
+            int limit,
+            DateTimeOffset nowUtc,
+            CancellationToken ct)
+    {
+        if (_settings.TeamsScope == TeamsMonitoringScope.AllActivity)
+        {
+            ClearDirectChatCursor(cursor);
+            return await CollectStructuredTeamsChangesAsync(
+                cursor,
+                destination,
+                currentUserId,
+                limit,
+                nowUtc,
+                ct);
+        }
+
+        ClearStructuredTeamsCursor(cursor);
+        if (_settings.TeamsScope ==
+                TeamsMonitoringScope.SelectedTeamsAndChannels &&
+            _settings.MonitorTeamsChatsInSelectedScope)
+        {
+            return await CollectDirectChatChangesAsync(
+                cursor,
+                destination,
+                currentUserId,
+                limit,
+                nowUtc,
+                ct);
+        }
+
+        ClearDirectChatCursor(cursor);
+        return new TeamsSearchCollectionResult(false, null);
     }
 
     public async Task<MessageThread?> GetThreadAsync(
@@ -1156,12 +1222,14 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         var url =
             $"/me/mailFolders/{folderId}/messages" +
             $"?$filter={filter}&$orderby=receivedDateTime%20desc&$top={top}" +
-            "&$select=id,conversationId,from,subject,bodyPreview,receivedDateTime,isRead,webLink";
+            "&$select=id,conversationId,from,sender,subject,bodyPreview," +
+            "receivedDateTime,isRead,webLink";
         var items = await FetchAllPagesAsync<OutlookMessage>(
             url,
             $"unread messages in Outlook folder '{folder.DisplayName}'",
             ct,
-            maximumItems: limit);
+            maximumItems: limit,
+            includeItem: item => !IsCurrentUserEmailMessage(item));
         return items
             .Select(ToEmailMessage)
             .Where(message => message is not null)
@@ -1180,6 +1248,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     {
         var folders = await GetMonitoredMailFoldersAsync(ct);
         var since = cursor.OutlookWatermarkUtc
+            ?? cursor.OutlookScanStartedUtc
             ?? cursor.InitialScanStartedUtc!.Value;
         var boundaryIds = cursor.OutlookBoundaryMessageIds.ToHashSet(
             StringComparer.Ordinal);
@@ -1270,9 +1339,11 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             $"/me/mailFolders/{encodedFolderId}/messages" +
             $"?$top=50&$filter={filter}" +
             "&$orderby=receivedDateTime%20asc" +
-            "&$select=id,conversationId,from,subject,bodyPreview,receivedDateTime,isRead,webLink",
+            "&$select=id,conversationId,from,sender,subject,bodyPreview," +
+            "receivedDateTime,isRead,webLink",
             $"changes in Outlook folder '{folder.DisplayName}'",
-            ct);
+            ct,
+            includeItem: item => !IsCurrentUserEmailMessage(item));
         var messages = new Dictionary<string, Message>(
             StringComparer.Ordinal);
         foreach (var item in items)
@@ -1514,6 +1585,53 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             }
         }
 
+        var teamWatchlist = Environment.GetEnvironmentVariable(
+            "PEGGY_TEAMS_TEAM_WATCHLIST");
+        if (!string.IsNullOrWhiteSpace(teamWatchlist))
+        {
+            try
+            {
+                settings.TeamsTeamWatchlist =
+                    JsonSerializer.Deserialize<List<TeamsTeamWatch>>(
+                        teamWatchlist)
+                    ?? [];
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidOperationException(
+                    "PEGGY_TEAMS_TEAM_WATCHLIST must contain a JSON team list.",
+                    ex);
+            }
+        }
+
+        var scope = Environment.GetEnvironmentVariable("PEGGY_TEAMS_SCOPE");
+        if (!string.IsNullOrWhiteSpace(scope))
+        {
+            if (!Enum.TryParse<TeamsMonitoringScope>(
+                    scope,
+                    ignoreCase: true,
+                    out var parsedScope) ||
+                !Enum.IsDefined(parsedScope))
+            {
+                throw new InvalidOperationException(
+                    "PEGGY_TEAMS_SCOPE must be AllActivity, " +
+                    "SelectedTeamsAndChannels, or Off.");
+            }
+            settings.TeamsScope = parsedScope;
+        }
+
+        var monitorChats = Environment.GetEnvironmentVariable(
+            "PEGGY_TEAMS_MONITOR_CHATS");
+        if (!string.IsNullOrWhiteSpace(monitorChats))
+        {
+            if (!bool.TryParse(monitorChats, out var parsedMonitorChats))
+            {
+                throw new InvalidOperationException(
+                    "PEGGY_TEAMS_MONITOR_CHATS must be true or false.");
+            }
+            settings.MonitorTeamsChatsInSelectedScope = parsedMonitorChats;
+        }
+
         return settings;
     }
 
@@ -1731,6 +1849,8 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
             var boundary = orderedPage[^1].CreatedDateTime!.Value;
             if (messages.Count >= limit ||
+                (page.NextLink is null &&
+                 page.Value.Count < pageSize) ||
                 (newerThan is not null && boundary <= newerThan))
             {
                 break;
@@ -1859,6 +1979,203 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 StringComparison.OrdinalIgnoreCase));
 
     private async Task<TeamsSearchCollectionResult>
+        CollectDirectChatChangesAsync(
+            MonitoringCursorState cursor,
+            ICollection<Message> destination,
+            string currentUserId,
+            int limit,
+            DateTimeOffset nowUtc,
+            CancellationToken ct)
+    {
+        if (destination.Count >= limit)
+        {
+            return new TeamsSearchCollectionResult(true, null);
+        }
+
+        var scanStartedUtc = cursor.TeamsScanStartedUtc ??
+            cursor.InitialScanStartedUtc ??
+            nowUtc.AddMinutes(-PeggyDefaults.StartupLookbackMinutes);
+        var watermark = cursor.DirectChatWatermarkUtc ?? scanStartedUtc;
+        var windowEndUtc = cursor.DirectChatScanWindowEndUtc ?? nowUtc;
+        var windowStartUtc = cursor.DirectChatWatermarkUtc is null
+            ? watermark
+            : MaxTimestamp(
+               scanStartedUtc,
+               watermark.Subtract(TeamsSearchOverlap));
+        var chats = await FetchDirectChatsForWindowAsync(
+            windowStartUtc,
+            ct);
+
+        using var concurrency = new SemaphoreSlim(
+            MaxChannelConcurrency,
+            MaxChannelConcurrency);
+        var pending = chats.Select(async chat =>
+        {
+            await concurrency.WaitAsync(ct);
+            try
+            {
+               return await FetchDirectChatWindowAsync(
+                   chat,
+                   currentUserId,
+                   windowStartUtc,
+                   windowEndUtc,
+                   ct);
+            }
+            finally
+            {
+               concurrency.Release();
+            }
+        });
+        var candidates = (await Task.WhenAll(pending))
+            .SelectMany(messages => messages)
+            .GroupBy(message => message.Id, StringComparer.Ordinal)
+            .Select(group => group
+               .OrderByDescending(message => message.ReceivedAt)
+               .First())
+            .OrderBy(message => message.ReceivedAt)
+            .ThenBy(message => message.Id, StringComparer.Ordinal)
+            .ToList();
+        var previousBoundary = cursor.DirectChatBoundaryMessageIds
+            .ToHashSet(StringComparer.Ordinal);
+        var processed = cursor.DirectChatProcessedMessageIds
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var candidate in candidates)
+        {
+            if (previousBoundary.Contains(candidate.Id) ||
+               processed.Contains(candidate.Id))
+            {
+               continue;
+            }
+            if (destination.Count >= limit)
+            {
+               cursor.DirectChatScanWindowEndUtc = windowEndUtc;
+               cursor.DirectChatProcessedMessageIds = processed.ToList();
+               return new TeamsSearchCollectionResult(true, null);
+            }
+
+            destination.Add(candidate);
+            processed.Add(candidate.Id);
+        }
+
+        cursor.DirectChatWatermarkUtc = windowEndUtc;
+        cursor.DirectChatBoundaryMessageIds = candidates
+            .Select(message => message.Id)
+            .ToList();
+        cursor.DirectChatScanWindowEndUtc = null;
+        cursor.DirectChatProcessedMessageIds.Clear();
+        return new TeamsSearchCollectionResult(false, null);
+    }
+
+    private async Task<IReadOnlyList<Chat>> FetchDirectChatsForWindowAsync(
+        DateTimeOffset windowStartUtc,
+        CancellationToken ct)
+    {
+        string? url =
+            "/me/chats?$top=50" +
+            "&$select=id,topic,chatType,viewpoint" +
+            $"&$orderby={Uri.EscapeDataString(
+               "lastMessagePreview/createdDateTime desc")}" +
+            "&$expand=lastMessagePreview";
+        var chats = new Dictionary<string, Chat>(StringComparer.Ordinal);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        for (var pageNumber = 1; url is not null; pageNumber++)
+        {
+            if (pageNumber > 20 || !visited.Add(url))
+            {
+               throw new InvalidDataException(
+                   "WorkIQ could not complete bounded direct chat discovery.");
+            }
+
+            var page = await _client.FetchAsync<GraphCollection<Chat>>(url, ct);
+            if (page.Value.Count == 0)
+            {
+               break;
+            }
+            var valid = page.Value
+               .Where(chat =>
+                   !string.IsNullOrWhiteSpace(chat.Id) &&
+                   chat.LastMessagePreview?.CreatedDateTime is not null)
+               .ToList();
+            if (valid.Count == 0)
+            {
+               throw new InvalidDataException(
+                   "WorkIQ returned Teams chats without cursor fields.");
+            }
+            if (valid.Any(chat => string.IsNullOrWhiteSpace(chat.ChatType)))
+            {
+               throw new InvalidDataException(
+                   "WorkIQ returned Teams chats without their type.");
+            }
+
+            foreach (var chat in valid.Where(chat =>
+                        IsDirectChatType(chat.ChatType!) &&
+                        chat.LastMessagePreview!.CreatedDateTime >=
+                            windowStartUtc))
+            {
+               chats[chat.Id!] = chat;
+            }
+            if (valid.All(chat =>
+                   chat.LastMessagePreview!.CreatedDateTime <
+                       windowStartUtc))
+            {
+               break;
+            }
+            url = NormalizeGraphUrl(page.NextLink);
+        }
+
+        return chats.Values.ToList();
+    }
+
+    private async Task<IReadOnlyList<Message>> FetchDirectChatWindowAsync(
+        Chat chat,
+        string currentUserId,
+        DateTimeOffset windowStartUtc,
+        DateTimeOffset windowEndUtc,
+        CancellationToken ct)
+    {
+        const int maximumMessages = MaxPageSize * 20;
+        var messages = await FetchChatMessagesAsync(
+            chat.Id!,
+            maximumMessages,
+            windowStartUtc.AddTicks(-1),
+            currentUserId,
+            maximumPages: 20,
+            ct);
+        if (messages.Count == maximumMessages)
+        {
+            throw new InvalidDataException(
+               $"The direct chat '{chat.Id}' exceeded Peggy's bounded " +
+               "monitoring window.");
+        }
+
+        var readAt = chat.Viewpoint?.LastMessageReadDateTime ??
+            DateTimeOffset.MinValue;
+        var subject = NormalizeSubject(chat.Topic, "Teams chat");
+        return messages
+            .Where(message =>
+               message.CreatedDateTime >= windowStartUtc &&
+               GetChatActivityUtc(message) <= windowEndUtc)
+            .Select(message => ToTeamsMessage(
+               chat.Id!,
+               subject,
+               message,
+               readAt))
+            .Where(message => message is not null)
+            .Cast<Message>()
+            .ToList();
+    }
+
+    private static bool IsDirectChatType(string chatType)
+        => string.Equals(
+              chatType,
+              "oneOnOne",
+              StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(
+              chatType,
+              "group",
+              StringComparison.OrdinalIgnoreCase);
+
+    private async Task<TeamsSearchCollectionResult>
         CollectStructuredTeamsChangesAsync(
             MonitoringCursorState cursor,
             ICollection<Message> destination,
@@ -1873,7 +2190,8 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             return new TeamsSearchCollectionResult(true, null);
         }
 
-        var initialScanStartedUtc = cursor.InitialScanStartedUtc ??
+        var initialScanStartedUtc = cursor.TeamsScanStartedUtc ??
+            cursor.InitialScanStartedUtc ??
             nowUtc.AddMinutes(-PeggyDefaults.StartupLookbackMinutes);
         var watermark = cursor.TeamsWatermarkUtc ??
             cursor.PromptWatermarkUtc ??
@@ -2715,6 +3033,48 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                _outlookAccount,
                StringComparison.OrdinalIgnoreCase);
 
+    private bool IsCurrentUserEmailMessage(OutlookMessage message)
+        => IsCurrentUserEmailAddress(
+               message.From?.EmailAddress?.Address) ||
+           IsCurrentUserEmailAddress(
+               message.Sender?.EmailAddress?.Address);
+
+    private bool IsCurrentUserEmailAddress(string? address)
+    {
+        var normalized = NormalizeEmailIdentity(address);
+        return normalized is not null &&
+               _currentUserEmailAddresses.Contains(normalized);
+    }
+
+    private void AddCurrentUserEmailAddress(string? address)
+    {
+        var normalized = NormalizeEmailIdentity(address);
+        if (normalized is not null)
+        {
+            _currentUserEmailAddresses.Add(normalized);
+        }
+    }
+
+    private static string? NormalizeEmailIdentity(string? address)
+    {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            return null;
+        }
+
+        var normalized = address.Trim();
+        if (normalized.StartsWith(
+                "SMTP:",
+                StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith(
+                "X500:",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = normalized[5..].Trim();
+        }
+        return normalized.Length == 0 ? null : normalized;
+    }
+
     private static string? FirstNonBlank(params string?[] values)
         => values.FirstOrDefault(value =>
             !string.IsNullOrWhiteSpace(value));
@@ -2840,7 +3200,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         DateTimeOffset nowUtc,
         CancellationToken ct)
     {
-        var channels = GetDirectlyMonitoredChannels();
+        var channels = await GetDirectlyMonitoredChannelsAsync(ct);
         if (channels.Count == 0)
         {
             cursor.ChannelWatermarksUtc.Clear();
@@ -2908,7 +3268,11 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                     key,
                     out var watermark)
                     ? watermark
-                    : cursor.InitialScanStartedUtc!.Value;
+                    : MaxTimestamp(
+                        cursor.TeamsScanStartedUtc ??
+                            cursor.InitialScanStartedUtc!.Value,
+                        channel.MonitoringBaselineUtc ??
+                            DateTimeOffset.MinValue);
                 var boundaryIds =
                     cursor.ChannelBoundaryMessageIds.TryGetValue(
                         key,
@@ -3161,11 +3525,18 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         return false;
     }
 
-    private IReadOnlyList<TeamsChannel> GetDirectlyMonitoredChannels()
-        => _settings.TeamsChannelWatchlist
+    private async Task<IReadOnlyList<TeamsChannel>>
+        GetDirectlyMonitoredChannelsAsync(CancellationToken ct)
+    {
+        var selectedTeamIds = _settings.TeamsTeamWatchlist
+            .Where(watched => !string.IsNullOrWhiteSpace(watched.TeamId))
+            .Select(watched => watched.TeamId)
+            .ToHashSet(StringComparer.Ordinal);
+        var channels = _settings.TeamsChannelWatchlist
             .Where(watched =>
                 !string.IsNullOrWhiteSpace(watched.TeamId) &&
-                !string.IsNullOrWhiteSpace(watched.ChannelId))
+                !string.IsNullOrWhiteSpace(watched.ChannelId) &&
+                !selectedTeamIds.Contains(watched.TeamId))
             .GroupBy(
                 watched => GetChannelKey(
                     watched.TeamId,
@@ -3191,6 +3562,72 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 };
             })
             .ToList();
+
+        foreach (var watchedTeam in _settings.TeamsTeamWatchlist.Where(
+                     watched => !string.IsNullOrWhiteSpace(watched.TeamId)))
+        {
+            var teamChannels = await GetMonitoredTeamChannelsAsync(
+                watchedTeam,
+                ct);
+            var excluded = watchedTeam.ExcludedChannelIds
+                .ToHashSet(StringComparer.Ordinal);
+            channels.AddRange(teamChannels.Where(channel =>
+                !excluded.Contains(channel.Id!)));
+        }
+
+        return channels
+            .GroupBy(
+                channel => GetChannelKey(channel.TeamId!, channel.Id!),
+                StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+    }
+
+    private async Task<IReadOnlyList<TeamsChannel>>
+        GetMonitoredTeamChannelsAsync(
+            TeamsTeamWatch watchedTeam,
+            CancellationToken ct)
+    {
+        await _teamCatalogLock.WaitAsync(ct);
+        try
+        {
+            _monitoredTeamCatalogs.TryGetValue(
+                watchedTeam.TeamId,
+                out var cached);
+            if (cached is not null &&
+                IsCatalogFresh(cached.LoadedUtc))
+            {
+                return cached.Channels;
+            }
+
+            var channels = await GetTeamChannelsCoreAsync(
+                watchedTeam.TeamId,
+                string.IsNullOrWhiteSpace(watchedTeam.DisplayName)
+                    ? "(unnamed team)"
+                    : watchedTeam.DisplayName,
+                ct);
+            if (cached is not null)
+            {
+                var previous = cached.Channels.ToDictionary(
+                    channel => channel.Id!,
+                    StringComparer.Ordinal);
+                foreach (var channel in channels)
+                {
+                    channel.MonitoringBaselineUtc =
+                        previous.TryGetValue(channel.Id!, out var known)
+                            ? known.MonitoringBaselineUtc
+                            : cached.LoadedUtc;
+                }
+            }
+            _monitoredTeamCatalogs[watchedTeam.TeamId] =
+                new TeamChannelCatalog(DateTimeOffset.UtcNow, channels);
+            return channels;
+        }
+        finally
+        {
+            _teamCatalogLock.Release();
+        }
+    }
 
     private async Task<ChannelPageFetch> FetchChannelPageAsync(
         TeamsChannel channel,
@@ -3418,7 +3855,8 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         string initialUrl,
         string description,
         CancellationToken ct,
-        int? maximumItems = null)
+        int? maximumItems = null,
+        Func<T, bool>? includeItem = null)
     {
         var results = new List<T>();
         var visited = new HashSet<string>(StringComparer.Ordinal);
@@ -3434,7 +3872,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             }
 
             var page = await _client.FetchAsync<GraphCollection<T>>(url, ct);
-            results.AddRange(page.Value);
+            results.AddRange(includeItem is null
+                ? page.Value
+                : page.Value.Where(includeItem));
             url = NormalizeGraphUrl(page.NextLink);
         }
 
@@ -3471,15 +3911,29 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     }
 
     private bool IsWatchlisted(TeamsChannel channel)
-        => _settings.TeamsChannelWatchlist.Any(watched =>
+    {
+        var watchedTeam = _settings.TeamsTeamWatchlist.FirstOrDefault(
+            watched => string.Equals(
+                watched.TeamId,
+                channel.TeamId,
+                StringComparison.Ordinal));
+        if (watchedTeam is not null)
+        {
+            return !watchedTeam.ExcludedChannelIds.Contains(
+                channel.Id,
+                StringComparer.Ordinal);
+        }
+
+        return _settings.TeamsChannelWatchlist.Any(watched =>
             string.Equals(
                 watched.TeamId,
                 channel.TeamId,
-                StringComparison.OrdinalIgnoreCase) &&
+                StringComparison.Ordinal) &&
             string.Equals(
                 watched.ChannelId,
                 channel.Id,
-                StringComparison.OrdinalIgnoreCase));
+                StringComparison.Ordinal));
+    }
 
     private static bool IsMentioned(ChatMessage message, string currentUserId)
         => message.Mentions.Any(mention => string.Equals(
@@ -3655,12 +4109,21 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             Initialized = cursor.Initialized,
             InitialOutlookScanComplete = cursor.InitialOutlookScanComplete,
             InitialScanStartedUtc = cursor.InitialScanStartedUtc,
+            OutlookScanStartedUtc = cursor.OutlookScanStartedUtc,
+            TeamsScanStartedUtc = cursor.TeamsScanStartedUtc,
             TeamsWatermarkUtc = cursor.TeamsWatermarkUtc,
             TeamsBoundaryMessageIds = cursor.TeamsBoundaryMessageIds.ToList(),
             TeamsSearchWindowEndUtc = cursor.TeamsSearchWindowEndUtc,
             TeamsSearchOffset = cursor.TeamsSearchOffset,
             TeamsSearchProcessedHitIds =
                 cursor.TeamsSearchProcessedHitIds.ToList(),
+            DirectChatWatermarkUtc = cursor.DirectChatWatermarkUtc,
+            DirectChatBoundaryMessageIds =
+                cursor.DirectChatBoundaryMessageIds.ToList(),
+            DirectChatScanWindowEndUtc =
+                cursor.DirectChatScanWindowEndUtc,
+            DirectChatProcessedMessageIds =
+                cursor.DirectChatProcessedMessageIds.ToList(),
             PromptWatermarkUtc = cursor.PromptWatermarkUtc,
             OutlookWatermarkUtc = cursor.OutlookWatermarkUtc,
             OutlookBoundaryMessageIds =
@@ -3693,6 +4156,38 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 })
                 .ToList()
         };
+
+    private static void ClearStructuredTeamsCursor(
+        MonitoringCursorState cursor)
+    {
+        cursor.TeamsWatermarkUtc = null;
+        cursor.TeamsBoundaryMessageIds.Clear();
+        cursor.TeamsSearchWindowEndUtc = null;
+        cursor.TeamsSearchOffset = 0;
+        cursor.TeamsSearchProcessedHitIds.Clear();
+        cursor.PromptWatermarkUtc = null;
+    }
+
+    private static void ClearDirectChatCursor(MonitoringCursorState cursor)
+    {
+        cursor.DirectChatWatermarkUtc = null;
+        cursor.DirectChatBoundaryMessageIds.Clear();
+        cursor.DirectChatScanWindowEndUtc = null;
+        cursor.DirectChatProcessedMessageIds.Clear();
+    }
+
+    private static void ClearTeamsMonitoringCursor(
+        MonitoringCursorState cursor)
+    {
+        ClearStructuredTeamsCursor(cursor);
+        ClearDirectChatCursor(cursor);
+        cursor.ChannelWatermarksUtc.Clear();
+        cursor.ChannelBoundaryMessageIds.Clear();
+        cursor.ChannelDeltaLinks.Clear();
+        cursor.ChannelPageSizes.Clear();
+        cursor.ChannelScanResumeKey = null;
+        cursor.ChannelContinuationPass = false;
+    }
 
     private static string EncodeChannelThreadKey(
         string teamId,
@@ -3869,12 +4364,20 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             if (_currentUserId is null)
             {
                 var profile = await _client.FetchAsync<UserProfile>(
-                    "/me?$select=id,mail,userPrincipalName",
+                    "/me?$select=id,mail,userPrincipalName,proxyAddresses",
                     ct);
                 _outlookAccount = ResolveAuthenticatedAccount(
                     profile.Mail,
                     profile.UserPrincipalName,
                     _account);
+                _currentUserEmailAddresses.Clear();
+                AddCurrentUserEmailAddress(_account);
+                AddCurrentUserEmailAddress(profile.Mail);
+                AddCurrentUserEmailAddress(profile.UserPrincipalName);
+                foreach (var address in profile.ProxyAddresses)
+                {
+                    AddCurrentUserEmailAddress(address);
+                }
 
                 _currentUserId = !string.IsNullOrWhiteSpace(profile.Id)
                     ? profile.Id
@@ -4161,6 +4664,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
         [JsonPropertyName("userPrincipalName")]
         public string? UserPrincipalName { get; init; }
+
+        [JsonPropertyName("proxyAddresses")]
+        public List<string> ProxyAddresses { get; init; } = [];
     }
 
     private sealed class MailFolder
@@ -4191,6 +4697,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
         [JsonPropertyName("from")]
         public Recipient? From { get; init; }
+
+        [JsonPropertyName("sender")]
+        public Recipient? Sender { get; init; }
 
         [JsonPropertyName("subject")]
         public string? Subject { get; init; }
@@ -4242,6 +4751,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
         [JsonPropertyName("topic")]
         public string? Topic { get; init; }
+
+        [JsonPropertyName("chatType")]
+        public string? ChatType { get; init; }
 
         [JsonPropertyName("viewpoint")]
         public ChatViewpoint? Viewpoint { get; init; }
@@ -4348,6 +4860,10 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         List<ChannelEntity> Entities,
         string RequestUrl,
         bool UsedStoredLink);
+
+    private sealed record TeamChannelCatalog(
+        DateTimeOffset LoadedUtc,
+        IReadOnlyList<TeamsChannel> Channels);
 
     private sealed record TeamsSearchCollectionResult(
         bool HasMore,
@@ -4467,6 +4983,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
         [JsonIgnore]
         public string? TeamDisplayName { get; set; }
+
+        [JsonIgnore]
+        public DateTimeOffset? MonitoringBaselineUtc { get; set; }
     }
 
     private sealed class ChatMessageMention
