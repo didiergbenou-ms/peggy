@@ -866,6 +866,35 @@ Remove-Item Env:\PEGGY_MESSAGE_PROVIDER
 
 ## Troubleshooting
 
+### Collect a diagnostic ZIP
+
+Run the privacy-safe collector from the repository as the affected Windows
+user:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass `
+    -File .\scripts\Collect-PeggyDiagnostics.ps1 `
+    -RunConnectivityTests
+```
+
+The script creates `Peggy-Diagnostics-<timestamp>.zip` on the user's Desktop,
+then displays the exact recipient and asks the user to type `SEND` before
+emailing it to `didiergbenou@microsoft.com` through their configured classic
+Outlook profile.
+
+Use `-NoEmail` to create the ZIP without offering to send it. For approved
+automation, use `-SendWithoutPrompt`; `-EmailTo` can override the recipient.
+If Outlook cannot send the message, the ZIP remains on the Desktop for manual
+review and sharing.
+
+The bundle includes Peggy versions, selected installation hashes, process and
+startup status, speech-model inventory, redacted lifecycle logs, relevant
+Windows Application events, and optional generic Copilot and WorkIQ
+connectivity tests. It excludes customer messages, token values, encrypted
+state contents, Copilot and WorkIQ session data, temporary scope-file contents,
+and speech-model binaries. Review the ZIP before sharing it outside the support
+team.
+
 | Symptom | Resolution |
 | --- | --- |
 | Connect Microsoft 365 appears | Install standalone WorkIQ if needed, review the EULA, then sign in and grant consent |
