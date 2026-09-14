@@ -874,17 +874,9 @@ privacy-safe collector from that clone:
 
 ```powershell
 git clone --depth 1 https://github.com/didiergbenou-ms/peggy.git
-Set-Location .\peggy
-
-$repositoryRoot = git rev-parse --show-toplevel
-$collector = Join-Path $repositoryRoot 'scripts\Collect-PeggyDiagnostics.ps1'
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-    -File $collector `
-    -RunConnectivityTests
+Set-Location .\peggy\scripts
+.\Collect-PeggyDiagnostics.ps1 -RunConnectivityTests
 ```
-
-The `git rev-parse` step makes the command work from the repository root or any
-subdirectory in the clone, including `scripts`.
 
 The script creates `Peggy-Diagnostics-<timestamp>.zip` on the user's Desktop,
 then displays the exact recipient and asks the user to type `SEND` before
