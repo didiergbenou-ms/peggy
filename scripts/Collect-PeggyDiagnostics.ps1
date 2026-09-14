@@ -222,6 +222,12 @@ function Get-PeggyOperationalState {
             'monitoringInterrupted'
         $result.Settings = [ordered]@{
             CopilotModel = Get-ObjectPropertyValue $settings 'copilotModel'
+            CopilotReasoningEffort = Get-ObjectPropertyValue `
+                $settings `
+                'copilotReasoningEffort'
+            CopilotContextTier = Get-ObjectPropertyValue `
+                $settings `
+                'copilotContextTier'
             AdditionalOutlookFolders = @(
                 Get-ObjectPropertyValue $settings 'additionalOutlookFolders'
             )

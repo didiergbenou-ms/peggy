@@ -160,6 +160,8 @@ internal static class CoreBehaviorSmokeTests
             new PeggySettings
             {
                 CopilotModel = "replacement-model",
+                CopilotReasoningEffort = "high",
+                CopilotContextTier = PeggyDefaults.CopilotContextTierLong,
                 MonitoringPaused = true
             },
             resetOutlookMonitoring: true,
@@ -171,6 +173,9 @@ internal static class CoreBehaviorSmokeTests
         TestAssert.True(
             !ReferenceEquals(manager.State, original) &&
             manager.State.Settings.CopilotModel == "replacement-model" &&
+            manager.State.Settings.CopilotReasoningEffort == "high" &&
+            manager.State.Settings.CopilotContextTier ==
+                PeggyDefaults.CopilotContextTierLong &&
             manager.State.Alerts[0].Summary == "Original alert" &&
             manager.State.CopilotSessionId != originalSessionId &&
             manager.State.CopilotSessionCredits == 0 &&
@@ -274,6 +279,10 @@ internal static class CoreBehaviorSmokeTests
             state.FeedbackRules is not null &&
             state.SeenMessages is not null &&
             state.CreditHistory is not null &&
+            normalizedSettings.CopilotModel == PeggyDefaults.CopilotModel &&
+            normalizedSettings.CopilotReasoningEffort.Length == 0 &&
+            normalizedSettings.CopilotContextTier ==
+                PeggyDefaults.CopilotContextTierDefault &&
             normalizedSettings.SpeechThreads == 8 &&
             normalizedSettings.SpeechVoiceId == 0 &&
             normalizedSettings.SpeechSpeed == 1.15F &&
@@ -298,6 +307,17 @@ internal static class CoreBehaviorSmokeTests
             1,
             state.AuditLog.Count,
             "State retention did not prune expired audit entries.");
+
+        normalizedSettings.CopilotModel = "  dynamic-model  ";
+        normalizedSettings.CopilotReasoningEffort = "  high  ";
+        normalizedSettings.CopilotContextTier = "unsupported";
+        EncryptedStateStore.NormalizeAndPrune(state, now);
+        TestAssert.True(
+            normalizedSettings.CopilotModel == "dynamic-model" &&
+            normalizedSettings.CopilotReasoningEffort == "high" &&
+            normalizedSettings.CopilotContextTier ==
+                PeggyDefaults.CopilotContextTierDefault,
+            "Model settings were not normalized safely.");
 
         var teamsState = new PeggyStateDocument
         {

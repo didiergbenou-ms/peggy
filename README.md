@@ -518,7 +518,9 @@ not leave a partially applied identity, model, or source scope.
 | Setting | Notes |
 | --- | --- |
 | Microsoft 365 connection | Shows the pinned account and opens standalone WorkIQ reauthentication |
-| Pinned Copilot model | Defaults to `gpt-5.4`; changing it starts a fresh Copilot session |
+| Pinned Copilot model | Loaded live from the authenticated GitHub Copilot CLI; **Refresh** uses a new catalog connection so newly available models appear without restarting Peggy; changing it starts a fresh Copilot session |
+| Reasoning effort | Shows only the effort levels supported by the selected model; **Model default** lets Copilot choose |
+| Context tier | Offers **Default** for every model and **Long context** only when the live catalog reports support |
 | Additional Outlook folders | One Inbox-relative path per line; descendants are included |
 | Enable local speech | Enables or disables the isolated English speech host |
 | Speech model directory | Defaults to `%LOCALAPPDATA%\Peggy\models` |

@@ -91,8 +91,58 @@
           <StackPanel>
             <TextBlock Text="Pinned Copilot model"
                        Style="{StaticResource SettingsLabelStyle}"/>
-            <TextBox x:Name="ModelText" Margin="0,6,0,15"
-                     AutomationProperties.Name="Pinned Copilot model"/>
+            <Grid Margin="0,6,0,4">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <ComboBox x:Name="ModelCombo"
+                        DisplayMemberPath="DisplayName"
+                        SelectedValuePath="Id"
+                        AutomationProperties.Name="Pinned Copilot model"
+                        IsTextSearchEnabled="True"
+                        MinHeight="32"
+                        SelectionChanged="ModelCombo_SelectionChanged"/>
+              <Button x:Name="RefreshModelsButton"
+                      Grid.Column="1"
+                      Content="Refresh"
+                      Style="{StaticResource PeggySecondaryButtonStyle}"
+                      Margin="10,0,0,0"
+                      Padding="13,5"
+                      Click="RefreshModels_Click"/>
+            </Grid>
+            <TextBlock x:Name="ModelStatusText"
+                       Style="{StaticResource SettingsHintStyle}"
+                       Margin="0,0,0,10"
+                       AutomationProperties.LiveSetting="Polite"/>
+            <Grid Margin="0,0,0,4">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="18"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <StackPanel>
+                <TextBlock Text="Reasoning effort"
+                           Style="{StaticResource SettingsLabelStyle}"/>
+                <ComboBox x:Name="ReasoningEffortCombo"
+                          DisplayMemberPath="DisplayName"
+                          SelectedValuePath="Value"
+                          AutomationProperties.Name="Reasoning effort"
+                          Margin="0,6,0,0"/>
+              </StackPanel>
+              <StackPanel Grid.Column="2">
+                <TextBlock Text="Context tier"
+                           Style="{StaticResource SettingsLabelStyle}"/>
+                <ComboBox x:Name="ContextTierCombo"
+                          DisplayMemberPath="DisplayName"
+                          SelectedValuePath="Value"
+                          AutomationProperties.Name="Context tier"
+                          Margin="0,6,0,0"/>
+              </StackPanel>
+            </Grid>
+            <TextBlock x:Name="ModelCapabilitiesText"
+                       Style="{StaticResource SettingsHintStyle}"
+                       Margin="0,0,0,15"/>
             <TextBlock Text="Additional Outlook folders"
                        Style="{StaticResource SettingsLabelStyle}"/>
             <TextBlock

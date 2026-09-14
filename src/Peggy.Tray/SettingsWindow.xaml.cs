@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using Peggy.Core;
@@ -11,6 +12,11 @@ namespace Peggy.Tray;
 
 public partial class SettingsWindow : Window
 {
+    private sealed record ModelSettingOption(
+        string Value,
+        string DisplayName,
+        bool IsAvailable = true);
+
     private readonly IMessageProvider _provider;
     private readonly Dictionary<string, TeamsChannelWatch> _selectedChannels;
     private readonly Dictionary<string, TeamsTeamWatch> _selectedTeams;
@@ -24,22 +30,36 @@ public partial class SettingsWindow : Window
         _loadedChannelsByTeam = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _teamNames =
         new(StringComparer.Ordinal);
+    private readonly Func<
+        CancellationToken,
+        Task<IReadOnlyList<CopilotModelOption>>>? _loadCopilotModels;
     private readonly HashSet<string> _loadedTeamIds =
         new(StringComparer.Ordinal);
     private readonly HashSet<string> _loadingTeamIds =
         new(StringComparer.Ordinal);
     private readonly string _pinnedAccount;
+    private readonly string _initialModel;
+    private readonly string _initialReasoningEffort;
+    private readonly string _initialContextTier;
+    private readonly bool _modelOverridden;
     private readonly CancellationTokenSource _loadCancellation = new();
+    private bool _modelCatalogLoaded;
+    private bool _loadingModels;
+    private bool _updatingModelControls;
     private bool _updatingSelectionControls;
     private bool _closed;
 
     public SettingsWindow(
         PeggySettings settings,
         IMessageProvider provider,
-        string? pinnedAccount = null)
+        string? pinnedAccount = null,
+        Func<
+            CancellationToken,
+            Task<IReadOnlyList<CopilotModelOption>>>? loadCopilotModels = null)
     {
         InitializeComponent();
         _provider = provider;
+        _loadCopilotModels = loadCopilotModels;
         _pinnedAccount = pinnedAccount?.Trim() ?? string.Empty;
         AccountStatus.Text = _pinnedAccount.Length == 0
             ? "Microsoft 365 is not connected."
@@ -53,14 +73,67 @@ public partial class SettingsWindow : Window
         UpdateScheduleControls();
         var configuredModel = Environment.GetEnvironmentVariable(
             "PEGGY_COPILOT_MODEL");
-        ModelText.Text = string.IsNullOrWhiteSpace(configuredModel)
-            ? settings.CopilotModel
+        _modelOverridden = !string.IsNullOrWhiteSpace(configuredModel);
+        _initialModel = string.IsNullOrWhiteSpace(configuredModel)
+            ? (string.IsNullOrWhiteSpace(settings.CopilotModel)
+                ? PeggyDefaults.CopilotModel
+                : settings.CopilotModel.Trim())
             : configuredModel.Trim();
-        if (!string.IsNullOrWhiteSpace(configuredModel))
+        _initialReasoningEffort =
+            settings.CopilotReasoningEffort?.Trim() ?? string.Empty;
+        _initialContextTier = string.Equals(
+                settings.CopilotContextTier,
+                PeggyDefaults.CopilotContextTierLong,
+                StringComparison.OrdinalIgnoreCase)
+            ? PeggyDefaults.CopilotContextTierLong
+            : PeggyDefaults.CopilotContextTierDefault;
+        _updatingModelControls = true;
+        try
         {
-            ModelText.IsReadOnly = true;
-            ModelText.ToolTip =
+            ModelCombo.ItemsSource = new List<CopilotModelOption>
+            {
+                new CopilotModelOption(
+                    _initialModel,
+                    _initialModel,
+                    SupportedReasoningEfforts:
+                        _initialReasoningEffort.Length == 0
+                            ? []
+                            : [_initialReasoningEffort],
+                    SupportsLongContext:
+                        _initialContextTier ==
+                        PeggyDefaults.CopilotContextTierLong)
+            };
+            ModelCombo.SelectedValue = _initialModel;
+            UpdateModelDependentControls(
+                _initialReasoningEffort,
+                _initialContextTier,
+                preserveUnavailable: true);
+        }
+        finally
+        {
+            _updatingModelControls = false;
+        }
+        if (_modelOverridden)
+        {
+            ModelCombo.IsEnabled = false;
+            ModelCombo.ToolTip =
                 "Controlled by the PEGGY_COPILOT_MODEL environment variable.";
+            ModelStatusText.Text = _loadCopilotModels is null
+                ? "Model controlled by PEGGY_COPILOT_MODEL. Live model " +
+                  "discovery is unavailable."
+                : "Model controlled by PEGGY_COPILOT_MODEL. Loading its " +
+                  "GitHub Copilot capabilities...";
+        }
+        else if (_loadCopilotModels is null)
+        {
+            RefreshModelsButton.IsEnabled = false;
+            ModelStatusText.Text =
+                "Using the saved model. Live model discovery is unavailable.";
+        }
+        else
+        {
+            ModelStatusText.Text =
+                "Loading models from GitHub Copilot...";
         }
         FoldersText.Text = string.Join(
             Environment.NewLine,
@@ -100,6 +173,7 @@ public partial class SettingsWindow : Window
         Loaded += (_, _) =>
             PeggyWindowLayout.ConstrainToWorkArea(this);
         Loaded += async (_, _) => await LoadTeamsAsync();
+        Loaded += async (_, _) => await LoadCopilotModelsAsync();
         Closed += (_, _) =>
         {
             _closed = true;
@@ -111,6 +185,266 @@ public partial class SettingsWindow : Window
     public PeggySettings? SavedSettings { get; private set; }
 
     public WorkIqAccountIdentity? ReauthenticatedIdentity { get; private set; }
+
+    private async void RefreshModels_Click(
+        object sender,
+        RoutedEventArgs e)
+        => await LoadCopilotModelsAsync();
+
+    private async Task LoadCopilotModelsAsync()
+    {
+        if (_closed ||
+            _loadCopilotModels is null ||
+            _loadingModels)
+        {
+            return;
+        }
+
+        _loadingModels = true;
+        ModelCombo.IsEnabled = false;
+        RefreshModelsButton.IsEnabled = false;
+        ModelStatusText.Text = "Loading models from GitHub Copilot...";
+        var selectedModel = GetSelectedModel();
+        var selectedReasoningEffort = GetSelectedReasoningEffort();
+        var selectedContextTier = GetSelectedContextTier();
+        if (selectedModel.Length == 0)
+        {
+            selectedModel = _initialModel;
+        }
+
+        try
+        {
+            var models = await _loadCopilotModels(
+                _loadCancellation.Token);
+            if (_closed)
+            {
+                return;
+            }
+            var availableModels = models
+                .Where(model => !string.IsNullOrWhiteSpace(model.Id))
+                .GroupBy(model => model.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .OrderBy(
+                    model => model.Name,
+                    StringComparer.OrdinalIgnoreCase)
+                .ThenBy(
+                    model => model.Id,
+                    StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (availableModels.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "GitHub Copilot returned no available models.");
+            }
+
+            var options = new List<CopilotModelOption>(availableModels);
+            if (!options.Any(model => string.Equals(
+                    model.Id,
+                    selectedModel,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                options.Insert(
+                    0,
+                    new CopilotModelOption(
+                        selectedModel,
+                        selectedModel,
+                        IsAvailable: false));
+            }
+            _updatingModelControls = true;
+            try
+            {
+                ModelCombo.ItemsSource = options;
+                ModelCombo.SelectedValue = selectedModel;
+                UpdateModelDependentControls(
+                    selectedReasoningEffort,
+                    selectedContextTier,
+                    preserveUnavailable: true);
+            }
+            finally
+            {
+                _updatingModelControls = false;
+            }
+            _modelCatalogLoaded = true;
+            ModelStatusText.Text = _modelOverridden
+                ? $"{availableModels.Count} models available. Model is " +
+                  "controlled by PEGGY_COPILOT_MODEL. " +
+                  $"Refreshed at {DateTime.Now:t}."
+                : $"{availableModels.Count} models available from GitHub " +
+                  $"Copilot. Refreshed at {DateTime.Now:t}.";
+        }
+        catch (OperationCanceledException) when (
+            _loadCancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            ModelStatusText.Text =
+                $"Could not refresh GitHub Copilot models: {ex.Message}";
+        }
+        finally
+        {
+            _loadingModels = false;
+            if (!_closed)
+            {
+                ModelCombo.IsEnabled = !_modelOverridden;
+                RefreshModelsButton.IsEnabled = true;
+            }
+        }
+    }
+
+    private void ModelCombo_SelectionChanged(
+        object sender,
+        SelectionChangedEventArgs e)
+    {
+        if (_updatingModelControls)
+        {
+            return;
+        }
+        UpdateModelDependentControls(
+            GetSelectedReasoningEffort(),
+            GetSelectedContextTier(),
+            preserveUnavailable: false);
+    }
+
+    private void UpdateModelDependentControls(
+        string reasoningEffort,
+        string contextTier,
+        bool preserveUnavailable)
+    {
+        var model = ModelCombo.SelectedItem as CopilotModelOption;
+        if (model is null)
+        {
+            return;
+        }
+
+        var reasoningOptions = new List<ModelSettingOption>
+        {
+            new(
+                string.Empty,
+                string.IsNullOrWhiteSpace(model.DefaultReasoningEffort)
+                    ? "Model default"
+                    : $"Model default ({model.DefaultReasoningEffort})")
+        };
+        foreach (var effort in model.SupportedReasoningEfforts ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(effort) &&
+                !reasoningOptions.Any(option => string.Equals(
+                    option.Value,
+                    effort,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                reasoningOptions.Add(new ModelSettingOption(
+                    effort.Trim(),
+                    FormatSettingName(effort)));
+            }
+        }
+        if (reasoningEffort.Length > 0 &&
+            !reasoningOptions.Any(option => string.Equals(
+                option.Value,
+                reasoningEffort,
+                StringComparison.OrdinalIgnoreCase)))
+        {
+            if (preserveUnavailable)
+            {
+                reasoningOptions.Insert(
+                    1,
+                    new ModelSettingOption(
+                        reasoningEffort,
+                        $"{FormatSettingName(reasoningEffort)} - currently " +
+                        "unavailable",
+                        IsAvailable: false));
+            }
+            else
+            {
+                reasoningEffort = string.Empty;
+            }
+        }
+
+        var contextOptions = new List<ModelSettingOption>
+        {
+            new(
+                PeggyDefaults.CopilotContextTierDefault,
+                "Default")
+        };
+        if (model.SupportsLongContext)
+        {
+            contextOptions.Add(new ModelSettingOption(
+                PeggyDefaults.CopilotContextTierLong,
+                "Long context"));
+        }
+        if (string.Equals(
+                contextTier,
+                PeggyDefaults.CopilotContextTierLong,
+                StringComparison.OrdinalIgnoreCase) &&
+            !model.SupportsLongContext)
+        {
+            if (preserveUnavailable)
+            {
+                contextOptions.Add(new ModelSettingOption(
+                    PeggyDefaults.CopilotContextTierLong,
+                    "Long context - currently unavailable",
+                    IsAvailable: false));
+            }
+            else
+            {
+                contextTier = PeggyDefaults.CopilotContextTierDefault;
+            }
+        }
+
+        _updatingModelControls = true;
+        try
+        {
+            ReasoningEffortCombo.ItemsSource = reasoningOptions;
+            ReasoningEffortCombo.SelectedValue = reasoningEffort;
+            if (ReasoningEffortCombo.SelectedIndex < 0)
+            {
+                ReasoningEffortCombo.SelectedIndex = 0;
+            }
+            ContextTierCombo.ItemsSource = contextOptions;
+            ContextTierCombo.SelectedValue = contextTier;
+            if (ContextTierCombo.SelectedIndex < 0)
+            {
+                ContextTierCombo.SelectedIndex = 0;
+            }
+        }
+        finally
+        {
+            _updatingModelControls = false;
+        }
+
+        ReasoningEffortCombo.IsEnabled =
+            model.IsAvailable && reasoningOptions.Count > 1;
+        ContextTierCombo.IsEnabled =
+            model.IsAvailable && contextOptions.Count > 1;
+        var contextDescription = model.MaxContextWindowTokens > 0
+            ? "Model limit reported by Copilot: " +
+              $"{model.MaxContextWindowTokens:N0} tokens."
+            : "The model limit was not reported.";
+        ModelCapabilitiesText.Text =
+            $"{contextDescription} " +
+            (model.SupportsLongContext
+                ? "Long context is available for this model."
+                : "Long context is not available for this model.");
+    }
+
+    private static string FormatSettingName(string value)
+        => CultureInfo.InvariantCulture.TextInfo.ToTitleCase(
+            value.Replace('_', ' ').Trim().ToLowerInvariant());
+
+    private string GetSelectedModel()
+        => ModelCombo.SelectedValue as string ??
+           (ModelCombo.SelectedItem as CopilotModelOption)?.Id ??
+           string.Empty;
+
+    private string GetSelectedReasoningEffort()
+        => ReasoningEffortCombo.SelectedValue as string ??
+           (ReasoningEffortCombo.SelectedItem as ModelSettingOption)?.Value ??
+           string.Empty;
+
+    private string GetSelectedContextTier()
+        => ContextTierCombo.SelectedValue as string ??
+           (ContextTierCombo.SelectedItem as ModelSettingOption)?.Value ??
+           PeggyDefaults.CopilotContextTierDefault;
 
     private void TeamsScope_Changed(object sender, RoutedEventArgs e)
         => UpdateTeamsScopeControls();
@@ -851,7 +1185,7 @@ public partial class SettingsWindow : Window
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
-        var model = ModelText.Text.Trim();
+        var model = GetSelectedModel().Trim();
         if (model.Length == 0)
         {
             MessageBox.Show(
@@ -862,6 +1196,59 @@ public partial class SettingsWindow : Window
                 MessageBoxImage.Warning);
             return;
         }
+        if (_modelCatalogLoaded &&
+            !_modelOverridden &&
+            ModelCombo.SelectedItem is CopilotModelOption
+            {
+                IsAvailable: false
+            })
+        {
+            MessageBox.Show(
+                this,
+                "Choose a model currently available in GitHub Copilot.",
+                "Assistant settings",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+        if (_modelCatalogLoaded &&
+            ModelCombo.SelectedItem is CopilotModelOption
+            {
+                IsAvailable: true
+            } &&
+            ReasoningEffortCombo.SelectedItem is ModelSettingOption
+            {
+                IsAvailable: false
+            })
+        {
+            MessageBox.Show(
+                this,
+                "Choose a reasoning effort supported by the selected model.",
+                "Assistant settings",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+        if (_modelCatalogLoaded &&
+            ModelCombo.SelectedItem is CopilotModelOption
+            {
+                IsAvailable: true
+            } &&
+            ContextTierCombo.SelectedItem is ModelSettingOption
+            {
+                IsAvailable: false
+            })
+        {
+            MessageBox.Show(
+                this,
+                "Choose a context tier supported by the selected model.",
+                "Assistant settings",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+        var reasoningEffort = GetSelectedReasoningEffort().Trim();
+        var contextTier = GetSelectedContextTier();
         if (!TryParseTime(WakeTimeText.Text, out var wakeMinute) ||
             !TryParseTime(SleepTimeText.Text, out var sleepMinute))
         {
@@ -897,6 +1284,8 @@ public partial class SettingsWindow : Window
         SavedSettings = new PeggySettings
         {
             CopilotModel = model,
+            CopilotReasoningEffort = reasoningEffort,
+            CopilotContextTier = contextTier,
             AdditionalOutlookFolders = folders,
             TeamsScope = GetSelectedTeamsScope(),
             MonitorTeamsChatsInSelectedScope =

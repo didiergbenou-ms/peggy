@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+using GitHub.Copilot;
 using Peggy.Core;
 
 namespace Peggy.Tray;
@@ -37,6 +38,35 @@ public sealed record CopilotConversationRunResult(
     string Text,
     WorkActionRequest? ProposedAction,
     CopilotRunResult Usage);
+
+public sealed record CopilotModelOption(
+    string Id,
+    string Name,
+    bool IsAvailable = true,
+    IReadOnlyList<string>? SupportedReasoningEfforts = null,
+    string? DefaultReasoningEffort = null,
+    bool SupportsLongContext = false,
+    int MaxContextWindowTokens = 0)
+{
+    public string DisplayName
+    {
+        get
+        {
+            var label = string.IsNullOrWhiteSpace(Name)
+                ? Id
+                : Name.Trim();
+            var display = string.Equals(
+                    label,
+                    Id,
+                    StringComparison.OrdinalIgnoreCase)
+                ? Id
+                : $"{label} ({Id})";
+            return IsAvailable
+                ? display
+                : $"{display} - currently unavailable";
+        }
+    }
+}
 
 public sealed class CopilotClassificationException : Exception
 {
@@ -79,6 +109,8 @@ public sealed class CopilotRunner : IAsyncDisposable
     private readonly PeggySettings _settings;
     private readonly string _account;
     private readonly string _model;
+    private readonly string _reasoningEffort;
+    private readonly string _contextTier;
     private readonly string _sessionId;
     private readonly SemaphoreSlim _runLock = new(1, 1);
     private readonly PersistentCopilotConversation _conversation;
@@ -97,6 +129,9 @@ public sealed class CopilotRunner : IAsyncDisposable
         _copilotPath = ResolveCopilot();
         _mcpServerPath = ResolveMcpServer();
         _model = ResolveModel(_settings);
+        _reasoningEffort =
+            _settings.CopilotReasoningEffort?.Trim() ?? string.Empty;
+        _contextTier = ResolveContextTier(_settings);
         _sessionId = string.IsNullOrWhiteSpace(sessionId)
             ? Guid.NewGuid().ToString()
             : sessionId;
@@ -117,6 +152,49 @@ public sealed class CopilotRunner : IAsyncDisposable
     public string SessionId => _sessionId;
 
     public decimal SessionCredits => _sessionCredits;
+
+    public async Task<IReadOnlyList<CopilotModelOption>>
+        ListAvailableModelsAsync(CancellationToken ct = default)
+    {
+        await using var client = CopilotClientFactory.Create(_copilotPath);
+        await client.StartAsync(ct);
+        var models = await client.ListModelsAsync(ct);
+
+        // "auto" can select a different runtime model, while Peggy verifies
+        // that every response came from the explicitly pinned model.
+        return models
+            .Where(model =>
+                !string.IsNullOrWhiteSpace(model.Id) &&
+                !string.Equals(
+                    model.Id,
+                    "auto",
+                    StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(
+                    model.Policy?.State,
+                    "disabled",
+                    StringComparison.OrdinalIgnoreCase))
+            .GroupBy(
+                model => model.Id.Trim(),
+                StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(model => model.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(model => model.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(model => new CopilotModelOption(
+                model.Id.Trim(),
+                model.Name?.Trim() ?? model.Id.Trim(),
+                SupportedReasoningEfforts: model.SupportedReasoningEfforts?
+                    .Where(effort => !string.IsNullOrWhiteSpace(effort))
+                    .Select(effort => effort.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList() ?? [],
+                DefaultReasoningEffort:
+                    model.DefaultReasoningEffort?.Trim(),
+                SupportsLongContext:
+                    model.Billing?.TokenPrices?.LongContext is not null,
+                MaxContextWindowTokens:
+                    model.Capabilities?.Limits?.MaxContextWindowTokens ?? 0))
+            .ToList();
+    }
 
     public async Task<CopilotAlertRunResult> RunAlertEvaluationAsync(
         IReadOnlyCollection<Message> messages,
@@ -387,6 +465,13 @@ public sealed class CopilotRunner : IAsyncDisposable
         startInfo.ArgumentList.Add(sessionId);
         startInfo.ArgumentList.Add("--model");
         startInfo.ArgumentList.Add(_model);
+        if (_reasoningEffort.Length > 0)
+        {
+            startInfo.ArgumentList.Add("--reasoning-effort");
+            startInfo.ArgumentList.Add(_reasoningEffort);
+        }
+        startInfo.ArgumentList.Add("--context");
+        startInfo.ArgumentList.Add(_contextTier);
         startInfo.ArgumentList.Add("--output-format");
         startInfo.ArgumentList.Add("json");
         startInfo.ArgumentList.Add("--usage-output-file");
@@ -993,6 +1078,14 @@ public sealed class CopilotRunner : IAsyncDisposable
             ? PeggyDefaults.CopilotModel
             : settings.CopilotModel.Trim();
     }
+
+    private static string ResolveContextTier(PeggySettings settings)
+        => string.Equals(
+                settings.CopilotContextTier,
+                PeggyDefaults.CopilotContextTierLong,
+                StringComparison.OrdinalIgnoreCase)
+            ? PeggyDefaults.CopilotContextTierLong
+            : PeggyDefaults.CopilotContextTierDefault;
 
     private static string CreateOperationSessionId()
         => Guid.NewGuid().ToString();

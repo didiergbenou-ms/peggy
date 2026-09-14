@@ -241,14 +241,7 @@ internal sealed class PersistentCopilotConversation : IAsyncDisposable
                 "PEGGY_MESSAGE_PROVIDER");
             CopyEnvironmentVariable(environment, "PEGGY_WORKIQ_PATH");
 
-            var client = new CopilotClient(new CopilotClientOptions
-            {
-                Connection = RuntimeConnection.ForStdio(
-                    path: _copilotPath),
-                WorkingDirectory = AppContext.BaseDirectory,
-                LogLevel = CopilotLogLevel.Error,
-                EnableRemoteSessions = false
-            });
+            var client = CopilotClientFactory.Create(_copilotPath);
             try
             {
                 await client.StartAsync(ct);
@@ -258,7 +251,16 @@ internal sealed class PersistentCopilotConversation : IAsyncDisposable
                         SessionId = Guid.NewGuid().ToString(),
                         ClientName = "Peggy",
                         Model = _model,
-                        ReasoningEffort = "low",
+                        ReasoningEffort = string.IsNullOrWhiteSpace(
+                            _settings.CopilotReasoningEffort)
+                            ? null
+                            : _settings.CopilotReasoningEffort.Trim(),
+                        ContextTier = string.Equals(
+                            _settings.CopilotContextTier,
+                            PeggyDefaults.CopilotContextTierLong,
+                            StringComparison.OrdinalIgnoreCase)
+                            ? ContextTier.LongContext
+                            : ContextTier.Default,
                         Streaming = true,
                         IncludeSubAgentStreamingEvents = false,
                         EnableConfigDiscovery = false,

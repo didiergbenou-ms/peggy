@@ -58,6 +58,11 @@ public sealed class PeggySettings
 {
     public string CopilotModel { get; set; } = PeggyDefaults.CopilotModel;
 
+    public string CopilotReasoningEffort { get; set; } = string.Empty;
+
+    public string CopilotContextTier { get; set; } =
+        PeggyDefaults.CopilotContextTierDefault;
+
     public List<string> AdditionalOutlookFolders { get; set; } = [];
 
     public TeamsMonitoringScope TeamsScope { get; set; } =

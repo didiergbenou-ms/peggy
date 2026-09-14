@@ -1017,33 +1017,138 @@ internal static class DesktopSmokeTests
             ]
         };
         var provider = new MockMessageProvider();
+        var modelLoadCount = 0;
+        Task<IReadOnlyList<CopilotModelOption>> LoadModelsAsync(
+            CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            modelLoadCount++;
+            IReadOnlyList<CopilotModelOption> models =
+                modelLoadCount == 1
+                    ?
+                    [
+                        new(
+                            "claude-haiku-4.5",
+                            "Claude Haiku 4.5",
+                            MaxContextWindowTokens: 200_000),
+                        new(
+                            "gpt-5.4",
+                            "GPT-5.4",
+                            SupportedReasoningEfforts:
+                                ["none", "low", "medium", "high", "xhigh"],
+                            SupportsLongContext: true,
+                            MaxContextWindowTokens: 1_050_000),
+                        new(
+                            "gpt-5.6-sol",
+                            "GPT-5.6 Sol",
+                            SupportedReasoningEfforts:
+                                [
+                                    "none",
+                                    "low",
+                                    "medium",
+                                    "high",
+                                    "xhigh",
+                                    "max"
+                                ],
+                            SupportsLongContext: true,
+                            MaxContextWindowTokens: 1_050_000)
+                    ]
+                    :
+                    [
+                        new(
+                            "claude-haiku-4.5",
+                            "Claude Haiku 4.5",
+                            MaxContextWindowTokens: 200_000),
+                        new(
+                            "gpt-5.4",
+                            "GPT-5.4",
+                            SupportedReasoningEfforts:
+                                ["none", "low", "medium", "high", "xhigh"],
+                            SupportsLongContext: true,
+                            MaxContextWindowTokens: 1_050_000),
+                        new(
+                            "gpt-5.6-sol",
+                            "GPT-5.6 Sol",
+                            SupportedReasoningEfforts:
+                                [
+                                    "none",
+                                    "low",
+                                    "medium",
+                                    "high",
+                                    "xhigh",
+                                    "max"
+                                ],
+                            SupportsLongContext: true,
+                            MaxContextWindowTokens: 1_050_000),
+                        new(
+                            "gpt-6-astra",
+                            "GPT-6 Astra",
+                            SupportedReasoningEfforts:
+                                ["low", "medium", "high", "xhigh", "max"],
+                            SupportsLongContext: true,
+                            MaxContextWindowTokens: 1_178_000)
+                    ];
+            return Task.FromResult(models);
+        }
         var window = new SettingsWindow(
             initial,
             provider,
-            "person@example.com");
-        AssertDecorativeTextIsRaw(window, "Settings");
-        var textBorderColor = ((SolidColorBrush)Find<TextBox>(
+            "person@example.com",
+            LoadModelsAsync);
+        WaitWithDispatcher(InvokeInstancePrivate<Task>(
             window,
-            "ModelText").BorderBrush).Color;
+            "LoadCopilotModelsAsync"));
+        var modelCombo = Find<ComboBox>(window, "ModelCombo");
+        TestAssert.True(
+            modelLoadCount == 1 &&
+            modelCombo.Items
+                .Cast<CopilotModelOption>()
+                .Any(model => model.Id == "gpt-5.6-sol") &&
+            modelCombo.Items
+                .Cast<CopilotModelOption>()
+                .All(model => model.Id != "gpt-6-astra"),
+            "Settings did not load the current GitHub Copilot model catalog.");
+        WaitWithDispatcher(InvokeInstancePrivate<Task>(
+            window,
+            "LoadCopilotModelsAsync"));
+        TestAssert.True(
+            modelLoadCount == 2 &&
+            modelCombo.Items
+                .Cast<CopilotModelOption>()
+                .Any(model => model.Id == "gpt-6-astra"),
+            "Refreshing Settings did not surface a newly available model.");
+        modelCombo.SelectedValue = "claude-haiku-4.5";
+        TestAssert.True(
+            !Find<ComboBox>(
+                window,
+                "ReasoningEffortCombo").IsEnabled &&
+            !Find<ComboBox>(
+                window,
+                "ContextTierCombo").IsEnabled,
+            "Unsupported model options were left enabled.");
+        modelCombo.SelectedValue = "gpt-5.4";
+        AssertDecorativeTextIsRaw(window, "Settings");
+        var modelBorderColor = ((SolidColorBrush)Find<ComboBox>(
+            window,
+            "ModelCombo").BorderBrush).Color;
         var comboBorderColor = ((SolidColorBrush)Find<ComboBox>(
             window,
             "TeamsScopeCombo").BorderBrush).Color;
-        var textBorderContrast = GetContrastRatio(
-            textBorderColor,
+        var modelBorderContrast = GetContrastRatio(
+            modelBorderColor,
             Colors.White);
         var comboBorderContrast = GetContrastRatio(
             comboBorderColor,
             Colors.White);
         TestAssert.True(
-            textBorderContrast >= 3 &&
+            modelBorderContrast >= 3 &&
             comboBorderContrast >= 3,
             "Settings form boundaries do not meet 3:1 contrast. " +
-            $"TextBox={textBorderColor} ({textBorderContrast:F2}), " +
+            $"Model={modelBorderColor} ({modelBorderContrast:F2}), " +
             $"ComboBox={comboBorderColor} ({comboBorderContrast:F2}).");
         TestAssert.True(
             new[]
             {
-                "ModelText",
                 "FoldersText",
                 "SpeechModelsText",
                 "WakeTimeText",
@@ -1056,7 +1161,10 @@ internal static class DesktopSmokeTests
                 "SpeechVoice",
                 "SpeechThreads",
                 "SpeechInputGain",
-                "TeamsScopeCombo"
+                "TeamsScopeCombo",
+                "ModelCombo",
+                "ReasoningEffortCombo",
+                "ContextTierCombo"
             }.All(name => !string.IsNullOrWhiteSpace(
                 AutomationProperties.GetName(
                     Find<ComboBox>(window, name)))),
@@ -1083,7 +1191,15 @@ internal static class DesktopSmokeTests
             window.Dispatcher.BeginInvoke(
                 new Action(() =>
                 {
-                    Find<TextBox>(window, "ModelText").Text = "gpt-5.4";
+                    Find<ComboBox>(
+                        window,
+                        "ModelCombo").SelectedValue = "gpt-5.6-sol";
+                    Find<ComboBox>(
+                        window,
+                        "ReasoningEffortCombo").SelectedValue = "high";
+                    Find<ComboBox>(
+                        window,
+                        "ContextTierCombo").SelectedValue = "long_context";
                     Find<TextBox>(window, "FoldersText").Text =
                         "Inbox/Projects;Inbox/Projects\nInbox/Archive";
                     Find<CheckBox>(
@@ -1215,6 +1331,9 @@ internal static class DesktopSmokeTests
             window.SavedSettings!.AdditionalOutlookFolders.Count,
             "Settings did not normalize Outlook folder paths.");
         TestAssert.True(
+            window.SavedSettings.CopilotModel == "gpt-5.6-sol" &&
+            window.SavedSettings.CopilotReasoningEffort == "high" &&
+            window.SavedSettings.CopilotContextTier == "long_context" &&
             !window.SavedSettings.StartAtSignIn &&
             window.SavedSettings.MonitoringPaused &&
             window.SavedSettings.TeamsScope ==

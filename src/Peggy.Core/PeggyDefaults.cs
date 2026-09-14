@@ -5,6 +5,8 @@ public static class PeggyDefaults
     public const string WorkIqAccountEnvironmentVariable =
         "PEGGY_WORKIQ_ACCOUNT";
     public const string CopilotModel = "gpt-5.4";
+    public const string CopilotContextTierDefault = "default";
+    public const string CopilotContextTierLong = "long_context";
     public const string ActiveCasesFolder = "Inbox/Cases/Active";
     public const int AuditRetentionDays = 30;
     public const int StartupLookbackMinutes = 5;

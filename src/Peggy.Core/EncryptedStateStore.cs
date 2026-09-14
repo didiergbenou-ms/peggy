@@ -176,6 +176,22 @@ public sealed class EncryptedStateStore
         state.WorkIqEulaAcceptedVersion ??= string.Empty;
 
         state.Settings ??= new PeggySettings();
+        state.Settings.CopilotModel =
+            string.IsNullOrWhiteSpace(state.Settings.CopilotModel)
+                ? PeggyDefaults.CopilotModel
+                : state.Settings.CopilotModel.Trim();
+        state.Settings.CopilotReasoningEffort =
+            state.Settings.CopilotReasoningEffort?.Trim() ?? string.Empty;
+        state.Settings.CopilotContextTier =
+            state.Settings.CopilotContextTier?.Trim().ToLowerInvariant() ??
+            PeggyDefaults.CopilotContextTierDefault;
+        if (state.Settings.CopilotContextTier is not (
+                PeggyDefaults.CopilotContextTierDefault or
+                PeggyDefaults.CopilotContextTierLong))
+        {
+            state.Settings.CopilotContextTier =
+                PeggyDefaults.CopilotContextTierDefault;
+        }
         state.Settings.AdditionalOutlookFolders ??= [];
         if (!Enum.IsDefined(state.Settings.TeamsScope))
         {

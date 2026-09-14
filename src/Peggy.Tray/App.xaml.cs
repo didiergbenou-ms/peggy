@@ -835,7 +835,8 @@ public partial class App : Application
         var window = new SettingsWindow(
             settings,
             _provider,
-            _state.State.PinnedAccount)
+            _state.State.PinnedAccount,
+            _copilot.ListAvailableModelsAsync)
         {
             Owner = _alertCenter.IsVisible
                 ? _alertCenter
@@ -877,10 +878,19 @@ public partial class App : Application
                 JsonSerializer.Serialize(previous.TeamsChannelWatchlist),
                 JsonSerializer.Serialize(updated.TeamsChannelWatchlist),
                 StringComparison.Ordinal);
-        var modelChanged = !string.Equals(
-            previous.CopilotModel,
-            updated.CopilotModel,
-            StringComparison.OrdinalIgnoreCase);
+        var copilotConfigurationChanged =
+            !string.Equals(
+                previous.CopilotModel,
+                updated.CopilotModel,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                previous.CopilotReasoningEffort,
+                updated.CopilotReasoningEffort,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                previous.CopilotContextTier,
+                updated.CopilotContextTier,
+                StringComparison.OrdinalIgnoreCase);
         var speechChanged =
             previous.SpeechEnabled != updated.SpeechEnabled ||
             previous.SpeechThreads != updated.SpeechThreads ||
@@ -896,10 +906,10 @@ public partial class App : Application
         {
             await _conversation.StopAsync();
         }
-        var replacementSessionId = modelChanged
+        var replacementSessionId = copilotConfigurationChanged
             ? Guid.NewGuid().ToString()
             : _state.State.CopilotSessionId;
-        var replacementSessionCredits = modelChanged
+        var replacementSessionCredits = copilotConfigurationChanged
             ? 0
             : _state.State.CopilotSessionCredits;
         var replacementProvider = MessageProviderFactory.Create(
@@ -922,7 +932,7 @@ public partial class App : Application
                 updated,
                 resetOutlookMonitoring: outlookScopeChanged,
                 resetTeamsMonitoring: teamsScopeChanged,
-                resetCopilotSession: modelChanged,
+                resetCopilotSession: copilotConfigurationChanged,
                 replacementSessionId,
                 replacementSessionCredits,
                 DateTimeOffset.UtcNow,
@@ -1728,6 +1738,8 @@ public partial class App : Application
         => new()
         {
             CopilotModel = settings.CopilotModel,
+            CopilotReasoningEffort = settings.CopilotReasoningEffort,
+            CopilotContextTier = settings.CopilotContextTier,
             AdditionalOutlookFolders =
                 settings.AdditionalOutlookFolders.ToList(),
             TeamsScope = settings.TeamsScope,
