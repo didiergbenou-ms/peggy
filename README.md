@@ -868,11 +868,15 @@ Remove-Item Env:\PEGGY_MESSAGE_PROVIDER
 
 ### Collect a diagnostic ZIP
 
-Run the privacy-safe collector from the repository as the affected Windows
-user:
+The repository is private, so the affected Windows user must authenticate to
+GitHub with an account that has access, clone the repository, and run the
+privacy-safe collector from that clone:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass `
+git clone --depth 1 https://github.com/didiergbenou-ms/peggy.git
+Set-Location .\peggy
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
     -File .\scripts\Collect-PeggyDiagnostics.ps1 `
     -RunConnectivityTests
 ```
@@ -913,7 +917,7 @@ team.
 | Build reports a locked Peggy assembly | Use **Quit Peggy**, then rebuild |
 | Settings are overridden | Remove the corresponding process environment override, especially `PEGGY_COPILOT_MODEL` |
 | Need isolated test state | Set `PEGGY_STATE_PATH` to a new file before launch |
-| Need diagnostics | Inspect `%TEMP%\peggy.log` or the path in `PEGGY_LOG_PATH` |
+| Need diagnostics | Clone the repository and run the collector above; for a quick check, inspect `%TEMP%\peggy.log` or the path in `PEGGY_LOG_PATH` |
 
 ## Current limitations
 
