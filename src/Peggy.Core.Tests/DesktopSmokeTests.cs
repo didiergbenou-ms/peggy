@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Automation.Peers;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Peggy.Core;
@@ -1346,6 +1347,18 @@ internal static class DesktopSmokeTests
         TestAssert.True(
             mascot.IsVisible,
             "Mascot did not become visible.");
+        var contextMenuRequested = false;
+        mascot.ContextMenuRequested += () => contextMenuRequested = true;
+        mascot.RaiseEvent(new MouseButtonEventArgs(
+            Mouse.PrimaryDevice,
+            Environment.TickCount,
+            MouseButton.Right)
+        {
+            RoutedEvent = UIElement.MouseRightButtonUpEvent
+        });
+        TestAssert.True(
+            contextMenuRequested,
+            "Right-clicking the mascot did not request the tray menu.");
         TestAssert.True(
             Find<System.Windows.Shapes.Path>(
                 mascot,

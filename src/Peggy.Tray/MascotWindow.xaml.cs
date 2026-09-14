@@ -33,6 +33,11 @@ public partial class MascotWindow : Window
     {
         InitializeComponent();
         Loaded += (_, _) => PositionOnTaskbar();
+        MouseRightButtonUp += (_, args) =>
+        {
+            args.Handled = true;
+            ContextMenuRequested?.Invoke();
+        };
         MouseLeftButtonDown += (_, _) =>
         {
             try
@@ -84,6 +89,8 @@ public partial class MascotWindow : Window
     }
 
     public event Action? WakingCompleted;
+
+    public event Action? ContextMenuRequested;
 
     public PeggyState CurrentState => _state;
 

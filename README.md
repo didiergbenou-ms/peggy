@@ -461,8 +461,9 @@ Rerun the script if the executable moves.
 
 ## Using Peggy
 
-Peggy runs as a single-instance tray application. Double-clicking the tray icon
-opens the Alert Center.
+Peggy runs as a single-instance tray application. Right-clicking either the
+tray icon or the desktop mascot opens the same menu. Double-clicking the tray
+icon opens the Alert Center.
 
 ### Tray menu
 

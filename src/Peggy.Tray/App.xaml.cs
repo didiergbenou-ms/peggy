@@ -345,6 +345,18 @@ public partial class App : Application
         menu.Items.Add(_quitMenu);
         _tray.ContextMenuStrip = menu;
         _tray.DoubleClick += (_, _) => ShowAlertCenter();
+        _mascot.ContextMenuRequested += ShowTrayContextMenu;
+    }
+
+    private void ShowTrayContextMenu()
+    {
+        if (_quitting ||
+            _tray.ContextMenuStrip is not { IsDisposed: false } menu)
+        {
+            return;
+        }
+
+        menu.Show(Forms.Control.MousePosition);
     }
 
     private void StartCheck(bool force)
