@@ -7,6 +7,8 @@ param(
     ),
     [switch]$RunConnectivityTests,
     [ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')]
+    [string]$WorkIqAccount,
+    [ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')]
     [string]$EmailTo = 'didiergbenou@microsoft.com',
     [switch]$NoEmail,
     [switch]$SendWithoutPrompt,
@@ -49,6 +51,43 @@ function Protect-Text {
     return $protected
 }
 
+function Remove-CredentialText {
+    param([AllowEmptyString()][AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrEmpty($Text)) {
+        return $Text
+    }
+    $filtered = $Text -replace (
+        '(?im)(authorization\s*:\s*)' +
+        '[A-Za-z][A-Za-z0-9_-]*\s+[^\r\n]+'
+    ), '${1}[redacted]'
+    $filtered = $filtered -replace (
+        '(?i)(authorization\s*=\s*)' +
+        '[A-Za-z][A-Za-z0-9_-]*\s+[^\r\n,;]+'
+    ), '${1}[redacted]'
+    $filtered = $filtered -replace (
+        '(?i)("?(?:access[_-]?token|refresh[_-]?token|id[_-]?token|' +
+        'token|client[_-]?secret|secret|credential|password|' +
+        'api[_-]?key|authorization|cookie)"?\s*[:=]\s*)' +
+        '("[^"]*"|''[^'']*''|[^\s,;]+)'
+    ), '${1}[redacted]'
+    $filtered = $filtered -replace (
+        '(?i)(--(?:access[_-]?token|refresh[_-]?token|id[_-]?token|' +
+        'token|client[_-]?secret|secret|credential|password|' +
+        'api[_-]?key|authorization|cookie)\s+)' +
+        '("[^"]*"|''[^'']*''|\S+)'
+    ), '${1}[redacted]'
+    $filtered = $filtered -replace (
+        '(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.' +
+        '[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'
+    ), '[jwt-redacted]'
+    $filtered = $filtered -replace (
+        '(?i)(?<![A-Za-z0-9_])(?:github_pat_[A-Za-z0-9_]{20,}|' +
+        'gh[pousr]_[A-Za-z0-9_]{20,})(?![A-Za-z0-9_])'
+    ), '[github-token-redacted]'
+    return $filtered
+}
+
 function Write-TextFile {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -70,7 +109,7 @@ function Write-JsonFile {
 
     Write-TextFile `
         -Path $Path `
-        -Content ($Value | ConvertTo-Json -Depth 8)
+        -Content (ConvertTo-Json -InputObject $Value -Depth 8)
 }
 
 function Get-Sha256 {
@@ -86,6 +125,211 @@ function Get-Sha256 {
     finally {
         $algorithm.Dispose()
         $stream.Dispose()
+    }
+}
+
+function Get-ObjectPropertyValue {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+    return $property.Value
+}
+
+function Get-CollectionCount {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return 0
+    }
+    return @($Value).Count
+}
+
+function Get-PeggyOperationalState {
+    param(
+        [AllowNull()][string]$Path,
+        [AllowNull()][string]$DisplayPath,
+        [AllowNull()][string]$ResolutionError
+    )
+
+    $result = [ordered]@{
+        Loaded = $false
+        Path = $DisplayPath
+        ErrorType = $null
+        ErrorMessage = $ResolutionError
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ResolutionError)) {
+        return [pscustomobject]$result
+    }
+    if ([string]::IsNullOrWhiteSpace($Path) -or
+        -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        $result.ErrorMessage = 'Peggy state file was not found.'
+        return [pscustomobject]$result
+    }
+
+    [byte[]]$protectedBytes = $null
+    [byte[]]$plaintext = $null
+    $stateJson = $null
+    try {
+        try {
+            Add-Type `
+                -AssemblyName System.Security.Cryptography.ProtectedData `
+                -ErrorAction Stop
+        }
+        catch {
+            Add-Type -AssemblyName System.Security -ErrorAction Stop
+        }
+        $protectedBytes = [IO.File]::ReadAllBytes($Path)
+        $entropy = [Text.Encoding]::UTF8.GetBytes('Peggy.State.v1')
+        $plaintext = [Security.Cryptography.ProtectedData]::Unprotect(
+            $protectedBytes,
+            $entropy,
+            [Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        $stateJson = [Text.Encoding]::UTF8.GetString($plaintext)
+        $state = ConvertFrom-Json -InputObject $stateJson
+        $settings = Get-ObjectPropertyValue $state 'settings'
+        $cursor = Get-ObjectPropertyValue $state 'monitoringCursor'
+
+        $result.Loaded = $true
+        $result.ErrorMessage = $null
+        $result.Version = Get-ObjectPropertyValue $state 'version'
+        $result.PinnedAccount = Get-ObjectPropertyValue `
+            $state `
+            'pinnedAccount'
+        $result.PinnedMailbox = Get-ObjectPropertyValue `
+            $state `
+            'pinnedMailbox'
+        $result.WorkIqEulaAcceptedVersion = Get-ObjectPropertyValue `
+            $state `
+            'workIqEulaAcceptedVersion'
+        $result.LastSuccessfulMonitoringUtc = Get-ObjectPropertyValue `
+            $state `
+            'lastSuccessfulMonitoringUtc'
+        $result.ConsecutiveMonitoringFailures = Get-ObjectPropertyValue `
+            $state `
+            'consecutiveMonitoringFailures'
+        $result.MonitoringInterrupted = Get-ObjectPropertyValue `
+            $state `
+            'monitoringInterrupted'
+        $result.Settings = [ordered]@{
+            CopilotModel = Get-ObjectPropertyValue $settings 'copilotModel'
+            AdditionalOutlookFolders = @(
+                Get-ObjectPropertyValue $settings 'additionalOutlookFolders'
+            )
+            TeamsScope = Get-ObjectPropertyValue $settings 'teamsScope'
+            MonitorTeamsChatsInSelectedScope = Get-ObjectPropertyValue `
+                $settings `
+                'monitorTeamsChatsInSelectedScope'
+            TeamsTeamWatchlistCount = Get-CollectionCount (
+                Get-ObjectPropertyValue $settings 'teamsTeamWatchlist'
+            )
+            TeamsChannelWatchlistCount = Get-CollectionCount (
+                Get-ObjectPropertyValue $settings 'teamsChannelWatchlist'
+            )
+            StartAtSignIn = Get-ObjectPropertyValue `
+                $settings `
+                'startAtSignIn'
+            MonitoringPaused = Get-ObjectPropertyValue `
+                $settings `
+                'monitoringPaused'
+            MonitoringScheduleEnabled = Get-ObjectPropertyValue `
+                $settings `
+                'monitoringScheduleEnabled'
+            MonitoringWakeMinute = Get-ObjectPropertyValue `
+                $settings `
+                'monitoringWakeMinute'
+            MonitoringSleepMinute = Get-ObjectPropertyValue `
+                $settings `
+                'monitoringSleepMinute'
+            SpeechEnabled = Get-ObjectPropertyValue `
+                $settings `
+                'speechEnabled'
+        }
+        $result.MonitoringCursor = [ordered]@{
+            Initialized = Get-ObjectPropertyValue $cursor 'initialized'
+            InitialOutlookScanComplete = Get-ObjectPropertyValue `
+                $cursor `
+                'initialOutlookScanComplete'
+            InitialScanStartedUtc = Get-ObjectPropertyValue `
+                $cursor `
+                'initialScanStartedUtc'
+            OutlookScanStartedUtc = Get-ObjectPropertyValue `
+                $cursor `
+                'outlookScanStartedUtc'
+            OutlookWatermarkUtc = Get-ObjectPropertyValue `
+                $cursor `
+                'outlookWatermarkUtc'
+            OutlookBoundaryMessageCount = Get-CollectionCount (
+                Get-ObjectPropertyValue $cursor 'outlookBoundaryMessageIds'
+            )
+            TeamsScanStartedUtc = Get-ObjectPropertyValue `
+                $cursor `
+                'teamsScanStartedUtc'
+            TeamsWatermarkUtc = Get-ObjectPropertyValue `
+                $cursor `
+                'teamsWatermarkUtc'
+            TeamsSearchWindowEndUtc = Get-ObjectPropertyValue `
+                $cursor `
+                'teamsSearchWindowEndUtc'
+            TeamsSearchOffset = Get-ObjectPropertyValue `
+                $cursor `
+                'teamsSearchOffset'
+            DirectChatWatermarkUtc = Get-ObjectPropertyValue `
+                $cursor `
+                'directChatWatermarkUtc'
+            ChannelScanResumeKey = Get-ObjectPropertyValue `
+                $cursor `
+                'channelScanResumeKey'
+            ChannelContinuationPass = Get-ObjectPropertyValue `
+                $cursor `
+                'channelContinuationPass'
+        }
+        $result.Counts = [ordered]@{
+            Alerts = Get-CollectionCount (
+                Get-ObjectPropertyValue $state 'alerts'
+            )
+            FeedbackRules = Get-CollectionCount (
+                Get-ObjectPropertyValue $state 'feedbackRules'
+            )
+            SeenMessages = Get-CollectionCount (
+                Get-ObjectPropertyValue $state 'seenMessages'
+            )
+            CreditHistory = Get-CollectionCount (
+                Get-ObjectPropertyValue $state 'creditHistory'
+            )
+            AuditLog = Get-CollectionCount (
+                Get-ObjectPropertyValue $state 'auditLog'
+            )
+        }
+        return [pscustomobject]$result
+    }
+    catch {
+        $result.ErrorType = $_.Exception.GetType().FullName
+        $result.ErrorMessage =
+            'Peggy operational state could not be decrypted or parsed.'
+        return [pscustomobject]$result
+    }
+    finally {
+        if ($null -ne $plaintext) {
+            [Array]::Clear($plaintext, 0, $plaintext.Length)
+        }
+        if ($null -ne $protectedBytes) {
+            [Array]::Clear(
+                $protectedBytes,
+                0,
+                $protectedBytes.Length
+            )
+        }
+        $stateJson = $null
     }
 }
 
@@ -178,7 +422,9 @@ function Invoke-DiagnosticCommand {
         [Parameter(Mandatory)][string[]]$Candidates,
         [Parameter(Mandatory)][string[]]$Arguments,
         [string]$OverrideVariable,
-        [string[]]$FallbackPaths = @()
+        [string[]]$FallbackPaths = @(),
+        [switch]$PreserveTechnicalOutput,
+        [switch]$RetainRawOutputForAnalysis
     )
 
     $configuredPath = if ([string]::IsNullOrWhiteSpace(
@@ -222,6 +468,8 @@ function Invoke-DiagnosticCommand {
                 Found = $false
                 Path = Protect-Text $configuredPath
                 ExitCode = $null
+                Stdout = ''
+                Stderr = ''
                 Output = "$OverrideVariable contains an invalid path."
             }
         }
@@ -231,6 +479,8 @@ function Invoke-DiagnosticCommand {
                 Found = $false
                 Path = Protect-Text $path
                 ExitCode = $null
+                Stdout = ''
+                Stderr = ''
                 Output = "$OverrideVariable does not identify a file."
             }
         }
@@ -241,29 +491,274 @@ function Invoke-DiagnosticCommand {
             Found = $false
             Path = $null
             ExitCode = $null
+            Stdout = ''
+            Stderr = ''
             Output = 'Command not found.'
         }
     }
 
+    $commandId = [Guid]::NewGuid().ToString('N')
+    $stdoutPath = Join-Path (
+        [IO.Path]::GetTempPath()
+    ) "peggy-diagnostic-$PID-$commandId.stdout"
+    $stderrPath = Join-Path (
+        [IO.Path]::GetTempPath()
+    ) "peggy-diagnostic-$PID-$commandId.stderr"
+    $previousErrorActionPreference = $ErrorActionPreference
     try {
-        $output = (& $path @Arguments 2>&1 | Out-String).Trim()
+        $ErrorActionPreference = 'Continue'
+        & $path @Arguments 1> $stdoutPath 2> $stderrPath
         $exitCode = $LASTEXITCODE
-        return [pscustomobject]@{
+        $ErrorActionPreference = $previousErrorActionPreference
+        $stdout = if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
+            [IO.File]::ReadAllText($stdoutPath).Trim()
+        } else {
+            ''
+        }
+        $stderr = if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+            [IO.File]::ReadAllText($stderrPath).Trim()
+        } else {
+            ''
+        }
+        $rawStdout = $stdout
+        $output = @($stdout, $stderr) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        $output = $output -join [Environment]::NewLine
+        if ($PreserveTechnicalOutput) {
+            $stdout = Remove-CredentialText $stdout
+            $stderr = Remove-CredentialText $stderr
+            $output = Remove-CredentialText $output
+        } else {
+            $stdout = Protect-Text $stdout
+            $stderr = Protect-Text $stderr
+            $output = Protect-Text $output
+        }
+        $commandResult = [ordered]@{
             Name = $Name
             Found = $true
             Path = Protect-Text $path
             ExitCode = $exitCode
-            Output = Protect-Text $output
+            Stdout = $stdout
+            Stderr = $stderr
+            Output = $output
         }
+        if ($RetainRawOutputForAnalysis) {
+            $commandResult.InternalRawStdout = $rawStdout
+        }
+        return [pscustomobject]$commandResult
     }
     catch {
+        $ErrorActionPreference = $previousErrorActionPreference
+        $errorText = if ($PreserveTechnicalOutput) {
+            Remove-CredentialText $_.Exception.ToString()
+        } else {
+            Protect-Text $_.Exception.Message
+        }
         return [pscustomobject]@{
             Name = $Name
             Found = $true
             Path = Protect-Text $path
             ExitCode = -1
-            Output = Protect-Text $_.Exception.Message
+            Stdout = ''
+            Stderr = $errorText
+            Output = $errorText
         }
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        Remove-Item `
+            -LiteralPath $stdoutPath, $stderrPath `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-WorkIqCommandAnalysis {
+    param(
+        [Parameter(Mandatory)]$Result,
+        [AllowEmptyString()][AllowNull()][string]$RawStdout
+    )
+
+    $analysis = [ordered]@{
+        PayloadParsed = $false
+        ParseError = $null
+        StatusCodes = @()
+        Errors = @()
+        Data = $null
+        Succeeded = $false
+    }
+    if (-not $Result.Found -or $Result.ExitCode -ne 0) {
+        return [pscustomobject]$analysis
+    }
+    if ([string]::IsNullOrWhiteSpace($RawStdout)) {
+        $analysis.ParseError = 'WorkIQ returned empty stdout.'
+        return [pscustomobject]$analysis
+    }
+
+    try {
+        $payload = ConvertFrom-Json -InputObject $RawStdout
+        $analysis.PayloadParsed = $true
+        $resultValue = Get-ObjectPropertyValue $payload 'results'
+        $results = @()
+        if ($null -ne $resultValue) {
+            $results = @($resultValue)
+        }
+        if ((Get-CollectionCount $results) -gt 0) {
+            foreach ($entry in $results) {
+                $statusCode = Get-ObjectPropertyValue `
+                    $entry `
+                    'statusCode'
+                if ($null -ne $statusCode) {
+                    $analysis.StatusCodes += [int]$statusCode
+                }
+                $errorText = Get-ObjectPropertyValue $entry 'error'
+                if (-not [string]::IsNullOrWhiteSpace(
+                        [string]$errorText
+                    )) {
+                    $analysis.Errors += Remove-CredentialText (
+                        [string]$errorText
+                    )
+                }
+                if ($null -eq $analysis.Data) {
+                    $analysis.Data = Get-ObjectPropertyValue $entry 'data'
+                }
+            }
+        } else {
+            $statusCode = Get-ObjectPropertyValue `
+                $payload `
+                'statusCode'
+            if ($null -ne $statusCode) {
+                $analysis.StatusCodes += [int]$statusCode
+            }
+            $errorText = Get-ObjectPropertyValue $payload 'error'
+            if (-not [string]::IsNullOrWhiteSpace(
+                    [string]$errorText
+                )) {
+                $analysis.Errors += Remove-CredentialText (
+                    [string]$errorText
+                )
+            }
+            $analysis.Data = $payload
+        }
+        $analysis.Succeeded =
+            @(
+                $analysis.StatusCodes | Where-Object { $_ -ge 400 }
+            ).Count -eq 0 -and
+            (Get-CollectionCount $analysis.Errors) -eq 0
+    }
+    catch {
+        $analysis.PayloadParsed = $false
+        $analysis.ParseError = 'WorkIQ stdout was not valid JSON.'
+    }
+    return [pscustomobject]$analysis
+}
+
+function Invoke-WorkIqDiagnosticProbe {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [AllowNull()][string]$Account,
+        [switch]$UseAccount,
+        [Parameter(Mandatory)][string[]]$FallbackPaths
+    )
+
+    if ($UseAccount -and [string]::IsNullOrWhiteSpace($Account)) {
+        return [pscustomobject]@{
+            Name = $Name
+            Skipped = $true
+            Reason = 'Peggy pinned WorkIQ account was unavailable.'
+            Arguments = $Arguments
+            Found = $null
+            Path = $null
+            ExitCode = $null
+            Succeeded = $false
+            PayloadParsed = $false
+            ParseError = $null
+            ResponseStatusCodes = @()
+            ResponseErrors = @()
+            AuthenticatedMail = $null
+            AuthenticatedUserPrincipalName = $null
+            AccountMatched = $null
+            Stdout = ''
+            Stderr = ''
+            Output = ''
+        }
+    }
+
+    $effectiveArguments = @($Arguments)
+    if ($UseAccount) {
+        $effectiveArguments += @('--account', $Account)
+    }
+    $result = Invoke-DiagnosticCommand `
+        -Name $Name `
+        -Candidates @('workiq.exe', 'workiq.cmd', 'workiq') `
+        -Arguments $effectiveArguments `
+        -OverrideVariable 'PEGGY_WORKIQ_PATH' `
+        -FallbackPaths $FallbackPaths `
+        -PreserveTechnicalOutput `
+        -RetainRawOutputForAnalysis
+    $rawStdout = Get-ObjectPropertyValue `
+        $result `
+        'InternalRawStdout'
+    $result.PSObject.Properties.Remove('InternalRawStdout')
+    $analysis = Get-WorkIqCommandAnalysis `
+        -Result $result `
+        -RawStdout $rawStdout
+    $rawStdout = $null
+    $authenticatedMail = $null
+    $authenticatedUserPrincipalName = $null
+    $accountMatched = $null
+    if ($Name -like '*profile with Peggy fields' -and
+        $null -ne $analysis.Data) {
+        $authenticatedMail = Get-ObjectPropertyValue `
+            $analysis.Data `
+            'mail'
+        $authenticatedUserPrincipalName = Get-ObjectPropertyValue `
+            $analysis.Data `
+            'userPrincipalName'
+        if ($UseAccount) {
+            $accountMatched =
+                [string]::Equals(
+                    $authenticatedMail,
+                    $Account,
+                    [StringComparison]::OrdinalIgnoreCase
+                ) -or
+                [string]::Equals(
+                    $authenticatedUserPrincipalName,
+                    $Account,
+                    [StringComparison]::OrdinalIgnoreCase
+                )
+        }
+    }
+    $succeeded = $analysis.Succeeded
+    if ($UseAccount -and
+        $Name -like '*profile with Peggy fields' -and
+        $accountMatched -ne $true) {
+        $succeeded = $false
+    }
+    return [pscustomobject]@{
+        Name = $Name
+        Skipped = $false
+        Reason = $null
+        Arguments = @(
+            $effectiveArguments | ForEach-Object {
+                Remove-CredentialText $_
+            }
+        )
+        Found = $result.Found
+        Path = $result.Path
+        ExitCode = $result.ExitCode
+        Succeeded = $succeeded
+        PayloadParsed = $analysis.PayloadParsed
+        ParseError = $analysis.ParseError
+        ResponseStatusCodes = $analysis.StatusCodes
+        ResponseErrors = $analysis.Errors
+        AuthenticatedMail = $authenticatedMail
+        AuthenticatedUserPrincipalName = $authenticatedUserPrincipalName
+        AccountMatched = $accountMatched
+        Stdout = $result.Stdout
+        Stderr = $result.Stderr
+        Output = $result.Output
     }
 }
 
@@ -277,7 +772,11 @@ function Send-DiagnosticEmail {
 
     if (-not $WithoutPrompt) {
         Write-Host ''
-        Write-Host 'The ZIP contains redacted device and Peggy diagnostics.'
+        Write-Host (
+            'The ZIP contains detailed Peggy and WorkIQ diagnostics, ' +
+            'including account identifiers, folder metadata, and raw ' +
+            'technical output. Credentials and tokens are excluded.'
+        )
         Write-Host "Recipient: $Recipient"
         $confirmation = Read-Host (
             "Type SEND to email the diagnostic ZIP, or press Enter to keep " +
@@ -303,8 +802,9 @@ function Send-DiagnosticEmail {
             ''
             "Attached is a Peggy diagnostic bundle generated at $CollectedAt."
             ''
-            'The collector excludes customer messages, tokens, encrypted ' +
-                'state contents, and Copilot or WorkIQ session data.'
+            'The collector includes detailed account, configuration, folder, ' +
+                'and raw technical error information. Credentials, tokens, ' +
+                'customer message bodies, and files are excluded.'
         ) -join [Environment]::NewLine
         $attachments = $mail.Attachments
         $attachment = $attachments.Add(
@@ -489,6 +989,9 @@ try {
         ParentProcessId,
         @{Name = 'ExecutablePath'; Expression = {
             Protect-Text $_.ExecutablePath
+        }},
+        @{Name = 'CommandLine'; Expression = {
+            Remove-CredentialText $_.CommandLine
         }})
     Write-JsonFile `
         -Path (Join-Path $staging 'processes.json') `
@@ -574,6 +1077,13 @@ try {
     Write-JsonFile `
         -Path (Join-Path $staging 'state-metadata-only.json') `
         -Value $stateMetadata
+    $operationalState = Get-PeggyOperationalState `
+        -Path $statePath `
+        -DisplayPath $stateResolution.DisplayPath `
+        -ResolutionError $stateResolution.Error
+    Write-JsonFile `
+        -Path (Join-Path $staging 'state-operational.json') `
+        -Value $operationalState
 
     $modelFiles = @()
     if ($null -ne $modelsRoot -and
@@ -620,6 +1130,9 @@ try {
         Write-TextFile `
             -Path (Join-Path $staging 'peggy.log.txt') `
             -Content (Protect-Text $logContent)
+        Write-TextFile `
+            -Path (Join-Path $staging 'peggy.log.raw.txt') `
+            -Content (Remove-CredentialText $logContent)
     } else {
         $logDetail = if ([string]::IsNullOrWhiteSpace(
                 $logResolution.Error
@@ -630,6 +1143,9 @@ try {
         }
         Write-TextFile `
             -Path (Join-Path $staging 'peggy.log.txt') `
+            -Content $logDetail
+        Write-TextFile `
+            -Path (Join-Path $staging 'peggy.log.raw.txt') `
             -Content $logDetail
     }
 
@@ -774,7 +1290,7 @@ try {
                     ProviderName = $_.ProviderName
                     Id = $_.Id
                     Level = $_.LevelDisplayName
-                    Message = Protect-Text $_.Message
+                    Message = Remove-CredentialText $_.Message
                 }
             })
     }
@@ -790,6 +1306,39 @@ try {
         -Value $eventResults
 
     if ($RunConnectivityTests) {
+        $stateAccount = Get-ObjectPropertyValue `
+            $operationalState `
+            'PinnedAccount'
+        $environmentAccount = [Environment]::GetEnvironmentVariable(
+            'PEGGY_WORKIQ_ACCOUNT'
+        )
+        $effectiveWorkIqAccount = if (-not [string]::IsNullOrWhiteSpace(
+                $WorkIqAccount
+            )) {
+            $WorkIqAccount
+        } elseif (-not [string]::IsNullOrWhiteSpace($stateAccount)) {
+            $stateAccount
+        } elseif (-not [string]::IsNullOrWhiteSpace(
+                $environmentAccount
+            )) {
+            $environmentAccount
+        } else {
+            $null
+        }
+        $workIqAccountSource = if (-not [string]::IsNullOrWhiteSpace(
+                $WorkIqAccount
+            )) {
+            'Parameter'
+        } elseif (-not [string]::IsNullOrWhiteSpace($stateAccount)) {
+            'PeggyState'
+        } elseif (-not [string]::IsNullOrWhiteSpace(
+                $environmentAccount
+            )) {
+            'Environment'
+        } else {
+            'Unavailable'
+        }
+
         $previousCi = $env:CI
         try {
             $env:CI = 'true'
@@ -806,25 +1355,122 @@ try {
                     '--no-remote-export'
                 ) `
                 -OverrideVariable 'PEGGY_COPILOT_PATH' `
-                -FallbackPaths $copilotFallbackPaths
+                -FallbackPaths $copilotFallbackPaths `
+                -PreserveTechnicalOutput
         }
         finally {
             $env:CI = $previousCi
         }
-        $workIq = Invoke-DiagnosticCommand `
-            -Name 'WorkIQ identity read' `
-            -Candidates @('workiq.exe', 'workiq.cmd', 'workiq') `
-            -Arguments @(
-                'fetch',
-                '--urls',
-                '/me?$select=id',
-                '--log-level',
-                'Error'
-            ) `
-            -OverrideVariable 'PEGGY_WORKIQ_PATH' `
-            -FallbackPaths $workIqFallbackPaths
-        $workIqSucceeded = $workIq.ExitCode -eq 0 -and
-            $workIq.Output -match '(?i)"id"'
+        $workIqProbes = @(
+            Invoke-WorkIqDiagnosticProbe `
+                -Name 'WorkIQ configuration' `
+                -Arguments @(
+                    'config',
+                    'show',
+                    '--log-level',
+                    'Debug'
+                ) `
+                -Account $effectiveWorkIqAccount `
+                -FallbackPaths $workIqFallbackPaths
+            Invoke-WorkIqDiagnosticProbe `
+                -Name 'WorkIQ default profile with Peggy fields' `
+                -Arguments @(
+                    'fetch',
+                    '--urls',
+                    '/me?$select=id,mail,userPrincipalName,proxyAddresses',
+                    '--log-level',
+                    'Debug'
+                ) `
+                -Account $effectiveWorkIqAccount `
+                -FallbackPaths $workIqFallbackPaths
+            Invoke-WorkIqDiagnosticProbe `
+                -Name 'WorkIQ pinned profile with Peggy fields' `
+                -Arguments @(
+                    'fetch',
+                    '--urls',
+                    '/me?$select=id,mail,userPrincipalName,proxyAddresses',
+                    '--log-level',
+                    'Debug'
+                ) `
+                -Account $effectiveWorkIqAccount `
+                -UseAccount `
+                -FallbackPaths $workIqFallbackPaths
+            Invoke-WorkIqDiagnosticProbe `
+                -Name 'WorkIQ pinned Inbox metadata' `
+                -Arguments @(
+                    'fetch',
+                    '--urls',
+                    (
+                        '/me/mailFolders/inbox?$select=id,displayName,' +
+                        'parentFolderId,childFolderCount'
+                    ),
+                    '--log-level',
+                    'Debug'
+                ) `
+                -Account $effectiveWorkIqAccount `
+                -UseAccount `
+                -FallbackPaths $workIqFallbackPaths
+            Invoke-WorkIqDiagnosticProbe `
+                -Name 'WorkIQ pinned Inbox child folders' `
+                -Arguments @(
+                    'fetch',
+                    '--urls',
+                    (
+                        '/me/mailFolders/inbox/childFolders?' +
+                        '$top=50&$select=id,displayName,parentFolderId,' +
+                        'childFolderCount'
+                    ),
+                    '--log-level',
+                    'Debug'
+                ) `
+                -Account $effectiveWorkIqAccount `
+                -UseAccount `
+                -FallbackPaths $workIqFallbackPaths
+            Invoke-WorkIqDiagnosticProbe `
+                -Name 'WorkIQ pinned Inbox message permission' `
+                -Arguments @(
+                    'fetch',
+                    '--urls',
+                    (
+                        '/me/mailFolders/inbox/messages?' +
+                        '$top=1&$select=id,receivedDateTime,isRead'
+                    ),
+                    '--log-level',
+                    'Debug'
+                ) `
+                -Account $effectiveWorkIqAccount `
+                -UseAccount `
+                -FallbackPaths $workIqFallbackPaths
+            Invoke-WorkIqDiagnosticProbe `
+                -Name 'WorkIQ pinned tenant policies' `
+                -Arguments @(
+                    'policy',
+                    'list',
+                    '--log-level',
+                    'Debug'
+                ) `
+                -Account $effectiveWorkIqAccount `
+                -UseAccount `
+                -FallbackPaths $workIqFallbackPaths
+        )
+        Write-JsonFile `
+            -Path (Join-Path $staging 'workiq-deep-diagnostics.json') `
+            -Value ([ordered]@{
+                AccountSource = $workIqAccountSource
+                Account = $effectiveWorkIqAccount
+                Probes = $workIqProbes
+            })
+        $workIq = if (-not [string]::IsNullOrWhiteSpace(
+                $effectiveWorkIqAccount
+            )) {
+            $workIqProbes | Where-Object {
+                $_.Name -eq 'WorkIQ pinned profile with Peggy fields'
+            } | Select-Object -First 1
+        } else {
+            $workIqProbes | Where-Object {
+                $_.Name -eq 'WorkIQ default profile with Peggy fields'
+            } | Select-Object -First 1
+        }
         $connectivity = @(
             [pscustomobject]@{
                 Name = $copilotTest.Name
@@ -838,12 +1484,8 @@ try {
                 Name = $workIq.Name
                 Found = $workIq.Found
                 ExitCode = $workIq.ExitCode
-                Succeeded = $workIqSucceeded
-                Detail = if ($workIqSucceeded) {
-                    'Succeeded. Response content omitted.'
-                } else {
-                    $workIq.Output
-                }
+                Succeeded = $workIq.Succeeded
+                Detail = $workIq.Output
             }
         )
         Write-JsonFile `
@@ -867,20 +1509,21 @@ Peggy diagnostic bundle
 Collected:
 - Operating system and PowerShell metadata
 - Peggy version, installed file inventory, and selected file hashes
-- Process, startup, shortcut, and Installed apps status
-- Encrypted-state file metadata and hash only
+- Process command lines, startup, shortcut, and Installed apps status
+- Encrypted-state file metadata, hash, and decrypted operational summary
 - Speech-model inventory only
-- Redacted Peggy lifecycle log
+- Raw and redacted Peggy lifecycle logs
 - Temporary Peggy scope-file metadata only
 - Prerequisite versions
-- Peggy-related Windows Application events
-- Optional generic Copilot and WorkIQ connectivity results
+- Full Peggy-related Windows Application event messages
+- Optional Copilot connectivity with full technical errors
+- Optional WorkIQ configuration, account, policy, profile, Inbox, folder, and
+  message-permission probes with full technical output
 
 Explicitly excluded:
-- Peggy state.dat contents
-- Customer messages, email bodies, Teams messages, files, or calendar data
-- Copilot logs, session-state, prompts, responses, and command history
-- WorkIQ tokens, cached authentication, account details, and config contents
+- Credentials, tokens, passwords, cookies, and authentication caches
+- Customer message bodies, Teams message bodies, files, and calendar contents
+- Copilot session-state, prompts, responses, and command history
 - Environment token values
 - Temporary Peggy focus/context/action file contents
 - Speech model binaries

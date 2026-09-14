@@ -870,7 +870,7 @@ Remove-Item Env:\PEGGY_MESSAGE_PROVIDER
 
 The repository is private, so the affected Windows user must authenticate to
 GitHub with an account that has access, clone the repository, and run the
-privacy-safe collector from that clone:
+detailed collector from that clone:
 
 ```powershell
 git clone --depth 1 https://github.com/didiergbenou-ms/peggy.git
@@ -885,15 +885,24 @@ Outlook profile.
 
 Use `-NoEmail` to create the ZIP without offering to send it. For approved
 automation, use `-SendWithoutPrompt`; `-EmailTo` can override the recipient.
+Use `-WorkIqAccount` only when Peggy's encrypted state cannot supply its pinned
+Microsoft 365 account.
 If Outlook cannot send the message, the ZIP remains on the Desktop for manual
 review and sharing.
 
 The bundle includes Peggy versions, selected installation hashes, process and
-startup status, speech-model inventory, redacted lifecycle logs, relevant
-Windows Application events, and optional generic Copilot and WorkIQ
-connectivity tests. It excludes customer messages, token values, encrypted
-state contents, Copilot and WorkIQ session data, temporary scope-file contents,
-and speech-model binaries. Review the ZIP before sharing it outside the support
+startup details, a decrypted operational-state summary, speech-model inventory,
+raw and redacted lifecycle logs, full relevant Windows Application events, and
+optional deep Copilot and WorkIQ diagnostics. WorkIQ diagnostics use Peggy's
+pinned account and test its exact profile fields, Inbox access, child-folder
+listing, message permission, configuration, and tenant policies while
+preserving full technical errors.
+
+The ZIP can contain account identifiers, folder metadata, process command
+lines, and raw CLI output. It still excludes credentials, tokens,
+authentication caches, customer message bodies, files, calendar contents,
+Copilot session data, temporary scope-file contents, and speech-model binaries.
+Review it carefully before typing `SEND` or sharing it outside the support
 team.
 
 | Symptom | Resolution |
