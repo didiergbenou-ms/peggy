@@ -365,7 +365,7 @@ The installer:
 Add `-SkipSpeechModels` to install without the local voice models, or
 `-NoLaunch` to install without starting Peggy. The former
 `-InstallSpeechModels` switch remains accepted for compatibility. Use
-`-Version v0.1.7` to install a specific release.
+`-Version v0.1.8` to install a specific release.
 
 This repository is currently private. Authenticate GitHub CLI with repository
 access (`gh auth login`) or set `GH_TOKEN` before running the installer. If the
