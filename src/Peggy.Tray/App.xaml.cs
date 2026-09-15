@@ -1357,7 +1357,9 @@ public partial class App : Application
                 userPrincipalNameAtOpen,
                 principalIdAtOpen)
             {
-                Owner = _alertCenter
+                Owner = alertCenterWasVisible
+                    ? _alertCenter
+                    : null
             };
             _workIqSignInWindow = window;
             bool? dialogResult;

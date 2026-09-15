@@ -195,8 +195,8 @@ public partial class WorkIqSignInWindow : Window
         }
         SetBusy(
             true,
-            "Opening Microsoft sign-in and permission consent. Complete the " +
-            "steps in your browser.");
+            "Checking Microsoft sign-in and permission consent. If WorkIQ " +
+            "opens a browser, complete the steps there.");
         AuthenticatedAccount = null;
         AuthenticatedMailbox = null;
         AcceptedEulaVersion = null;

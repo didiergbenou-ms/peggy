@@ -89,7 +89,7 @@
                      AutomationProperties.Name="Microsoft 365 account"
                      TextChanged="AccountText_Changed"/>
             <TextBlock
-                Text="A browser opens for sign-in and permission consent. Peggy verifies the selected identity before saving it. Edit the address to use a different account."
+                Text="WorkIQ checks sign-in and permission consent. A browser opens only when interaction is required. Peggy verifies the selected identity before saving it."
                 TextWrapping="Wrap"
                 Foreground="{StaticResource PeggyMutedTextBrush}"
                 FontSize="11"/>

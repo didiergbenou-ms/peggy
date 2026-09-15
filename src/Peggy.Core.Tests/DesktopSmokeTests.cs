@@ -1595,6 +1595,12 @@ internal static class DesktopSmokeTests
                 Find<CheckBox>(pinned, "EulaCheck").IsChecked != true,
                 "The reauthentication window did not expose its account or " +
                 "preserve the EULA boundary.");
+            TestAssert.True(
+                Descendants<TextBlock>(pinned).Any(text =>
+                    text.Text.Contains(
+                        "A browser opens only when interaction is required",
+                        StringComparison.Ordinal)),
+                "The account window incorrectly promised a browser prompt.");
             accountText.Text = "other@example.com";
             TestAssert.True(
                 Find<Button>(pinned, "SignInButton").Content?.ToString() ==
