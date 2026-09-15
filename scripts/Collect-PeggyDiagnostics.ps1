@@ -6,6 +6,7 @@ param(
         )
     ),
     [switch]$RunConnectivityTests,
+    [switch]$RunWorkIqTests,
     [ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')]
     [string]$WorkIqAccount,
     [ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')]
@@ -198,6 +199,9 @@ function Get-PeggyOperationalState {
         $state = ConvertFrom-Json -InputObject $stateJson
         $settings = Get-ObjectPropertyValue $state 'settings'
         $cursor = Get-ObjectPropertyValue $state 'monitoringCursor'
+        $lastFailure = Get-ObjectPropertyValue `
+            $state `
+            'lastMonitoringFailure'
 
         $result.Loaded = $true
         $result.ErrorMessage = $null
@@ -220,6 +224,54 @@ function Get-PeggyOperationalState {
         $result.MonitoringInterrupted = Get-ObjectPropertyValue `
             $state `
             'monitoringInterrupted'
+        if ($null -eq $lastFailure) {
+            $result.LastMonitoringFailure = $null
+        }
+        else {
+            $result.LastMonitoringFailure = [ordered]@{
+                OccurredUtc = Get-ObjectPropertyValue `
+                    $lastFailure `
+                    'occurredUtc'
+                Stage = Remove-CredentialText (
+                    Get-ObjectPropertyValue $lastFailure 'stage'
+                )
+                Code = Remove-CredentialText (
+                    Get-ObjectPropertyValue $lastFailure 'code'
+                )
+                ExceptionType = Remove-CredentialText (
+                    Get-ObjectPropertyValue $lastFailure 'exceptionType'
+                )
+                Message = Remove-CredentialText (
+                    Get-ObjectPropertyValue $lastFailure 'message'
+                )
+                StatusCode = Get-ObjectPropertyValue `
+                    $lastFailure `
+                    'statusCode'
+                RetryAfterSeconds = Get-ObjectPropertyValue `
+                    $lastFailure `
+                    'retryAfterSeconds'
+                Operation = Remove-CredentialText (
+                    Get-ObjectPropertyValue $lastFailure 'operation'
+                )
+                RequestId = Remove-CredentialText (
+                    Get-ObjectPropertyValue $lastFailure 'requestId'
+                )
+                RetrievalReferenceUtc = Get-ObjectPropertyValue `
+                    $lastFailure `
+                    'retrievalReferenceUtc'
+                BatchLimit = Get-ObjectPropertyValue `
+                    $lastFailure `
+                    'batchLimit'
+                ExceptionChain = @(
+                    Get-ObjectPropertyValue `
+                        $lastFailure `
+                        'exceptionChain' |
+                        ForEach-Object {
+                            Remove-CredentialText ([string]$_)
+                        }
+                )
+            }
+        }
         $result.Settings = [ordered]@{
             CopilotModel = Get-ObjectPropertyValue $settings 'copilotModel'
             CopilotReasoningEffort = Get-ObjectPropertyValue `
@@ -607,6 +659,7 @@ function Invoke-DiagnosticCommand {
             ''
         }
         $rawStdout = $stdout
+        $rawStderr = $stderr
         $output = @($stdout, $stderr) |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
         $output = $output -join [Environment]::NewLine
@@ -630,6 +683,7 @@ function Invoke-DiagnosticCommand {
         }
         if ($RetainRawOutputForAnalysis) {
             $commandResult.InternalRawStdout = $rawStdout
+            $commandResult.InternalRawStderr = $rawStderr
         }
         return [pscustomobject]$commandResult
     }
@@ -673,8 +727,54 @@ function Get-WorkIqJsonPayload {
             $candidates.Add($match.Index)
         }
     }
+    $nativeErrorMatches = [Text.RegularExpressions.Regex]::Matches(
+        $Text,
+        '(?im)workiq(?:\.exe)?\s*:\s*(?<json>[\{\[])'
+    )
+    foreach ($match in $nativeErrorMatches) {
+        $start = $match.Groups['json'].Index
+        if (-not $candidates.Contains($start)) {
+            $candidates.Add($start)
+        }
+    }
     for ($index = $candidates.Count - 1; $index -ge 0; $index--) {
-        $candidate = $Text.Substring($candidates[$index]).Trim()
+        $start = $candidates[$index]
+        $depth = 0
+        $inString = $false
+        $escaped = $false
+        $end = -1
+        for ($position = $start; $position -lt $Text.Length; $position++) {
+            $character = $Text[$position]
+            if ($inString) {
+                if ($escaped) {
+                    $escaped = $false
+                } elseif ($character -eq '\') {
+                    $escaped = $true
+                } elseif ($character -eq '"') {
+                    $inString = $false
+                }
+                continue
+            }
+            if ($character -eq '"') {
+                $inString = $true
+            } elseif ($character -eq '{' -or $character -eq '[') {
+                $depth++
+            } elseif ($character -eq '}' -or $character -eq ']') {
+                $depth--
+                if ($depth -eq 0) {
+                    $end = $position
+                    break
+                }
+            }
+        }
+        $candidate = if ($end -ge $start) {
+            $Text.Substring($start, $end - $start + 1)
+        } else {
+            $Text.Substring($start)
+        }
+        $candidate = (
+            $candidate -replace '\r?\n[\t ]*', ''
+        ).Trim()
         try {
             return [pscustomobject]@{
                 Found = $true
@@ -702,6 +802,7 @@ function Get-WorkIqCommandAnalysis {
         ParseError = $null
         StatusCodes = @()
         Errors = @()
+        RequestIds = @()
         Data = $null
         Succeeded = $false
     }
@@ -721,6 +822,10 @@ function Get-WorkIqCommandAnalysis {
     try {
         $payload = $jsonPayload.Value
         $analysis.PayloadParsed = $true
+        $requestId = Get-ObjectPropertyValue $payload 'requestId'
+        if (-not [string]::IsNullOrWhiteSpace([string]$requestId)) {
+            $analysis.RequestIds += Remove-CredentialText ([string]$requestId)
+        }
         $resultValue = Get-ObjectPropertyValue $payload 'results'
         $results = @()
         if ($null -ne $resultValue) {
@@ -800,6 +905,7 @@ function Invoke-WorkIqDiagnosticProbe {
             ParseError = $null
             ResponseStatusCodes = @()
             ResponseErrors = @()
+            ResponseRequestIds = @()
             AuthenticatedMail = $null
             AuthenticatedUserPrincipalName = $null
             AccountMatched = $null
@@ -825,10 +931,17 @@ function Invoke-WorkIqDiagnosticProbe {
     $rawStdout = Get-ObjectPropertyValue `
         $result `
         'InternalRawStdout'
+    $rawStderr = Get-ObjectPropertyValue `
+        $result `
+        'InternalRawStderr'
     $result.PSObject.Properties.Remove('InternalRawStdout')
+    $result.PSObject.Properties.Remove('InternalRawStderr')
+    $rawOutput = @($rawStdout, $rawStderr) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $rawOutput = $rawOutput -join [Environment]::NewLine
     $analysis = Get-WorkIqCommandAnalysis `
         -Result $result `
-        -RawStdout $rawStdout
+        -RawStdout $rawOutput
     if ($AllowTextOutput) {
         $analysis.ParseError = $null
         $analysis.Succeeded =
@@ -840,6 +953,8 @@ function Invoke-WorkIqDiagnosticProbe {
             )
     }
     $rawStdout = $null
+    $rawStderr = $null
+    $rawOutput = $null
     $authenticatedMail = $null
     $authenticatedUserPrincipalName = $null
     $accountMatched = $null
@@ -888,6 +1003,7 @@ function Invoke-WorkIqDiagnosticProbe {
         ParseError = $analysis.ParseError
         ResponseStatusCodes = $analysis.StatusCodes
         ResponseErrors = $analysis.Errors
+        ResponseRequestIds = $analysis.RequestIds
         AuthenticatedMail = $authenticatedMail
         AuthenticatedUserPrincipalName = $authenticatedUserPrincipalName
         AccountMatched = $accountMatched
@@ -1438,12 +1554,24 @@ try {
             -Name 'npm' `
             -Candidates @('npm.cmd', 'npm') `
             -Arguments @('--version')
-        Invoke-DiagnosticCommand `
-            -Name 'GitHub Copilot CLI' `
-            -Candidates @('copilot.exe', 'copilot') `
-            -Arguments @('version') `
-            -OverrideVariable 'PEGGY_COPILOT_PATH' `
-            -FallbackPaths $copilotFallbackPaths
+        if ($RunWorkIqTests -and -not $RunConnectivityTests) {
+            [pscustomobject]@{
+                Name = 'GitHub Copilot CLI'
+                Found = $null
+                Path = $null
+                ExitCode = $null
+                Stdout = ''
+                Stderr = ''
+                Output = 'Skipped in WorkIQ-only mode.'
+            }
+        } else {
+            Invoke-DiagnosticCommand `
+                -Name 'GitHub Copilot CLI' `
+                -Candidates @('copilot.exe', 'copilot') `
+                -Arguments @('version') `
+                -OverrideVariable 'PEGGY_COPILOT_PATH' `
+                -FallbackPaths $copilotFallbackPaths
+        }
         Invoke-DiagnosticCommand `
             -Name 'Microsoft WorkIQ' `
             -Candidates @('workiq.exe', 'workiq.cmd', 'workiq') `
@@ -1517,7 +1645,7 @@ try {
         -Path (Join-Path $staging 'windows-application-events.json') `
         -Value $eventResults
 
-    if ($RunConnectivityTests) {
+    if ($RunConnectivityTests -or $RunWorkIqTests) {
         $stateAccount = Get-ObjectPropertyValue `
             $operationalState `
             'PinnedAccount'
@@ -1551,27 +1679,30 @@ try {
             'Unavailable'
         }
 
-        $previousCi = $env:CI
-        try {
-            $env:CI = 'true'
-            $copilotTest = Invoke-DiagnosticCommand `
-                -Name 'Copilot generic connectivity' `
-                -Candidates @('copilot.exe', 'copilot') `
-                -Arguments @(
-                    '-p',
-                    'Reply with OK only.',
-                    '--silent',
-                    '--disable-builtin-mcps',
-                    '--no-custom-instructions',
-                    '--no-remote',
-                    '--no-remote-export'
-                ) `
-                -OverrideVariable 'PEGGY_COPILOT_PATH' `
-                -FallbackPaths $copilotFallbackPaths `
-                -PreserveTechnicalOutput
-        }
-        finally {
-            $env:CI = $previousCi
+        $copilotTest = $null
+        if ($RunConnectivityTests) {
+            $previousCi = $env:CI
+            try {
+                $env:CI = 'true'
+                $copilotTest = Invoke-DiagnosticCommand `
+                    -Name 'Copilot generic connectivity' `
+                    -Candidates @('copilot.exe', 'copilot') `
+                    -Arguments @(
+                        '-p',
+                        'Reply with OK only.',
+                        '--silent',
+                        '--disable-builtin-mcps',
+                        '--no-custom-instructions',
+                        '--no-remote',
+                        '--no-remote-export'
+                    ) `
+                    -OverrideVariable 'PEGGY_COPILOT_PATH' `
+                    -FallbackPaths $copilotFallbackPaths `
+                    -PreserveTechnicalOutput
+            }
+            finally {
+                $env:CI = $previousCi
+            }
         }
         $workIqProbes = @(
             Invoke-WorkIqDiagnosticProbe `
@@ -1686,14 +1817,16 @@ try {
             } | Select-Object -First 1
         }
         $connectivity = @(
-            [pscustomobject]@{
-                Name = $copilotTest.Name
-                Found = $copilotTest.Found
-                ExitCode = $copilotTest.ExitCode
-                Succeeded = $copilotTest.ExitCode -eq 0 -and
-                    $copilotTest.Output.Trim() -eq 'OK'
-                Detail = $copilotTest.Output
-            },
+            if ($null -ne $copilotTest) {
+                [pscustomobject]@{
+                    Name = $copilotTest.Name
+                    Found = $copilotTest.Found
+                    ExitCode = $copilotTest.ExitCode
+                    Succeeded = $copilotTest.ExitCode -eq 0 -and
+                        $copilotTest.Output.Trim() -eq 'OK'
+                    Detail = $copilotTest.Output
+                }
+            }
             [pscustomobject]@{
                 Name = $workIq.Name
                 Found = $workIq.Found
@@ -1711,7 +1844,8 @@ try {
             -Content (
                 'Connectivity tests were not requested. Run the collector ' +
                 'with -RunConnectivityTests to test Copilot and WorkIQ ' +
-                'using generic, non-customer input.'
+                'using generic, non-customer input, or -RunWorkIqTests to ' +
+                'run only deterministic WorkIQ probes.'
             )
     }
 

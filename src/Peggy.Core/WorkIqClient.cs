@@ -809,6 +809,16 @@ internal sealed class WorkIqClient
                     TimeSpan.FromSeconds(Math.Pow(2, attempt)),
                     ct);
             }
+            catch (WorkIqRequestException ex)
+            {
+                ex.AttachOperation($"{command} {url}");
+                throw;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                ex.Data["Peggy.WorkIqOperation"] = $"{command} {url}";
+                throw;
+            }
         }
     }
 
@@ -1147,8 +1157,28 @@ internal sealed class WorkIqClient
                 FindRetryAfter(result),
                 message.Length == 0
                     ? $"WorkIQ request failed with status {statusCode}."
-                    : $"WorkIQ request failed with status {statusCode}: {message}");
+                    : $"WorkIQ request failed with status {statusCode}: {message}",
+                FindRequestId(root));
         }
+    }
+
+    private static string? FindRequestId(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (string.Equals(
+                        property.Name,
+                        "requestId",
+                        StringComparison.OrdinalIgnoreCase) &&
+                    property.Value.ValueKind == JsonValueKind.String)
+                {
+                    return property.Value.GetString();
+                }
+            }
+        }
+        return null;
     }
 
     private static TimeSpan? FindRetryAfter(JsonElement element)
@@ -1288,16 +1318,30 @@ internal sealed class WorkIqClient
         public WorkIqRequestException(
             int statusCode,
             TimeSpan? retryAfter,
-            string message)
+            string message,
+            string? requestId = null)
             : base(message)
         {
             StatusCode = statusCode;
             RetryAfter = retryAfter;
+            RequestId = requestId ?? string.Empty;
         }
 
         public int StatusCode { get; }
 
         public TimeSpan? RetryAfter { get; }
+
+        public string Operation { get; private set; } = string.Empty;
+
+        public string RequestId { get; }
+
+        public void AttachOperation(string operation)
+        {
+            if (Operation.Length == 0)
+            {
+                Operation = operation;
+            }
+        }
     }
 
     internal sealed class WorkIqPromptException : InvalidOperationException

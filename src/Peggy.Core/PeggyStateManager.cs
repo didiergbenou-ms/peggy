@@ -169,6 +169,7 @@ public sealed class PeggyStateManager
                 ConsecutiveMonitoringFailures =
                     previous.ConsecutiveMonitoringFailures,
                 MonitoringInterrupted = previous.MonitoringInterrupted,
+                LastMonitoringFailure = previous.LastMonitoringFailure,
                 Alerts = previous.Alerts,
                 FeedbackRules = previous.FeedbackRules,
                 SeenMessages = previous.SeenMessages,
@@ -377,10 +378,15 @@ public sealed class PeggyStateManager
         });
     }
 
-    public bool RecordMonitoringFailure()
+    public bool RecordMonitoringFailure(
+        MonitoringFailureDetails? details = null)
     {
         var wasInterrupted = State.MonitoringInterrupted;
         State.ConsecutiveMonitoringFailures++;
+        if (details is not null)
+        {
+            State.LastMonitoringFailure = details;
+        }
         if (State.ConsecutiveMonitoringFailures >=
             PeggyDefaults.MonitoringFailureThreshold)
         {
@@ -396,6 +402,7 @@ public sealed class PeggyStateManager
         State.ConsecutiveMonitoringFailures = 0;
         State.MonitoringInterrupted = false;
         State.LastSuccessfulMonitoringUtc = timestampUtc;
+        State.LastMonitoringFailure = null;
         return wasInterrupted;
     }
 

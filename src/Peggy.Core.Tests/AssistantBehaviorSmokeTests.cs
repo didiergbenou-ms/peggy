@@ -15,6 +15,7 @@ internal static class AssistantBehaviorSmokeTests
     {
         await TestAlertLifecycleAsync(directory);
         await TestMcpToolsAsync(directory);
+        await TestMonitoringTroubleshooterAsync();
         TestCopilotParsing(directory);
         TestSingleInstanceGuard();
         TestPrivacyGuard();
@@ -130,6 +131,7 @@ internal static class AssistantBehaviorSmokeTests
                 $"{followUpFirstDelta?.TotalSeconds:F2}s; complete: " +
                 $"{followUpWatch.Elapsed.TotalSeconds:F2}s.");
         }
+
         finally
         {
             Environment.SetEnvironmentVariable(
@@ -139,6 +141,134 @@ internal static class AssistantBehaviorSmokeTests
                 "PEGGY_COPILOT_MODEL",
                 previousModel);
         }
+    }
+
+    private static async Task TestMonitoringTroubleshooterAsync()
+    {
+        var failure = new MonitoringFailureDetails
+        {
+            OccurredUtc = DateTimeOffset.UtcNow,
+            RetrievalReferenceUtc = DateTimeOffset.UtcNow.AddMinutes(-2),
+            Stage = "retrieval",
+            Code = "retrieval-operation-failed",
+            ExceptionType = "WorkIqRequestException",
+            Message = "Synthetic retrieval failure.",
+            StatusCode = 503,
+            Operation = "fetch /me/mailFolders/inbox/messages",
+            RequestId = "synthetic-request"
+        };
+        var settings = new PeggySettings
+        {
+            CopilotModel = PeggyDefaults.CopilotModel,
+            TeamsScope = TeamsMonitoringScope.Off
+        };
+        var cursor = new MonitoringCursorState
+        {
+            InitialScanStartedUtc = DateTimeOffset.UtcNow.AddMinutes(-5)
+        };
+        var cursorBefore = JsonSerializer.Serialize(cursor);
+        var progress = new List<TroubleshootingCheckResult>();
+        var replayProvider = new MockMessageProvider();
+        var troubleshooter = new MonitoringTroubleshooter(
+            failure,
+            settings,
+            cursor,
+            "person@example.com",
+            failureCount: 3,
+            _ => Task.FromResult<IReadOnlyList<CopilotModelOption>>(
+            [
+                new(
+                    PeggyDefaults.CopilotModel,
+                    "GPT-5.4",
+                    SupportedReasoningEfforts: ["low"],
+                    SupportsLongContext: true)
+            ]),
+            () => replayProvider);
+        var report = await troubleshooter.RunAsync(
+            new Progress<TroubleshootingCheckResult>(progress.Add));
+        TestAssert.True(
+            report.Checks is
+            [
+                { Status: TroubleshootingCheckStatus.Passed },
+                { Status: TroubleshootingCheckStatus.NotReached },
+                { Status: TroubleshootingCheckStatus.Passed },
+                { Status: TroubleshootingCheckStatus.Passed }
+            ] &&
+            report.Recommendation.ShowRetry &&
+            !report.Recommendation.ShowSignIn &&
+            report.ToTechnicalText().Contains(
+                "synthetic-request",
+                StringComparison.Ordinal) &&
+            replayProvider.LastGetChangesReferenceUtc ==
+                failure.RetrievalReferenceUtc &&
+            replayProvider.LastGetChangesLimit == 1 &&
+            !ReferenceEquals(
+                replayProvider.LastGetChangesCursor,
+                cursor) &&
+            JsonSerializer.Serialize(cursor) == cursorBefore,
+            "The read-only monitoring troubleshooter did not report a " +
+            "recovered retrieval safely.");
+
+        var accountFailure = JsonSerializer.Deserialize<
+            MonitoringFailureDetails>(JsonSerializer.Serialize(failure))
+            ?? throw new InvalidOperationException(
+                "Could not clone the synthetic monitoring failure.");
+        accountFailure.StatusCode = null;
+        var failedTroubleshooter = new MonitoringTroubleshooter(
+            accountFailure,
+            settings,
+            cursor,
+            "person@example.com",
+            failureCount: 3,
+            _ => Task.FromResult<IReadOnlyList<CopilotModelOption>>([]),
+            () => throw new InvalidOperationException(
+                "Synthetic Microsoft 365 failure."));
+        var failed = await failedTroubleshooter.RunAsync();
+        TestAssert.True(
+            failed.Checks[0].Status ==
+                TroubleshootingCheckStatus.Failed &&
+            failed.Recommendation.ShowSignIn &&
+            !failed.Recommendation.ShowRetry,
+            "A Microsoft 365 diagnostic failure did not recommend sign-in.");
+
+        var rateLimitedTroubleshooter = new MonitoringTroubleshooter(
+            failure,
+            settings,
+            cursor,
+            "person@example.com",
+            failureCount: 3,
+            _ => Task.FromResult<IReadOnlyList<CopilotModelOption>>([]),
+            () => throw new WorkIqClient.WorkIqRequestException(
+                429,
+                TimeSpan.FromSeconds(30),
+                "Synthetic rate limit."));
+        var rateLimited = await rateLimitedTroubleshooter.RunAsync();
+        TestAssert.True(
+            rateLimited.Checks[0].Failure?.StatusCode == 429 &&
+            rateLimited.Recommendation.ShowRetry &&
+            !rateLimited.Recommendation.ShowSignIn,
+            "A Microsoft 365 rate limit incorrectly recommended sign-in.");
+
+        var unauthorizedTroubleshooter = new MonitoringTroubleshooter(
+            failure,
+            settings,
+            cursor,
+            "person@example.com",
+            failureCount: 3,
+            _ => Task.FromResult<IReadOnlyList<CopilotModelOption>>([]),
+            () => throw new WorkIqClient.WorkIqRequestException(
+                401,
+                retryAfter: null,
+                "Synthetic authorization failure."));
+        var unauthorized = await unauthorizedTroubleshooter.RunAsync();
+        TestAssert.True(
+            unauthorized.Checks[0].Failure?.StatusCode == 401 &&
+            unauthorized.Checks[2].Status ==
+                TroubleshootingCheckStatus.Failed &&
+            unauthorized.Recommendation.ShowSignIn &&
+            !unauthorized.Recommendation.ShowSettings,
+            "A WorkIQ authorization failure was incorrectly attributed to " +
+            "the unrelated Copilot model failure.");
     }
 
     private static async Task TestAlertLifecycleAsync(string directory)

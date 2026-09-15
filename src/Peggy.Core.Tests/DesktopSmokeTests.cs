@@ -50,6 +50,7 @@ internal static class DesktopSmokeTests
             TestAlertCenter();
             TestAlertContextWindow();
             TestConversationWindow();
+            TestTroubleshootingWindow();
             TestImmediateListeningWithoutGreeting();
             TestDeferredConversationApproval();
             TestWorkIqSignInWindow();
@@ -190,6 +191,7 @@ internal static class DesktopSmokeTests
         var feedback = new List<FeedbackKind>();
         AlertTier? correctedTier = null;
         var retried = false;
+        var troubleshot = false;
         var revealRequested = false;
         string? switchedCritical = null;
         window.ResolveRequested += id => resolved = id;
@@ -201,6 +203,7 @@ internal static class DesktopSmokeTests
         window.FeedbackRequested += (_, kind) => feedback.Add(kind);
         window.TierChanged += (_, tier) => correctedTier = tier;
         window.RetryRequested += () => retried = true;
+        window.TroubleshootRequested += () => troubleshot = true;
         window.RevealRequested += () => revealRequested = true;
         window.CriticalSwitchRequested += id => switchedCritical = id;
         FindButton(window, "Resolve").RaiseEvent(
@@ -225,6 +228,8 @@ internal static class DesktopSmokeTests
             AlertTier.Critical;
         FindButton(window, "Retry now").RaiseEvent(
             new RoutedEventArgs(Button.ClickEvent));
+        FindButton(window, "Troubleshoot").RaiseEvent(
+            new RoutedEventArgs(Button.ClickEvent));
         window.ShowCriticalBanner(alert, maskContent: false);
         FindButton(window, "Switch to alert").RaiseEvent(
             new RoutedEventArgs(Button.ClickEvent));
@@ -247,6 +252,7 @@ internal static class DesktopSmokeTests
                 ]) &&
             correctedTier == AlertTier.Critical &&
             retried &&
+            troubleshot &&
             revealRequested &&
             switchedCritical == alert.Id &&
             contextRequested == alert.Id,
@@ -260,6 +266,89 @@ internal static class DesktopSmokeTests
             window.Height <= Math.Max(320, workArea.Height - 16),
             "The responsive Alert Center exceeded the available work area.");
         window.Hide();
+    }
+
+    private static void TestTroubleshootingWindow()
+    {
+        var failure = new MonitoringFailureDetails
+        {
+            OccurredUtc = DateTimeOffset.UtcNow,
+            Stage = "retrieval",
+            Code = "retrieval-operation-failed",
+            ExceptionType = "WorkIqRequestException",
+            Message = "Synthetic retrieval failure.",
+            StatusCode = 503,
+            Operation = "fetch synthetic",
+            RequestId = "request-123"
+        };
+        var checks = MonitoringTroubleshooter.CheckNames
+            .Select(name => new TroubleshootingCheckResult(
+                name,
+                TroubleshootingCheckStatus.Passed,
+                "Synthetic check passed."))
+            .ToList();
+        var report = new MonitoringTroubleshootingReport(
+            DateTimeOffset.UtcNow,
+            failure,
+            checks,
+            new TroubleshootingRecommendation(
+                "Retry monitoring.",
+                ShowSignIn: false,
+                ShowSettings: true,
+                ShowRetry: true));
+        var bundleCreated = false;
+        var settingsOpened = false;
+        var window = new TroubleshootingWindow(
+            failure,
+            (progress, _) =>
+            {
+                foreach (var check in checks)
+                {
+                    progress.Report(check);
+                }
+                return Task.FromResult(report);
+            },
+            _ =>
+            {
+                bundleCreated = true;
+                return Task.FromResult(@"C:\Temp\Peggy-Diagnostics.zip");
+            });
+        var retried = false;
+        window.OpenSettingsRequested += () => settingsOpened = true;
+        window.RetryMonitoringRequested += () => retried = true;
+        window.Show();
+        WaitWithDispatcher(Task.Delay(100));
+        TestAssert.True(
+            Find<TextBlock>(window, "FailureStageText").Text ==
+                "retrieval" &&
+            Find<TextBlock>(window, "FailureStatusText").Text == "503" &&
+            Descendants<Border>(
+                    Find<StackPanel>(window, "ChecksPanel"))
+                .Count() == MonitoringTroubleshooter.CheckNames.Count &&
+            Find<Button>(window, "CopyDetailsButton").IsEnabled &&
+            Find<Button>(window, "SettingsButton").Visibility ==
+                Visibility.Visible &&
+            Find<Button>(window, "RetryMonitoringButton").Visibility ==
+                Visibility.Visible,
+            "The troubleshooting window did not render the failure, checks, " +
+            "or recommendation.");
+        Find<Button>(window, "RetryMonitoringButton").RaiseEvent(
+            new RoutedEventArgs(Button.ClickEvent));
+        Find<Button>(window, "SettingsButton").RaiseEvent(
+            new RoutedEventArgs(Button.ClickEvent));
+        Find<Button>(window, "CreateZipButton").RaiseEvent(
+            new RoutedEventArgs(Button.ClickEvent));
+        WaitWithDispatcher(Task.Delay(100));
+        TestAssert.True(
+            retried &&
+            settingsOpened &&
+            bundleCreated &&
+            Find<TextBlock>(window, "RunStatusText").Text.Contains(
+                "Peggy-Diagnostics.zip",
+                StringComparison.Ordinal),
+            "Troubleshooting actions were not wired.");
+        AssertDecorativeTextIsRaw(window, "Troubleshooting");
+        window.Close();
     }
 
     private static void TestAlertContextWindow()

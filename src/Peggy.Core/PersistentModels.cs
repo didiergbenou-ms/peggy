@@ -275,6 +275,35 @@ public sealed class AuditLogEntry
     public bool Verified { get; set; }
 }
 
+public sealed class MonitoringFailureDetails
+{
+    public DateTimeOffset OccurredUtc { get; set; }
+
+    public string Stage { get; set; } = string.Empty;
+
+    public string Code { get; set; } = string.Empty;
+
+    public string ExceptionType { get; set; } = string.Empty;
+
+    public string Message { get; set; } = string.Empty;
+
+    public int? StatusCode { get; set; }
+
+    public double? RetryAfterSeconds { get; set; }
+
+    public string Operation { get; set; } = string.Empty;
+
+    public string RequestId { get; set; } = string.Empty;
+
+    public DateTimeOffset? RetrievalReferenceUtc { get; set; }
+
+    public int BatchLimit { get; set; }
+
+    public MonitoringCursorState? CursorSnapshot { get; set; }
+
+    public List<string> ExceptionChain { get; set; } = [];
+}
+
 public sealed class PeggyStateDocument
 {
     public int Version { get; set; } = 1;
@@ -300,6 +329,8 @@ public sealed class PeggyStateDocument
     public int ConsecutiveMonitoringFailures { get; set; }
 
     public bool MonitoringInterrupted { get; set; }
+
+    public MonitoringFailureDetails? LastMonitoringFailure { get; set; }
 
     public List<AlertRecord> Alerts { get; set; } = [];
 

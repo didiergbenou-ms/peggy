@@ -43,6 +43,8 @@ public partial class AlertCenterWindow : Window
 
     public event Action? RetryRequested;
 
+    public event Action? TroubleshootRequested;
+
     public event Action<string>? CriticalSwitchRequested;
 
     public void UpdateAlerts(
@@ -558,6 +560,9 @@ public partial class AlertCenterWindow : Window
 
     private void Retry_Click(object sender, RoutedEventArgs e)
         => RetryRequested?.Invoke();
+
+    private void Troubleshoot_Click(object sender, RoutedEventArgs e)
+        => TroubleshootRequested?.Invoke();
 
     private void SwitchCritical_Click(object sender, RoutedEventArgs e)
     {

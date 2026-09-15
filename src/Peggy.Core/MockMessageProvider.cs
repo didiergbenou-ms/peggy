@@ -16,6 +16,12 @@ public sealed class MockMessageProvider : IMessageProvider
 
     public int ListTeamChannelsCallCount { get; private set; }
 
+    public MonitoringCursorState? LastGetChangesCursor { get; private set; }
+
+    public int? LastGetChangesLimit { get; private set; }
+
+    public DateTimeOffset? LastGetChangesReferenceUtc { get; private set; }
+
     public int ListOutlookFolderCallCount { get; private set; }
 
     public int ListOutlookRootFolderCallCount { get; private set; }
@@ -117,6 +123,9 @@ public sealed class MockMessageProvider : IMessageProvider
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        LastGetChangesCursor = cursor;
+        LastGetChangesLimit = limit;
+        LastGetChangesReferenceUtc = nowUtc;
         var updated = CloneCursor(cursor);
         updated.InitialScanStartedUtc ??=
             nowUtc.AddMinutes(-PeggyDefaults.StartupLookbackMinutes);

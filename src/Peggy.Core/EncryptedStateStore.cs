@@ -285,6 +285,24 @@ public sealed class EncryptedStateStore
         state.MonitoringCursor.ChannelPageSizes ??=
             new Dictionary<string, int>(StringComparer.Ordinal);
         state.MonitoringCursor.ParticipatedChannelThreads ??= [];
+        if (state.LastMonitoringFailure is { } failure)
+        {
+            failure.Stage = MonitoringFailureInspector.Sanitize(failure.Stage);
+            failure.Code = MonitoringFailureInspector.Sanitize(failure.Code);
+            failure.ExceptionType = MonitoringFailureInspector.Sanitize(
+                failure.ExceptionType);
+            failure.Message = MonitoringFailureInspector.Sanitize(
+                failure.Message);
+            failure.Operation = MonitoringFailureInspector.Sanitize(
+                failure.Operation);
+            failure.RequestId = MonitoringFailureInspector.Sanitize(
+                failure.RequestId);
+            failure.ExceptionChain = (failure.ExceptionChain ?? [])
+                .Select(MonitoringFailureInspector.Sanitize)
+                .Where(item => item.Length > 0)
+                .Take(8)
+                .ToList();
+        }
         state.Alerts ??= [];
         state.FeedbackRules ??= [];
         state.SeenMessages ??= [];

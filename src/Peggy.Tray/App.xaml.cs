@@ -43,6 +43,7 @@ public partial class App : Application
     private MascotWindow _mascot = null!;
     private SpeechBubbleWindow _bubble = null!;
     private AlertCenterWindow _alertCenter = null!;
+    private TroubleshootingWindow? _troubleshootingWindow;
     private ConversationWindow _conversationWindow = null!;
     private ConversationController _conversation = null!;
     private AlertManager _alertManager = null!;
@@ -227,6 +228,10 @@ public partial class App : Application
         _alertCenter.RevealRequested += () =>
             _ = ConfirmContextReveal();
         _alertCenter.RetryRequested += () => StartCheck(force: true);
+        _alertCenter.TroubleshootRequested += () =>
+            RunUiAction(
+                ShowTroubleshootingAsync,
+                $"{AssistantName} troubleshooting");
         _alertCenter.CriticalSwitchRequested += alertId =>
             RunUiAction(
                 () => StartConversationAsync(alertId),
@@ -400,6 +405,8 @@ public partial class App : Application
         var checkStage = "preparing";
         var batchLimit = PeggyDefaults.GetMonitoringBatchSize(
             _state.State.ConsecutiveMonitoringFailures);
+        DateTimeOffset? retrievalReferenceUtc = null;
+        MonitoringCursorState? retrievalCursorSnapshot = null;
         if (!_conversation.IsActive &&
             _mascot.IsVisible)
         {
@@ -438,6 +445,9 @@ public partial class App : Application
             {
                 batches++;
                 var nowUtc = DateTimeOffset.UtcNow;
+                retrievalReferenceUtc = nowUtc;
+                retrievalCursorSnapshot = CloneMonitoringCursor(
+                    _state.State.MonitoringCursor);
                 var cursorBefore = JsonSerializer.Serialize(
                     _state.State.MonitoringCursor);
                 checkStage = "retrieval";
@@ -576,7 +586,18 @@ public partial class App : Application
                     classificationFailure.Usage.SessionCredits,
                     DateTimeOffset.UtcNow);
             }
-            var becameInterrupted = _state.RecordMonitoringFailure();
+            var failureCode = GetMonitoringFailureCode(ex, checkStage);
+            var failure = MonitoringFailureInspector.Create(
+                ex,
+                checkStage,
+                failureCode,
+                DateTimeOffset.UtcNow);
+            failure.BatchLimit = batchLimit;
+            failure.RetrievalReferenceUtc = retrievalReferenceUtc;
+            failure.CursorSnapshot = CloneMonitoringCursor(
+                retrievalCursorSnapshot ??
+                _state.State.MonitoringCursor);
+            var becameInterrupted = _state.RecordMonitoringFailure(failure);
             _monitoringRemediation = GetMonitoringRemediation(
                 ex,
                 checkStage);
@@ -591,8 +612,9 @@ public partial class App : Application
             }
             Log(
                 $"CHECK ERROR stage={checkStage} " +
-                $"code={GetMonitoringFailureCode(ex, checkStage)} " +
+                $"code={failureCode} " +
                 $"type={ex.GetType().Name} " +
+                $"status={failure.StatusCode?.ToString() ?? "none"} " +
                 $"batchLimit={batchLimit} " +
                 $"failures={_state.State.ConsecutiveMonitoringFailures}");
             if (becameInterrupted ||
@@ -853,6 +875,7 @@ public partial class App : Application
                 identity.EulaAcceptedVersion,
                 _shutdown.Token);
         }
+
         if (dialogResult != true ||
             window.SavedSettings is null)
         {
@@ -1019,6 +1042,84 @@ public partial class App : Application
                 activationFailures);
         }
     }
+
+    private Task ShowTroubleshootingAsync()
+    {
+        if (_troubleshootingWindow is
+            {
+                IsVisible: true
+            } existing)
+        {
+            existing.Activate();
+            return Task.CompletedTask;
+        }
+
+        var failure = _state.State.LastMonitoringFailure ??
+            new MonitoringFailureDetails
+            {
+                OccurredUtc = DateTimeOffset.UtcNow,
+                Stage = "unknown",
+                Code = "details-unavailable",
+                ExceptionType = "Unknown",
+                Message =
+                    "The original failure details were not captured by this " +
+                    "Peggy version."
+            };
+        var diagnosticSettings = CloneSettings(_state.State.Settings);
+        diagnosticSettings.CopilotModel = _copilot.Model;
+        var troubleshooter = new MonitoringTroubleshooter(
+            failure,
+            diagnosticSettings,
+            CloneMonitoringCursor(
+                failure.CursorSnapshot ??
+                _state.State.MonitoringCursor),
+            _state.State.PinnedAccount,
+            _state.State.ConsecutiveMonitoringFailures,
+            _copilot.ListAvailableModelsAsync);
+        var window = new TroubleshootingWindow(
+            failure,
+            troubleshooter,
+            DiagnosticCollectorRunner.CreateAsync)
+        {
+            Owner = _alertCenter
+        };
+        window.SignInRequested += () =>
+        {
+            window.Close();
+            RunUiAction(
+                ReauthenticateWorkIqAsync,
+                "Microsoft 365 sign-in");
+        };
+        window.OpenSettingsRequested += () =>
+        {
+            window.Close();
+            RunUiAction(
+                ShowSettingsAsync,
+                $"{AssistantName} settings");
+        };
+        window.RetryMonitoringRequested += () =>
+        {
+            window.Close();
+            StartCheck(force: true);
+        };
+        window.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_troubleshootingWindow, window))
+            {
+                _troubleshootingWindow = null;
+            }
+        };
+        _troubleshootingWindow = window;
+        window.Show();
+        return Task.CompletedTask;
+    }
+
+    private static MonitoringCursorState CloneMonitoringCursor(
+        MonitoringCursorState cursor)
+        => JsonSerializer.Deserialize<MonitoringCursorState>(
+               JsonSerializer.Serialize(cursor))
+           ?? throw new InvalidOperationException(
+               "Peggy could not clone its monitoring cursor.");
 
     private async Task<bool> EnsureWorkIqConnectionAsync()
     {
@@ -2031,6 +2132,7 @@ public partial class App : Application
         var trayIcon = _tray.Icon;
         _tray.Dispose();
         trayIcon?.Dispose();
+        _troubleshootingWindow?.Close();
         CloseAlertContextWindows();
         _alertCenter.Close();
         _conversationWindow.Close();

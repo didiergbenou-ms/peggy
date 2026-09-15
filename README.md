@@ -56,6 +56,8 @@ remain in a separate local process.
 - Pins one Microsoft 365 identity and rejects a different authenticated account.
 - Stores state with Windows DPAPI for the current user.
 - Tracks local AI-credit usage and keeps a 30-day local action audit.
+- Diagnoses interrupted monitoring with deterministic account, source, model,
+  and read-only retrieval replay checks.
 
 ## Architecture
 
@@ -494,6 +496,8 @@ The Alert Center shows:
 
 When privacy masking is active, details remain hidden until
 **Reveal details** is explicitly confirmed. A reveal expires after one minute.
+When monitoring is interrupted, **Troubleshoot** opens the captured failure
+details and targeted checks beside **Retry now**.
 
 ### Voice conversation
 
@@ -870,6 +874,24 @@ Remove-Item Env:\PEGGY_MESSAGE_PROVIDER
 
 ## Troubleshooting
 
+### Troubleshoot interrupted monitoring
+
+Select **Troubleshoot** in the Alert Center failure banner. Peggy preserves the
+original stage, operation, status, request ID, timestamp, and exception chain,
+then runs four deterministic checks:
+
+1. Microsoft 365 account and Inbox access.
+2. Configured Teams source access.
+3. Access to the configured GitHub Copilot model.
+4. The exact monitoring retrieval path against a cloned failure-time cursor.
+
+The replay is read-only and never advances Peggy's monitoring cursor. It also
+does not ask Copilot to diagnose Copilot. The result recommends the relevant
+sign-in, Copilot settings, retry, or diagnostic action. **Copy technical
+details** copies the complete report; **Create diagnostic ZIP** runs the
+packaged collector with deterministic WorkIQ probes, without invoking Copilot
+or sending email.
+
 ### Collect a diagnostic ZIP
 
 The repository is private, so the affected Windows user must authenticate to
@@ -917,7 +939,7 @@ team.
 | WorkIQ terms error | Open Settings, select **Sign in again**, then review and accept the current terms |
 | WorkIQ consent fails | Ask a Microsoft Entra administrator to grant the Work IQ application permissions required by your tenant |
 | Monitoring classification repeatedly fails after installation | Run `copilot --version` and confirm version 1.0.81 or later. Run `copilot update stable`, restart Peggy, or rerun `install.ps1 -InstallPrerequisites` |
-| Monitoring interrupted | Open the Alert Center for remediation. Peggy retries in a fresh Copilot session and reduces the batch to isolate problematic input |
+| Monitoring interrupted | Open the Alert Center and select **Troubleshoot** to inspect the original failure and replay retrieval without changing state |
 | Speech models missing | Run `.\scripts\Install-SpeechModels.ps1` |
 | Incomplete model directory | Rerun the installer with `-Force` |
 | Speech host missing | Rebuild/publish `Peggy.Tray` or set `PEGGY_SPEECH_HOST_PATH` |
@@ -927,7 +949,7 @@ team.
 | Build reports a locked Peggy assembly | Use **Quit Peggy**, then rebuild |
 | Settings are overridden | Remove the corresponding process environment override, especially `PEGGY_COPILOT_MODEL` |
 | Need isolated test state | Set `PEGGY_STATE_PATH` to a new file before launch |
-| Need diagnostics | Clone the repository and run the collector above; for a quick check, inspect `%TEMP%\peggy.log` or the path in `PEGGY_LOG_PATH` |
+| Need diagnostics | Select **Create diagnostic ZIP** in the troubleshooter, or clone the repository and run the collector above; for a quick check, inspect `%TEMP%\peggy.log` or the path in `PEGGY_LOG_PATH` |
 
 ## Current limitations
 

@@ -13,6 +13,7 @@ internal static class CoreBehaviorSmokeTests
         await TestAtomicSettingsStateAsync(directory);
         await TestStateValidationAsync(directory);
         TestMonitoringSchedule();
+        TestMonitoringFailureInspection();
         TestOutlookFolderPaths();
         TestOpaqueIdentifiers();
         TestProviderFactory();
@@ -74,18 +75,58 @@ internal static class CoreBehaviorSmokeTests
             manager.State.CopilotSessionCredits,
             "Session AI credits were not updated.");
 
+        var capturedFailure = new MonitoringFailureDetails
+        {
+            OccurredUtc = now,
+            Stage = "retrieval",
+            Code = "retrieval-operation-failed",
+            ExceptionType = "WorkIqRequestException",
+            Message = "WorkIQ request failed with status 503.",
+            StatusCode = 503,
+            Operation = "fetch /me/mailFolders/inbox/messages",
+            RequestId = "request-123",
+            RetrievalReferenceUtc = now.AddMinutes(-2),
+            BatchLimit = 5,
+            CursorSnapshot = new MonitoringCursorState
+            {
+                OutlookWatermarkUtc = now.AddMinutes(-5)
+            },
+            ExceptionChain =
+            [
+                "WorkIqRequestException: WorkIQ request failed with status 503."
+            ]
+        };
         TestAssert.True(
             !manager.RecordMonitoringFailure() &&
             !manager.RecordMonitoringFailure(),
             "Monitoring was interrupted before its failure threshold.");
         TestAssert.True(
-            manager.RecordMonitoringFailure() &&
-            manager.State.MonitoringInterrupted,
+            manager.RecordMonitoringFailure(capturedFailure) &&
+            manager.State.MonitoringInterrupted &&
+            ReferenceEquals(
+                manager.State.LastMonitoringFailure,
+                capturedFailure),
             "Monitoring did not transition to interrupted at the threshold.");
+        await manager.SaveAsync();
+        var failedState = await new EncryptedStateStore(path).LoadAsync();
+        TestAssert.True(
+            failedState.LastMonitoringFailure is
+            {
+                Stage: "retrieval",
+                StatusCode: 503,
+                RequestId: "request-123"
+            } &&
+            failedState.LastMonitoringFailure.BatchLimit == 5 &&
+            failedState.LastMonitoringFailure.RetrievalReferenceUtc ==
+                now.AddMinutes(-2) &&
+            failedState.LastMonitoringFailure.CursorSnapshot?
+                .OutlookWatermarkUtc == now.AddMinutes(-5),
+            "The structured monitoring failure did not persist.");
         TestAssert.True(
             manager.RecordMonitoringSuccess(now) &&
             manager.State.ConsecutiveMonitoringFailures == 0 &&
-            !manager.State.MonitoringInterrupted,
+            !manager.State.MonitoringInterrupted &&
+            manager.State.LastMonitoringFailure is null,
             "Monitoring success did not restore health.");
 
         manager.MarkMessagesSeen(["one", "one", "two", ""], now);
@@ -413,6 +454,35 @@ internal static class CoreBehaviorSmokeTests
         TestAssert.Throws<ArgumentException>(
             () => OutlookFolderPath.Normalize("Inbox/../Archive"),
             "An unsafe Outlook folder path was accepted.");
+    }
+
+    private static void TestMonitoringFailureInspection()
+    {
+        var workIq = new WorkIqClient.WorkIqRequestException(
+            429,
+            TimeSpan.FromSeconds(12),
+            "Rate limited. Authorization: Bearer secret-token",
+            "request-456");
+        workIq.AttachOperation(
+            "fetch /me/mailFolders/inbox/messages?$top=1");
+        var details = MonitoringFailureInspector.Create(
+            new InvalidOperationException("Retrieval failed.", workIq),
+            "retrieval",
+            "retrieval-operation-failed",
+            DateTimeOffset.UtcNow);
+        TestAssert.True(
+            details.StatusCode == 429 &&
+            details.RetryAfterSeconds == 12 &&
+            details.RequestId == "request-456" &&
+            details.Operation.Contains(
+                "/me/mailFolders/inbox/messages",
+                StringComparison.Ordinal) &&
+            details.ExceptionChain.All(item =>
+                !item.Contains("secret-token", StringComparison.Ordinal)) &&
+            details.ExceptionChain.Any(item =>
+                item.Contains("[redacted]", StringComparison.Ordinal)),
+            "Structured monitoring failure inspection lost WorkIQ details or " +
+            "retained a credential.");
     }
 
     private static void TestMonitoringSchedule()

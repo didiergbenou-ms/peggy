@@ -153,6 +153,8 @@ public sealed class CopilotRunner : IAsyncDisposable
 
     public decimal SessionCredits => _sessionCredits;
 
+    public string Model => _model;
+
     public async Task<IReadOnlyList<CopilotModelOption>>
         ListAvailableModelsAsync(CancellationToken ct = default)
     {

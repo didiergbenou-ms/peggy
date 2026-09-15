@@ -59,6 +59,9 @@ jobs:
           Copy-Item `
             .\scripts\Install-SpeechModels.ps1 `
             (Join-Path $publishDirectory "scripts")
+          Copy-Item `
+            .\scripts\Collect-PeggyDiagnostics.ps1 `
+            (Join-Path $publishDirectory "scripts")
           Set-Content `
             -LiteralPath (Join-Path $publishDirectory "version.txt") `
             -Value $tag `

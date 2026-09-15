@@ -647,7 +647,8 @@ try {
         'peggy-tray.exe',
         'Peggy.Mcp\peggy-mcp.exe',
         'Peggy.Speech.Host\peggy-speech-host.exe',
-        'scripts\Install-SpeechModels.ps1'
+        'scripts\Install-SpeechModels.ps1',
+        'scripts\Collect-PeggyDiagnostics.ps1'
     )
     foreach ($requiredFile in $requiredFiles) {
         if (-not (Test-Path -LiteralPath (
