@@ -850,6 +850,9 @@ internal static class CoreBehaviorSmokeTests
             ?? throw new InvalidOperationException(
                 "The test executable path is unavailable.");
         var readCounter = Path.Combine(directory, "read-retry-count.txt");
+        var internalErrorCounter = Path.Combine(
+            directory,
+            "read-500-retry-count.txt");
         var writeCounter = Path.Combine(directory, "write-retry-count.txt");
         var client = new WorkIqClient(executable);
 
@@ -864,6 +867,19 @@ internal static class CoreBehaviorSmokeTests
             "2",
             File.ReadAllText(readCounter),
             "A transient WorkIQ read used the wrong retry count.");
+
+        var recoveredInternalError =
+            await client.FetchAsync<Dictionary<string, string>>(
+                $"peggy-test|read500|{internalErrorCounter}",
+                CancellationToken.None);
+        TestAssert.Equal(
+            "ok",
+            recoveredInternalError["value"],
+            "A transient WorkIQ 500 read did not recover.");
+        TestAssert.Equal(
+            "2",
+            File.ReadAllText(internalErrorCounter),
+            "A transient WorkIQ 500 read used the wrong retry count.");
 
         await TestAssert.ThrowsAsync<InvalidOperationException>(
             () => client.CreateAsync<Dictionary<string, string>>(

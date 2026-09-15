@@ -1430,10 +1430,10 @@ static bool TryRunFakeWorkIq(string[] arguments)
     }
     if (attempts == 1)
     {
+        var statusCode = mode == "read500" ? 500 : 504;
         Console.WriteLine(
-            """
-            {"results":[{"statusCode":504,"error":{"message":"temporary gateway timeout"}}]}
-            """);
+            "{\"results\":[{\"statusCode\":" + statusCode +
+            ",\"error\":{\"message\":\"temporary service failure\"}}]}");
         return true;
     }
 

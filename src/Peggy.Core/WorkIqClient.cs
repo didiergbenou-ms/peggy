@@ -823,7 +823,7 @@ internal sealed class WorkIqClient
     }
 
     private static bool IsTransientStatus(int statusCode)
-        => statusCode is 429 or 502 or 503 or 504;
+        => statusCode is 429 or 500 or 502 or 503 or 504;
 
     private async Task<string> RunCommandOnceAsync(
         string command,

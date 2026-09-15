@@ -106,6 +106,8 @@ whose owning process has exited.
 - Normal monitoring uses persisted batches of at most 20 items. Consecutive
   failures reduce retries to 10, 5, and then 1 item so one problematic item can
   be isolated without silently advancing the source cursor.
+- Read-only WorkIQ calls retry bounded transient `429`, `500`, `502`, `503`,
+  and `504` responses; write operations are never replayed automatically.
 - Three consecutive monitoring failures mark monitoring as interrupted and
   surface remediation in the Alert Center.
 - Each classifier receives only `get_turn_context` and the scoped
