@@ -392,7 +392,8 @@ powershell.exe -ExecutionPolicy Bypass -File `
 The uninstaller removes Peggy's application files, Start menu shortcut, and
 optional startup entry. It preserves encrypted settings and local speech models
 so they remain available after a reinstall. To remove those files and Peggy's
-temporary runtime data too, add `-PurgeData`:
+temporary runtime data and synchronized account preference too, add
+`-PurgeData`:
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File `
@@ -453,8 +454,8 @@ On first launch, Peggy opens **Connect Microsoft 365**:
 2. Review and accept the WorkIQ EULA. Peggy records the exact accepted WorkIQ
    build in its encrypted state.
 3. Enter the Microsoft 365 email address Peggy should use.
-4. Select **Sign in** and complete Microsoft sign-in and permission consent in
-   the browser.
+4. Select **Sign in** and complete any Microsoft sign-in or permission-consent
+   prompt WorkIQ opens.
 5. Peggy reads `/me`, verifies the selected identity, and pins the canonical
    account in DPAPI-encrypted state.
 
@@ -467,6 +468,9 @@ verifies a different identity, it clears local alerts, monitoring cursors,
 account-specific Outlook folders and Teams selections, Copilot conversation
 context, credit history, and action audit for the previous account. General
 schedule, model, startup, and speech preferences are preserved.
+The account field remains editable even when `PEGGY_WORKIQ_ACCOUNT` is already
+set. After verification, Peggy synchronizes that current-user preference to the
+selected account; encrypted verified identity remains authoritative.
 
 If WorkIQ loses its local `I-accept-EULA` setting, Peggy restores it
 automatically only when the installed WorkIQ build exactly matches the build
@@ -799,7 +803,7 @@ external writes.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `PEGGY_WORKIQ_ACCOUNT` | Optional account lock for automation or migration | Encrypted account selected during first-run sign-in |
+| `PEGGY_WORKIQ_ACCOUNT` | Current-user account preference, synchronized after verified sign-in | Encrypted account selected during first-run sign-in |
 | `PEGGY_WORKIQ_PATH` | Explicit `workiq.exe` or compatible wrapper path | Auto-detected |
 | `PEGGY_MESSAGE_PROVIDER` | `workiq` or `mock` | `workiq` |
 | `PEGGY_COPILOT_PATH` | Explicit `copilot.exe` path | `PATH`, then the current user's WinGet links |

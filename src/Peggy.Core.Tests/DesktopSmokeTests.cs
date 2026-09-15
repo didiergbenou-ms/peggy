@@ -1623,18 +1623,13 @@ internal static class DesktopSmokeTests
             Environment.SetEnvironmentVariable(
                 PeggyDefaults.WorkIqAccountEnvironmentVariable,
                 "managed@example.com");
-            var managed = new WorkIqSignInWindow("managed@example.com");
+            var managed = new WorkIqSignInWindow("person@example.com");
             TestAssert.True(
-                Find<TextBox>(managed, "AccountText").IsReadOnly &&
+                !Find<TextBox>(managed, "AccountText").IsReadOnly &&
                 Find<TextBox>(managed, "AccountText").Text ==
-                    "managed@example.com" &&
-                Find<TextBlock>(
-                    managed,
-                    "AccountChangeNotice").Text.Contains(
-                        PeggyDefaults.WorkIqAccountEnvironmentVariable,
-                        StringComparison.Ordinal),
-                "The environment-controlled Microsoft 365 identity was " +
-                "incorrectly editable.");
+                    "person@example.com",
+                "A stale environment preference locked or replaced the " +
+                "verified Microsoft 365 account.");
             managed.Close();
         }
         finally

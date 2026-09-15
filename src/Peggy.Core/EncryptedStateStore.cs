@@ -155,28 +155,6 @@ public sealed class EncryptedStateStore
         PeggyStateDocument state,
         DateTimeOffset nowUtc)
     {
-        var configuredAccount = PeggyDefaults.ConfiguredWorkIqAccount;
-        if (string.IsNullOrWhiteSpace(state.PinnedAccount))
-        {
-            state.PinnedAccount = configuredAccount;
-        }
-        else if (!string.IsNullOrWhiteSpace(configuredAccount) &&
-                 !string.Equals(
-                     state.PinnedAccount,
-                     configuredAccount,
-                     StringComparison.OrdinalIgnoreCase) &&
-                 !string.Equals(
-                     state.PinnedMailbox,
-                     configuredAccount,
-                     StringComparison.OrdinalIgnoreCase) &&
-                 !string.Equals(
-                     state.PinnedUserPrincipalName,
-                     configuredAccount,
-                     StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidDataException(
-                "The assistant's encrypted state belongs to a different Microsoft 365 account.");
-        }
         if (string.IsNullOrWhiteSpace(state.PinnedMailbox))
         {
             state.PinnedMailbox = state.PinnedAccount;
@@ -398,7 +376,6 @@ public sealed class EncryptedStateStore
     private static PeggyStateDocument CreateDefault()
         => new()
         {
-            PinnedAccount = PeggyDefaults.ConfiguredWorkIqAccount,
             CopilotSessionDate = DateOnly.FromDateTime(DateTime.Now),
             CopilotSessionId = Guid.NewGuid().ToString()
         };

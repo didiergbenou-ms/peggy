@@ -25,6 +25,36 @@ public static class PeggyDefaults
             ?.Trim()
             ?? string.Empty;
 
+    public static bool TrySynchronizeWorkIqAccount(
+        string account,
+        out Exception? failure)
+    {
+        var normalized = WorkIqSetupService.NormalizeAccount(account);
+        Environment.SetEnvironmentVariable(
+            WorkIqAccountEnvironmentVariable,
+            normalized,
+            EnvironmentVariableTarget.Process);
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                WorkIqAccountEnvironmentVariable,
+                normalized,
+                EnvironmentVariableTarget.User);
+            failure = null;
+            return true;
+        }
+        catch (Exception ex) when (
+            ex is ArgumentException or
+            IOException or
+            PlatformNotSupportedException or
+            System.Security.SecurityException or
+            UnauthorizedAccessException)
+        {
+            failure = ex;
+            return false;
+        }
+    }
+
     public static int GetMonitoringBatchSize(int consecutiveFailures)
         => consecutiveFailures switch
         {

@@ -177,19 +177,6 @@ public sealed class PeggyStateManager
                 nameof(copilotSessionId));
         }
 
-        var configuredAccount = PeggyDefaults.ConfiguredWorkIqAccount;
-        if (!string.IsNullOrWhiteSpace(configuredAccount) &&
-            !WorkIqSetupService.RepresentsSameAccount(
-                configuredAccount,
-                configuredAccount,
-                identity))
-        {
-            throw new InvalidOperationException(
-                "The Microsoft 365 account is controlled by the " +
-                $"{PeggyDefaults.WorkIqAccountEnvironmentVariable} " +
-                "environment variable.");
-        }
-
         await _stateGate.WaitAsync(ct);
         try
         {
@@ -262,19 +249,6 @@ public sealed class PeggyStateManager
                 "Copilot session ID are required.",
                 nameof(identity));
         }
-        var configuredAccount = PeggyDefaults.ConfiguredWorkIqAccount;
-        if (!string.IsNullOrWhiteSpace(configuredAccount) &&
-            !string.Equals(
-                configuredAccount,
-                normalizedAccount,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException(
-                "The Microsoft 365 account is controlled by the " +
-                $"{PeggyDefaults.WorkIqAccountEnvironmentVariable} " +
-                "environment variable.");
-        }
-
         await _stateGate.WaitAsync(ct);
         try
         {

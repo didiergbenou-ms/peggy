@@ -15,7 +15,6 @@ public partial class WorkIqSignInWindow : Window
     private readonly string _expectedMailbox;
     private readonly string _expectedUserPrincipalName;
     private readonly string _expectedPrincipalId;
-    private readonly bool _accountLocked;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private CancellationTokenSource? _activeOperationCancellation;
     private bool _busy;
@@ -66,16 +65,10 @@ public partial class WorkIqSignInWindow : Window
             expectedUserPrincipalName?.Trim() ?? string.Empty;
         _expectedPrincipalId = expectedPrincipalId?.Trim() ?? string.Empty;
         var configuredAccount = PeggyDefaults.ConfiguredWorkIqAccount;
-        _accountLocked = !string.IsNullOrWhiteSpace(configuredAccount);
-        AccountText.Text = _accountLocked
-            ? configuredAccount
-            : _expectedAccount;
-        AccountText.IsReadOnly = _accountLocked;
-        if (_accountLocked)
-        {
-            AccountText.ToolTip =
-                "Controlled by the PEGGY_WORKIQ_ACCOUNT environment variable.";
-        }
+        AccountText.Text = _expectedAccount.Length > 0
+            ? _expectedAccount
+            : configuredAccount;
+        AccountText.IsReadOnly = false;
         UpdateAccountMode();
 
         Loaded += (_, _) =>
@@ -310,7 +303,6 @@ public partial class WorkIqSignInWindow : Window
 
     private bool IsAccountSwitchRequested()
         => _expectedAccount.Length > 0 &&
-           !_accountLocked &&
            !string.IsNullOrWhiteSpace(AccountText.Text) &&
            !string.Equals(
                _expectedAccount,
@@ -324,16 +316,6 @@ public partial class WorkIqSignInWindow : Window
 
     private void UpdateAccountMode()
     {
-        if (_accountLocked)
-        {
-            SignInButton.Content = "Sign in again";
-            AccountChangeNotice.Text =
-                "This account is controlled by PEGGY_WORKIQ_ACCOUNT. Remove or " +
-                "update that environment variable before switching accounts.";
-            AccountChangeNotice.Visibility = Visibility.Visible;
-            return;
-        }
-
         if (_expectedAccount.Length == 0)
         {
             SignInButton.Content = "Sign in";

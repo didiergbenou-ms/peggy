@@ -326,6 +326,27 @@ if (Test-Path -LiteralPath $InstallDirectory -PathType Container) {
 }
 
 if ($PurgeData) {
+    $accountVariable = 'PEGGY_WORKIQ_ACCOUNT'
+    $savedAccount = [Environment]::GetEnvironmentVariable(
+        $accountVariable,
+        [EnvironmentVariableTarget]::User
+    )
+    if (-not [string]::IsNullOrWhiteSpace($savedAccount)) {
+        $targetsFound++
+        if ($PSCmdlet.ShouldProcess(
+                "Current user environment variable $accountVariable",
+                'Remove Peggy account preference')) {
+            Write-Step 'Removing Peggy account preference'
+            [Environment]::SetEnvironmentVariable(
+                $accountVariable,
+                $null,
+                [EnvironmentVariableTarget]::User
+            )
+        } else {
+            $actionsSkipped = $true
+        }
+    }
+
     if (Test-Path -LiteralPath $dataDirectory -PathType Container) {
         $targetsFound++
         if ($PSCmdlet.ShouldProcess(

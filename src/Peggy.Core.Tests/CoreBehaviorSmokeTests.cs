@@ -503,19 +503,21 @@ internal static class CoreBehaviorSmokeTests
             Environment.SetEnvironmentVariable(
                 PeggyDefaults.WorkIqAccountEnvironmentVariable,
                 "new-upn@tenant.example");
-            await TestAssert.ThrowsAsync<InvalidOperationException>(
-                () => manager.SwitchWorkIqIdentityAsync(
-                    new WorkIqAccountIdentity(
-                        "blocked@example.com",
-                        "blocked@example.com",
-                        "blocked@example.com")
-                    {
-                        PrincipalId = "blocked-principal-id",
-                        EulaAcceptedVersion = "1.0.0-new"
-                    },
-                    Guid.NewGuid().ToString(),
-                    DateTimeOffset.UtcNow),
-                "PEGGY_WORKIQ_ACCOUNT did not prevent an account switch.");
+            await manager.SwitchWorkIqIdentityAsync(
+                new WorkIqAccountIdentity(
+                    "changed@example.com",
+                    "changed@example.com",
+                    "changed@example.com")
+                {
+                    PrincipalId = "changed-principal-id",
+                    EulaAcceptedVersion = "1.0.0-new"
+                },
+                Guid.NewGuid().ToString(),
+                DateTimeOffset.UtcNow);
+            TestAssert.Equal(
+                "changed@example.com",
+                manager.State.PinnedAccount,
+                "PEGGY_WORKIQ_ACCOUNT incorrectly prevented account switching.");
         }
         finally
         {
@@ -650,23 +652,38 @@ internal static class CoreBehaviorSmokeTests
             "Teams scope migration did not restore the safe default or " +
             "normalize whole-team precedence.");
 
-        TestAssert.Throws<InvalidDataException>(
-            () => EncryptedStateStore.NormalizeAndPrune(
-                new PeggyStateDocument { PinnedAccount = "other@example.com" },
-                now),
-            "State account pinning was not enforced.");
-        var configuredAccount = PeggyDefaults.ConfiguredWorkIqAccount;
-        var aliasState = new PeggyStateDocument
+        var configuredState = new PeggyStateDocument
         {
-            PinnedAccount = "mailbox@example.com",
-            PinnedMailbox = "mailbox@example.com",
-            PinnedUserPrincipalName = configuredAccount
+            PinnedAccount = "other@example.com",
+            PinnedMailbox = "other@example.com",
+            PinnedPrincipalId = "other-principal-id"
         };
-        EncryptedStateStore.NormalizeAndPrune(aliasState, now);
+        EncryptedStateStore.NormalizeAndPrune(configuredState, now);
         TestAssert.Equal(
-            "mailbox@example.com",
-            aliasState.PinnedAccount,
-            "The environment account lock rejected a verified mailbox alias.");
+            "other@example.com",
+            configuredState.PinnedAccount,
+            "The environment preference overwrote verified encrypted state.");
+        var previousAccountPreference = Environment.GetEnvironmentVariable(
+            PeggyDefaults.WorkIqAccountEnvironmentVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                PeggyDefaults.WorkIqAccountEnvironmentVariable,
+                "unverified@example.com");
+            var unconfiguredState = new PeggyStateDocument();
+            EncryptedStateStore.NormalizeAndPrune(unconfiguredState, now);
+            TestAssert.Equal(
+                string.Empty,
+                unconfiguredState.PinnedAccount,
+                "An unverified environment preference was persisted as an " +
+                "account pin.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                PeggyDefaults.WorkIqAccountEnvironmentVariable,
+                previousAccountPreference);
+        }
 
         var corruptPath = Path.Combine(directory, "corrupt-state.dat");
         await File.WriteAllBytesAsync(corruptPath, [1, 2, 3, 4]);

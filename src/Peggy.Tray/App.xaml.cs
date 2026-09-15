@@ -1254,6 +1254,9 @@ public partial class App : Application
                         identity.UserPrincipalName,
                         identity.PrincipalId,
                         _shutdown.Token);
+                    SynchronizeWorkIqAccountPreference(
+                        identity.Account,
+                        showWarning: false);
                     return true;
                 }
                 catch (WorkIqSetupException)
@@ -1275,11 +1278,15 @@ public partial class App : Application
             return false;
         }
 
+        var connectedIdentity = window.AuthenticatedIdentity
+            ?? throw new InvalidOperationException(
+                "WorkIQ did not return the verified identity.");
         await ApplyAuthenticatedWorkIqIdentityAsync(
-            window.AuthenticatedIdentity
-                ?? throw new InvalidOperationException(
-                    "WorkIQ did not return the verified identity."),
+            connectedIdentity,
             refreshRuntime: false);
+        SynchronizeWorkIqAccountPreference(
+            connectedIdentity.Account,
+            showWarning: true);
         return true;
     }
 
@@ -1398,6 +1405,9 @@ public partial class App : Application
             await ApplyAuthenticatedWorkIqIdentityAsync(
                 identity,
                 refreshRuntime: true);
+            SynchronizeWorkIqAccountPreference(
+                identity.Account,
+                showWarning: true);
             safeToResume = true;
             Say($"Microsoft 365 is connected as {identity.Account}.");
         }
@@ -1462,6 +1472,33 @@ public partial class App : Application
         catch (WorkIqSetupException)
         {
             return false;
+        }
+    }
+
+    private void SynchronizeWorkIqAccountPreference(
+        string account,
+        bool showWarning)
+    {
+        if (PeggyDefaults.TrySynchronizeWorkIqAccount(
+                account,
+                out var failure))
+        {
+            return;
+        }
+
+        Log(
+            "WORKIQ ACCOUNT PREFERENCE SYNC ERROR " +
+            $"type={failure?.GetType().Name ?? "Unknown"}");
+        if (showWarning)
+        {
+            MessageBox.Show(
+                "Peggy connected the verified Microsoft 365 account, but " +
+                "Windows did not allow the current-user " +
+                "PEGGY_WORKIQ_ACCOUNT preference to be updated. The encrypted " +
+                "account remains active and editable.",
+                "Microsoft 365 account",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
         }
     }
 
