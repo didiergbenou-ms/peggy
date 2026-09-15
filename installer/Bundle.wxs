@@ -1,0 +1,43 @@
+<Wix
+    xmlns="http://wixtoolset.org/schemas/v4/wxs"
+    xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <Bundle
+      Name="Peggy"
+      Manufacturer="Didier Gbenou"
+      Version="$(var.BundleVersion)"
+      UpgradeCode="{30D151DF-BE3F-5276-931A-FC933C8824A7}"
+      AboutUrl="https://github.com/didiergbenou-ms/peggy"
+      HelpUrl="https://github.com/didiergbenou-ms/peggy#troubleshooting"
+      DisableModify="yes"
+      Compressed="yes">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+          Theme="hyperlinkLicense"
+          LicenseUrl="" />
+    </BootstrapperApplication>
+
+    <Chain>
+      <ExePackage
+          Id="PeggyPrerequisiteCheck"
+          SourceFile="$(var.PrerequisiteCheckerPath)"
+          Name="peggy-prerequisite-check.exe"
+          DisplayName="Peggy prerequisite check"
+          Description="Checks PowerShell, Node.js, npm, and GitHub Copilot CLI"
+          InstallArguments="--bundle"
+          RepairArguments="--bundle"
+          DetectCondition="0"
+          Permanent="yes"
+          PerMachine="no"
+          Vital="yes">
+        <ExitCode Value="0" Behavior="success" />
+      </ExePackage>
+      <MsiPackage
+          Id="PeggyMsi"
+          SourceFile="$(var.MsiPath)"
+          Name="peggy-win-x64.msi"
+          DisplayName="Peggy"
+          Visible="no"
+          Vital="yes" />
+    </Chain>
+  </Bundle>
+</Wix>
