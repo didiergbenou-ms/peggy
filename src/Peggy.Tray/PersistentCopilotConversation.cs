@@ -216,30 +216,11 @@ internal sealed class PersistentCopilotConversation : IAsyncDisposable
                 return _session;
             }
 
-            var environment = new Dictionary<string, string>(
-                StringComparer.OrdinalIgnoreCase)
-            {
-                ["PEGGY_OUTLOOK_FOLDERS"] = string.Join(
-                    ";",
-                    _settings.AdditionalOutlookFolders),
-                ["PEGGY_TEAMS_WATCHLIST"] = JsonSerializer.Serialize(
-                    _settings.TeamsChannelWatchlist),
-                ["PEGGY_TEAMS_TEAM_WATCHLIST"] = JsonSerializer.Serialize(
-                    _settings.TeamsTeamWatchlist),
-                ["PEGGY_TEAMS_SCOPE"] = _settings.TeamsScope.ToString(),
-                ["PEGGY_TEAMS_MONITOR_CHATS"] =
-                    _settings.MonitorTeamsChatsInSelectedScope.ToString(),
-                ["PEGGY_FOCUS_FILE"] = _focusPath,
-                ["PEGGY_ACTION_FILE"] = _actionPath
-            };
-            if (!string.IsNullOrWhiteSpace(_account))
-            {
-                environment["PEGGY_WORKIQ_ACCOUNT"] = _account;
-            }
-            CopyEnvironmentVariable(
-                environment,
-                "PEGGY_MESSAGE_PROVIDER");
-            CopyEnvironmentVariable(environment, "PEGGY_WORKIQ_PATH");
+            var environment = PeggyProviderEnvironment.Create(
+                _settings,
+                _account);
+            environment["PEGGY_FOCUS_FILE"] = _focusPath;
+            environment["PEGGY_ACTION_FILE"] = _actionPath;
 
             var client = CopilotClientFactory.Create(_copilotPath);
             try
@@ -399,17 +380,6 @@ internal sealed class PersistentCopilotConversation : IAsyncDisposable
         }
         catch (UnauthorizedAccessException)
         {
-        }
-    }
-
-    private static void CopyEnvironmentVariable(
-        IDictionary<string, string> destination,
-        string name)
-    {
-        var value = Environment.GetEnvironmentVariable(name);
-        if (!string.IsNullOrWhiteSpace(value))
-        {
-            destination[name] = value;
         }
     }
 

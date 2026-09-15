@@ -63,6 +63,8 @@ public sealed class PeggySettings
     public string CopilotContextTier { get; set; } =
         PeggyDefaults.CopilotContextTierDefault;
 
+    public bool IncludeActiveCasesFolder { get; set; } = true;
+
     public List<string> AdditionalOutlookFolders { get; set; } = [];
 
     public TeamsMonitoringScope TeamsScope { get; set; } =

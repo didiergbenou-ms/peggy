@@ -16,6 +16,12 @@ public sealed class MockMessageProvider : IMessageProvider
 
     public int ListTeamChannelsCallCount { get; private set; }
 
+    public int ListOutlookFolderCallCount { get; private set; }
+
+    public int ListOutlookRootFolderCallCount { get; private set; }
+
+    public int ListOutlookChildFolderCallCount { get; private set; }
+
     public MockMessageProvider()
     {
         var now = DateTimeOffset.Now;
@@ -208,6 +214,67 @@ public sealed class MockMessageProvider : IMessageProvider
             new TeamsTeamInfo("mock-team", "Engineering"),
             new TeamsTeamInfo("mock-operations", "Operations")
         ]);
+    }
+
+    public Task<IReadOnlyList<OutlookFolderInfo>>
+        ListOutlookChildFoldersAsync(
+            OutlookFolderInfo? parent,
+            CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        ListOutlookFolderCallCount++;
+        if (parent is null)
+        {
+            ListOutlookRootFolderCallCount++;
+        }
+        else
+        {
+            ListOutlookChildFolderCallCount++;
+        }
+        IReadOnlyList<OutlookFolderInfo> folders = parent?.FolderId switch
+        {
+            null =>
+            [
+                new(
+                    "mock-archive",
+                    "Archive",
+                    "Inbox/Archive",
+                    0),
+                new(
+                    "mock-cases",
+                    "Cases",
+                    "Inbox/Cases",
+                    1),
+                new(
+                    "mock-projects",
+                    "Projects",
+                    "Inbox/Projects",
+                    2)
+            ],
+            "mock-cases" =>
+            [
+                new(
+                    "mock-active",
+                    "Active",
+                    "Inbox/Cases/Active",
+                    0)
+            ],
+            "mock-projects" =>
+            [
+                new(
+                    "mock-project-alpha",
+                    "Project Alpha",
+                    "Inbox/Projects/Project Alpha",
+                    0),
+                new(
+                    "mock-project-beta",
+                    "Project Beta",
+                    "Inbox/Projects/Project Beta",
+                    0)
+            ],
+            _ => []
+        };
+        return Task.FromResult(folders);
     }
 
     public Task<IReadOnlyList<TeamsChannelInfo>> ListTeamChannelsAsync(

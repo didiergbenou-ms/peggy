@@ -117,6 +117,16 @@ public sealed record TaskItem(
     bool IsCompleted,
     string ListName);
 
+public sealed record OutlookFolderInfo(
+    string FolderId,
+    string FolderName,
+    string FolderPath,
+    int? ChildFolderCount,
+    bool IsSelectable = true)
+{
+    public bool HasChildren => ChildFolderCount is null or > 0;
+}
+
 public sealed record TeamsTeamInfo(
     string TeamId,
     string TeamName);

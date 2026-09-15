@@ -27,6 +27,10 @@ public interface IMessageProvider
         int limit,
         CancellationToken ct = default);
 
+    Task<IReadOnlyList<OutlookFolderInfo>> ListOutlookChildFoldersAsync(
+        OutlookFolderInfo? parent,
+        CancellationToken ct = default);
+
     Task<IReadOnlyList<TeamsTeamInfo>> ListJoinedTeamsAsync(
         CancellationToken ct = default);
 

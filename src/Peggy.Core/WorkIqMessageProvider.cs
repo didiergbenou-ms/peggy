@@ -334,6 +334,68 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             ct);
     }
 
+    public async Task<IReadOnlyList<OutlookFolderInfo>>
+        ListOutlookChildFoldersAsync(
+            OutlookFolderInfo? parent,
+            CancellationToken ct = default)
+    {
+        await GetCurrentUserIdAsync(ct);
+        MailFolder parentFolder;
+        string parentPath;
+        var parentSelectable = true;
+        if (parent is null)
+        {
+            parentFolder = await _client.FetchAsync<MailFolder>(
+                "/me/mailFolders/inbox" +
+                "?$select=id,displayName,parentFolderId,childFolderCount",
+                ct);
+            ValidateFolder(parentFolder, OutlookFolderPath.Inbox);
+            parentPath = OutlookFolderPath.Inbox;
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(parent.FolderId))
+            {
+                throw new ArgumentException(
+                    "An Outlook parent folder ID is required.",
+                    nameof(parent));
+            }
+            parentPath = OutlookFolderPath.Normalize(parent.FolderPath);
+            parentSelectable = parent.IsSelectable;
+            parentFolder = new MailFolder
+            {
+                Id = parent.FolderId.Trim(),
+                DisplayName = parent.FolderName,
+                ChildFolderCount = parent.ChildFolderCount
+            };
+        }
+
+        var children = await ListChildFoldersAsync(
+            parentFolder,
+            new Dictionary<string, IReadOnlyList<MailFolder>>(
+                StringComparer.Ordinal),
+            ct);
+        return children
+            .Select(folder =>
+            {
+                var name = string.IsNullOrWhiteSpace(folder.DisplayName)
+                    ? "(unnamed folder)"
+                    : folder.DisplayName.Trim();
+                var selectable = parentSelectable &&
+                    OutlookFolderPath.CanRepresentSegment(name);
+                return new OutlookFolderInfo(
+                    folder.Id!,
+                    name,
+                    OutlookFolderPath.Combine(parentPath, name),
+                    folder.ChildFolderCount,
+                    selectable);
+            })
+            .OrderBy(
+                folder => folder.FolderName,
+                StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     public async Task<IReadOnlyList<TeamsTeamInfo>> ListJoinedTeamsAsync(
         CancellationToken ct = default)
     {
@@ -1390,13 +1452,16 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             var monitored = new Dictionary<string, MailFolder>(StringComparer.Ordinal);
             monitored[inbox.Id!] = inbox;
 
-            var active = await ResolveFolderPathAsync(
-                inbox,
-                ["Cases", "Active"],
-                DefaultActiveFolderPath,
-                childCache,
-                ct);
-            await AddFolderTreeAsync(active, monitored, childCache, ct);
+            if (_settings.IncludeActiveCasesFolder)
+            {
+                var active = await ResolveFolderPathAsync(
+                    inbox,
+                    ["Cases", "Active"],
+                    DefaultActiveFolderPath,
+                    childCache,
+                    ct);
+                await AddFolderTreeAsync(active, monitored, childCache, ct);
+            }
 
             foreach (var configuredPath in GetAdditionalFolderPaths())
             {
@@ -1460,15 +1525,17 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         CancellationToken ct)
     {
         var pending = new Queue<MailFolder>();
+        var traversed = new HashSet<string>(StringComparer.Ordinal);
         pending.Enqueue(root);
         while (pending.Count > 0)
         {
             var folder = pending.Dequeue();
             ValidateFolder(folder, folder.DisplayName ?? "(unnamed)");
-            if (!destination.TryAdd(folder.Id!, folder))
+            if (!traversed.Add(folder.Id!))
             {
                 continue;
             }
+            destination.TryAdd(folder.Id!, folder);
 
             foreach (var child in await ListChildFoldersAsync(folder, childCache, ct))
             {
@@ -1518,19 +1585,16 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
     private static IReadOnlyList<string> ParseFolderPath(string path)
     {
-        var segments = path
-            .Replace('\\', '/')
-            .Split(
-                '/',
-                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (segments.Length == 0 ||
-            segments.Any(segment => segment is "." or ".."))
+        try
+        {
+            return OutlookFolderPath.Parse(path);
+        }
+        catch (ArgumentException ex)
         {
             throw new InvalidOperationException(
-                $"Invalid Outlook folder path '{path}'.");
+                $"Invalid Outlook folder path '{path}'.",
+                ex);
         }
-
-        return segments;
     }
 
     private static void ValidateFolder(MailFolder folder, string expectedName)
@@ -1558,6 +1622,20 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     private static PeggySettings ReadSettingsFromEnvironment()
     {
         var settings = new PeggySettings();
+        var includeActiveCasesFolder = Environment.GetEnvironmentVariable(
+            PeggyDefaults.IncludeActiveCasesFolderEnvironmentVariable);
+        if (!string.IsNullOrWhiteSpace(includeActiveCasesFolder))
+        {
+            if (!bool.TryParse(
+                    includeActiveCasesFolder.Trim(),
+                    out var includeActive))
+            {
+                throw new InvalidOperationException(
+                    $"{PeggyDefaults.IncludeActiveCasesFolderEnvironmentVariable} " +
+                    "must be true or false.");
+            }
+            settings.IncludeActiveCasesFolder = includeActive;
+        }
         var folders = Environment.GetEnvironmentVariable("PEGGY_OUTLOOK_FOLDERS");
         if (!string.IsNullOrWhiteSpace(folders))
         {

@@ -1049,6 +1049,32 @@ internal static class AssistantBehaviorSmokeTests
                 "Good   bye!"),
             "Natural voice confirmation phrases were not normalized reliably.");
 
+        var providerEnvironmentType = typeof(CopilotRunner).Assembly.GetType(
+            "Peggy.Tray.PeggyProviderEnvironment")
+            ?? throw new InvalidOperationException(
+                "The shared Peggy provider environment was not found.");
+        var providerEnvironment = (Dictionary<string, string>?)(
+            providerEnvironmentType.GetMethod(
+                "Create",
+                BindingFlags.Public | BindingFlags.Static)
+                ?.Invoke(
+                    null,
+                    [
+                        new PeggySettings
+                        {
+                            IncludeActiveCasesFolder = false
+                        },
+                        "account@example.com"
+                    ]))
+            ?? throw new InvalidOperationException(
+                "The shared Peggy provider environment was not created.");
+        TestAssert.Equal(
+            bool.FalseString,
+            providerEnvironment[
+                PeggyDefaults.IncludeActiveCasesFolderEnvironmentVariable],
+            "The Active-folder selection was not forwarded to Copilot MCP " +
+            "providers.");
+
         var previousModel = Environment.GetEnvironmentVariable(
             "PEGGY_COPILOT_MODEL");
         var previousCopilotPath = Environment.GetEnvironmentVariable(

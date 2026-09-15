@@ -13,6 +13,7 @@ internal static class CoreBehaviorSmokeTests
         await TestAtomicSettingsStateAsync(directory);
         await TestStateValidationAsync(directory);
         TestMonitoringSchedule();
+        TestOutlookFolderPaths();
         TestOpaqueIdentifiers();
         TestProviderFactory();
         TestAccountIdentityResolution();
@@ -20,6 +21,7 @@ internal static class CoreBehaviorSmokeTests
         TestConfiguredStatePath(directory);
         TestWorkIqTransportClassification();
         await TestWorkIqRetryPolicyAsync(directory);
+        await TestOutlookFolderCatalogAsync(directory);
         await TestOutlookSelfAuthoredFilteringAsync(directory);
         await TestStructuredTeamsMonitoringAsync(directory);
         await TestStructuredSearchTransportRetryAsync(directory);
@@ -283,6 +285,7 @@ internal static class CoreBehaviorSmokeTests
             normalizedSettings.CopilotReasoningEffort.Length == 0 &&
             normalizedSettings.CopilotContextTier ==
                 PeggyDefaults.CopilotContextTierDefault &&
+            normalizedSettings.IncludeActiveCasesFolder &&
             normalizedSettings.SpeechThreads == 8 &&
             normalizedSettings.SpeechVoiceId == 0 &&
             normalizedSettings.SpeechSpeed == 1.15F &&
@@ -318,6 +321,22 @@ internal static class CoreBehaviorSmokeTests
             normalizedSettings.CopilotContextTier ==
                 PeggyDefaults.CopilotContextTierDefault,
             "Model settings were not normalized safely.");
+
+        normalizedSettings.IncludeActiveCasesFolder = false;
+        normalizedSettings.AdditionalOutlookFolders =
+        [
+            @"Cases\Active",
+            "Inbox/Archive",
+            "inbox/archive"
+        ];
+        EncryptedStateStore.NormalizeAndPrune(state, now);
+        TestAssert.True(
+            normalizedSettings.IncludeActiveCasesFolder &&
+            normalizedSettings.AdditionalOutlookFolders.SequenceEqual(
+                ["Inbox/Archive"],
+                StringComparer.OrdinalIgnoreCase),
+            "Legacy Active-folder selection or Outlook path normalization " +
+            "was not migrated.");
 
         var teamsState = new PeggyStateDocument
         {
@@ -373,6 +392,27 @@ internal static class CoreBehaviorSmokeTests
                 Path.Combine(directory, "cancelled-state.dat"))
                 .LoadAsync(cancelled.Token),
             "State loading ignored cancellation.");
+    }
+
+    private static void TestOutlookFolderPaths()
+    {
+        TestAssert.True(
+            OutlookFolderPath.Normalize(@"Cases\Active") ==
+                "Inbox/Cases/Active" &&
+            OutlookFolderPath.Normalize("inbox/Archive") ==
+                "Inbox/Archive" &&
+            OutlookFolderPath.IsSameOrDescendant(
+                "Inbox/Projects/Alpha",
+                "Inbox/Projects") &&
+            !OutlookFolderPath.IsSameOrDescendant(
+                "Inbox/Project",
+                "Inbox/Projects") &&
+            OutlookFolderPath.CanRepresentSegment("Project Alpha") &&
+            !OutlookFolderPath.CanRepresentSegment("Project/Alpha"),
+            "Outlook folder path normalization or hierarchy checks failed.");
+        TestAssert.Throws<ArgumentException>(
+            () => OutlookFolderPath.Normalize("Inbox/../Archive"),
+            "An unsafe Outlook folder path was accepted.");
     }
 
     private static void TestMonitoringSchedule()
@@ -908,6 +948,118 @@ internal static class CoreBehaviorSmokeTests
             Environment.SetEnvironmentVariable(
                 "PEGGY_FAKE_OUTLOOK_ACTIVITY_UTC",
                 previousActivity);
+        }
+    }
+
+    private static async Task TestOutlookFolderCatalogAsync(string directory)
+    {
+        var executable = Environment.ProcessPath
+            ?? throw new InvalidOperationException(
+                "The test executable path is unavailable.");
+        var logPath = Path.Combine(directory, "outlook-folder-catalog.log");
+        var previousScenario = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SCENARIO");
+        var previousLog = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_LOG");
+        var previousIncludeActive = Environment.GetEnvironmentVariable(
+            PeggyDefaults.IncludeActiveCasesFolderEnvironmentVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                "semantic");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                logPath);
+            var provider = new WorkIqMessageProvider(
+                executablePath: executable,
+                settings: new PeggySettings
+                {
+                    IncludeActiveCasesFolder = false,
+                    TeamsScope = TeamsMonitoringScope.Off
+                });
+            var roots = await provider.ListOutlookChildFoldersAsync(null);
+            var cases = roots.Single(folder =>
+                folder.FolderPath == "Inbox/Cases");
+            var children = await provider.ListOutlookChildFoldersAsync(cases);
+            TestAssert.True(
+                cases.HasChildren &&
+                children is
+                [
+                    {
+                        FolderName: "Active",
+                        FolderPath: "Inbox/Cases/Active",
+                        HasChildren: false,
+                        IsSelectable: true
+                    }
+                ],
+                "The Outlook folder catalog did not preserve its hierarchy.");
+
+            File.WriteAllText(logPath, string.Empty);
+            _ = await provider.ListUnreadAsync(MessageSource.Email, 10);
+            var monitoringRequests = File.ReadAllLines(logPath);
+            TestAssert.True(
+                monitoringRequests.Any(request => request.Contains(
+                    "/me/mailFolders/inbox/messages?",
+                    StringComparison.Ordinal)) &&
+                monitoringRequests.All(request => !request.Contains(
+                    "/me/mailFolders/cases/childFolders",
+                    StringComparison.Ordinal)),
+                "Deselecting Inbox/Cases/Active did not remove its subtree " +
+                "from Outlook monitoring.");
+
+            File.WriteAllText(logPath, string.Empty);
+            var allFoldersProvider = new WorkIqMessageProvider(
+                executablePath: executable,
+                settings: new PeggySettings
+                {
+                    IncludeActiveCasesFolder = false,
+                    AdditionalOutlookFolders = [OutlookFolderPath.Inbox],
+                    TeamsScope = TeamsMonitoringScope.Off
+                });
+            _ = await allFoldersProvider.ListUnreadAsync(
+                MessageSource.Email,
+                10);
+            var allFolderRequests = File.ReadAllLines(logPath);
+            TestAssert.True(
+                allFolderRequests.Any(request => request.Contains(
+                    "/me/mailFolders/cases/childFolders",
+                    StringComparison.Ordinal)) &&
+                allFolderRequests.Any(request => request.Contains(
+                    "/me/mailFolders/active/messages?",
+                    StringComparison.Ordinal)),
+                "Selecting every Inbox subfolder did not traverse the " +
+                "already-monitored Inbox root.");
+
+            Environment.SetEnvironmentVariable(
+                PeggyDefaults.IncludeActiveCasesFolderEnvironmentVariable,
+                bool.FalseString);
+            var readEnvironment = typeof(WorkIqMessageProvider).GetMethod(
+                "ReadSettingsFromEnvironment",
+                BindingFlags.NonPublic | BindingFlags.Static)
+                ?? throw new InvalidOperationException(
+                    "The WorkIQ environment settings reader was not found.");
+            var environmentSettings = (PeggySettings?)readEnvironment.Invoke(
+                null,
+                null);
+            TestAssert.True(
+                environmentSettings is
+                {
+                    IncludeActiveCasesFolder: false
+                },
+                "The Copilot MCP Active-folder override was not parsed.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                previousScenario);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                previousLog);
+            Environment.SetEnvironmentVariable(
+                PeggyDefaults.IncludeActiveCasesFolderEnvironmentVariable,
+                previousIncludeActive);
         }
     }
 

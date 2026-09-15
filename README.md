@@ -114,9 +114,9 @@ whose owning process has exited.
 Peggy monitors:
 
 - Inbox.
-- `Inbox\Cases\Active`.
-- Every descendant of those folders.
-- Any additional Inbox-relative folders configured in Settings.
+- Folder roots selected in Settings and every descendant of those folders.
+- `Inbox\Cases\Active` by default for backward compatibility; it can be
+  deselected.
 
 Outlook cursors use message activity boundaries and delta links where
 available. Source references are verified before they are attached to alerts.
@@ -521,7 +521,7 @@ not leave a partially applied identity, model, or source scope.
 | Pinned Copilot model | Loaded live from the authenticated GitHub Copilot CLI; **Refresh** uses a new catalog connection so newly available models appear without restarting Peggy; changing it starts a fresh Copilot session |
 | Reasoning effort | Shows only the effort levels supported by the selected model; **Model default** lets Copilot choose |
 | Context tier | Offers **Default** for every model and **Long context** only when the live catalog reports support |
-| Additional Outlook folders | One Inbox-relative path per line; descendants are included |
+| Outlook folders | Loads the live Inbox hierarchy lazily; selected folder roots include all descendants, saved unavailable paths remain visible, and `Inbox/Cases/Active` is selected by default but configurable |
 | Enable local speech | Enables or disables the isolated English speech host |
 | Speech model directory | Defaults to `%LOCALAPPDATA%\Peggy\models` |
 | Voice | Bella, Luna, Rosie, or Kiki |
@@ -782,6 +782,7 @@ child processes:
 | Variable | Format |
 | --- | --- |
 | `PEGGY_OUTLOOK_FOLDERS` | Semicolon-separated Inbox-relative paths |
+| `PEGGY_INCLUDE_ACTIVE_CASES_FOLDER` | `true` or `false`; forwarded to Peggy's scoped Copilot MCP processes |
 | `PEGGY_TEAMS_WATCHLIST` | JSON array of team/channel watch objects |
 | `PEGGY_TEAMS_TEAM_WATCHLIST` | JSON array of whole-team watch objects and channel exclusions |
 | `PEGGY_TEAMS_SCOPE` | `AllActivity`, `SelectedTeamsAndChannels`, or `Off` |

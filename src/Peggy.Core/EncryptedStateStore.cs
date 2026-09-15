@@ -193,6 +193,25 @@ public sealed class EncryptedStateStore
                 PeggyDefaults.CopilotContextTierDefault;
         }
         state.Settings.AdditionalOutlookFolders ??= [];
+        if (state.Settings.AdditionalOutlookFolders.Any(path =>
+                string.Equals(
+                    TryNormalizeOutlookFolderPath(path),
+                    PeggyDefaults.ActiveCasesFolder,
+                    StringComparison.OrdinalIgnoreCase)))
+        {
+            state.Settings.IncludeActiveCasesFolder = true;
+        }
+        state.Settings.AdditionalOutlookFolders =
+            state.Settings.AdditionalOutlookFolders
+                .Select(TryNormalizeOutlookFolderPath)
+                .Where(path =>
+                    !string.IsNullOrWhiteSpace(path) &&
+                    !string.Equals(
+                        path,
+                        PeggyDefaults.ActiveCasesFolder,
+                        StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
         if (!Enum.IsDefined(state.Settings.TeamsScope))
         {
             state.Settings.TeamsScope = TeamsMonitoringScope.AllActivity;
@@ -282,6 +301,18 @@ public sealed class EncryptedStateStore
         state.Alerts.RemoveAll(alert =>
             alert.Status != AlertStatus.Active &&
             alert.UpdatedUtc < cutoff);
+    }
+
+    private static string TryNormalizeOutlookFolderPath(string path)
+    {
+        try
+        {
+            return OutlookFolderPath.Normalize(path);
+        }
+        catch (ArgumentException)
+        {
+            return path?.Trim() ?? string.Empty;
+        }
     }
 
     private static void NormalizeTeamsWatchlists(PeggySettings settings)

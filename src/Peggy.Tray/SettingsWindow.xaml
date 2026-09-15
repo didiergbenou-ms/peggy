@@ -87,7 +87,7 @@
           </Grid>
         </GroupBox>
 
-        <GroupBox Header="AI and Outlook" Margin="0,0,0,16">
+        <GroupBox Header="GitHub Copilot" Margin="0,0,0,16">
           <StackPanel>
             <TextBlock Text="Pinned Copilot model"
                        Style="{StaticResource SettingsLabelStyle}"/>
@@ -142,17 +142,46 @@
             </Grid>
             <TextBlock x:Name="ModelCapabilitiesText"
                        Style="{StaticResource SettingsHintStyle}"
-                       Margin="0,0,0,15"/>
-            <TextBlock Text="Additional Outlook folders"
-                       Style="{StaticResource SettingsLabelStyle}"/>
+                       Margin="0,0,0,2"/>
+          </StackPanel>
+        </GroupBox>
+
+        <GroupBox Header="Outlook monitoring" Margin="0,0,0,16">
+          <StackPanel>
             <TextBlock
-                Text="One Inbox-relative folder path per line. Descendants are included."
+                Text="Inbox messages are always monitored. Inbox/Cases/Active starts selected for compatibility, but can be removed like any other folder. Selecting a folder includes all its descendants."
                 Style="{StaticResource SettingsHintStyle}"
-                Margin="0,3,0,6"/>
-            <TextBox x:Name="FoldersText" Height="86"
-                     AcceptsReturn="True"
-                     AutomationProperties.Name="Additional Outlook folders"
-                     VerticalScrollBarVisibility="Auto"/>
+                Margin="0,0,0,10"/>
+            <CheckBox x:Name="AllInboxFoldersCheck"
+                      Content="Include every Inbox subfolder"
+                      AutomationProperties.Name="Include every Inbox subfolder"
+                      FontWeight="SemiBold"
+                      Margin="0,0,0,10"
+                      Checked="AllInboxFoldersCheck_Changed"
+                      Unchecked="AllInboxFoldersCheck_Changed"/>
+            <TextBlock x:Name="OutlookFolderStatus"
+                       Text="Loading Outlook folders..."
+                       Style="{StaticResource SettingsHintStyle}"
+                       Margin="0,0,0,12"/>
+            <TextBlock x:Name="SelectedOutlookFolderStatus"
+                       Text="Selected additional folders"
+                       Style="{StaticResource SettingsLabelStyle}"
+                       Margin="0,0,0,6"/>
+            <StackPanel x:Name="SelectedOutlookFoldersPanel"
+                        Margin="0,0,0,13"/>
+            <TextBlock Text="Mailbox folders"
+                       Style="{StaticResource SettingsLabelStyle}"
+                       Margin="0,0,0,6"/>
+            <Border Background="{StaticResource PeggySoftSurfaceBrush}"
+                    BorderBrush="{StaticResource PeggyBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="9"
+                    Padding="10">
+              <ScrollViewer MaxHeight="280"
+                            VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="OutlookFoldersPanel"/>
+              </ScrollViewer>
+            </Border>
           </StackPanel>
         </GroupBox>
 

@@ -1005,6 +1005,7 @@ internal static class DesktopSmokeTests
             MonitoringScheduleEnabled = true,
             MonitoringWakeMinute = 7 * 60,
             MonitoringSleepMinute = 19 * 60,
+            AdditionalOutlookFolders = ["Inbox/Unavailable"],
             TeamsScope = TeamsMonitoringScope.SelectedTeamsAndChannels,
             TeamsChannelWatchlist =
             [
@@ -1097,6 +1098,22 @@ internal static class DesktopSmokeTests
             LoadModelsAsync);
         WaitWithDispatcher(InvokeInstancePrivate<Task>(
             window,
+            "LoadOutlookFoldersAsync"));
+        var outlookPanel = Find<StackPanel>(
+            window,
+            "OutlookFoldersPanel");
+        TestAssert.True(
+            provider.ListOutlookRootFolderCallCount == 1 &&
+            provider.ListOutlookChildFolderCallCount == 0 &&
+            Descendants<Expander>(outlookPanel).Count() == 2 &&
+            InvokeInstancePrivate<bool>(
+                window,
+                "IsOutlookFolderIncluded",
+                PeggyDefaults.ActiveCasesFolder),
+            "Settings did not lazily load Outlook folders or preserve the " +
+            "default Active selection.");
+        WaitWithDispatcher(InvokeInstancePrivate<Task>(
+            window,
             "LoadCopilotModelsAsync"));
         var modelCombo = Find<ComboBox>(window, "ModelCombo");
         TestAssert.True(
@@ -1149,7 +1166,6 @@ internal static class DesktopSmokeTests
         TestAssert.True(
             new[]
             {
-                "FoldersText",
                 "SpeechModelsText",
                 "WakeTimeText",
                 "SleepTimeText"
@@ -1169,6 +1185,10 @@ internal static class DesktopSmokeTests
                 AutomationProperties.GetName(
                     Find<ComboBox>(window, name)))),
             "One or more Settings inputs do not have accessible names.");
+        TestAssert.True(
+            !string.IsNullOrWhiteSpace(AutomationProperties.GetName(
+                Find<CheckBox>(window, "AllInboxFoldersCheck"))),
+            "The Outlook all-folders control has no accessible name.");
         var reauthenticated = new WorkIqAccountIdentity(
             "person@example.com",
             "mailbox@example.com",
@@ -1200,8 +1220,6 @@ internal static class DesktopSmokeTests
                     Find<ComboBox>(
                         window,
                         "ContextTierCombo").SelectedValue = "long_context";
-                    Find<TextBox>(window, "FoldersText").Text =
-                        "Inbox/Projects;Inbox/Projects\nInbox/Archive";
                     Find<CheckBox>(
                         window,
                         "ScheduleEnabledCheck").IsChecked = true;
@@ -1242,6 +1260,65 @@ internal static class DesktopSmokeTests
                         provider.ListTeamChannelsCallCount == 0 &&
                         Descendants<Expander>(teamsPanel).Count() == 2,
                         "Settings eagerly loaded every team's channels.");
+
+                    var cases = Descendants<Expander>(outlookPanel)
+                        .Single(expander =>
+                            expander.Tag is OutlookFolderInfo
+                            {
+                                FolderId: "mock-cases"
+                            });
+                    WaitWithDispatcher(InvokeInstancePrivate<Task>(
+                        window,
+                        "LoadOutlookChildFoldersAsync",
+                        cases.Tag!));
+                    var active = Descendants<CheckBox>(cases)
+                        .Single(check =>
+                            check.Tag is OutlookFolderInfo
+                            {
+                                FolderPath: "Inbox/Cases/Active"
+                            });
+                    TestAssert.True(
+                        active.IsChecked == true,
+                        "Inbox/Cases/Active was not selected by default.");
+                    active.IsChecked = false;
+
+                    var projects = Descendants<Expander>(outlookPanel)
+                        .Single(expander =>
+                            expander.Tag is OutlookFolderInfo
+                            {
+                                FolderId: "mock-projects"
+                            });
+                    WaitWithDispatcher(InvokeInstancePrivate<Task>(
+                        window,
+                        "LoadOutlookChildFoldersAsync",
+                        projects.Tag!));
+                    Descendants<CheckBox>(projects)
+                        .Single(check =>
+                            check.Tag is OutlookFolderInfo
+                            {
+                                FolderPath:
+                                    "Inbox/Projects/Project Alpha"
+                            })
+                        .IsChecked = true;
+                    Descendants<CheckBox>(outlookPanel)
+                        .Single(check =>
+                            check.Tag is OutlookFolderInfo
+                            {
+                                FolderPath: "Inbox/Archive"
+                            })
+                        .IsChecked = true;
+                    TestAssert.True(
+                        provider.ListOutlookRootFolderCallCount == 1 &&
+                        provider.ListOutlookChildFolderCallCount == 2 &&
+                        Descendants<TextBlock>(
+                                Find<StackPanel>(
+                                    window,
+                                    "SelectedOutlookFoldersPanel"))
+                            .Any(text =>
+                                text.Text == "Inbox/Unavailable"),
+                        "Outlook folder selection was not lazy or erased an " +
+                        "unavailable saved folder.");
+
                     var engineering = Descendants<Expander>(teamsPanel)
                         .First(expander =>
                             expander.Tag is TeamsTeamInfo
@@ -1327,13 +1404,21 @@ internal static class DesktopSmokeTests
             Find<TextBlock>(window, "AccountStatus").Text,
             "Settings did not show the pinned Microsoft 365 account.");
         TestAssert.Equal(
-            2,
+            3,
             window.SavedSettings!.AdditionalOutlookFolders.Count,
-            "Settings did not normalize Outlook folder paths.");
+            "Settings did not persist selected Outlook folder roots.");
         TestAssert.True(
             window.SavedSettings.CopilotModel == "gpt-5.6-sol" &&
             window.SavedSettings.CopilotReasoningEffort == "high" &&
             window.SavedSettings.CopilotContextTier == "long_context" &&
+            !window.SavedSettings.IncludeActiveCasesFolder &&
+            window.SavedSettings.AdditionalOutlookFolders.SequenceEqual(
+                [
+                    "Inbox/Archive",
+                    "Inbox/Projects/Project Alpha",
+                    "Inbox/Unavailable"
+                ],
+                StringComparer.OrdinalIgnoreCase) &&
             !window.SavedSettings.StartAtSignIn &&
             window.SavedSettings.MonitoringPaused &&
             window.SavedSettings.TeamsScope ==

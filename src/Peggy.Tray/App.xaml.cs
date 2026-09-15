@@ -863,6 +863,8 @@ public partial class App : Application
         var updated = window.SavedSettings;
         var wasScheduledSleeping = _scheduledSleeping;
         var outlookScopeChanged =
+            previous.IncludeActiveCasesFolder !=
+                updated.IncludeActiveCasesFolder ||
             !previous.AdditionalOutlookFolders.SequenceEqual(
                 updated.AdditionalOutlookFolders,
                 StringComparer.OrdinalIgnoreCase);
@@ -1740,6 +1742,8 @@ public partial class App : Application
             CopilotModel = settings.CopilotModel,
             CopilotReasoningEffort = settings.CopilotReasoningEffort,
             CopilotContextTier = settings.CopilotContextTier,
+            IncludeActiveCasesFolder =
+                settings.IncludeActiveCasesFolder,
             AdditionalOutlookFolders =
                 settings.AdditionalOutlookFolders.ToList(),
             TeamsScope = settings.TeamsScope,

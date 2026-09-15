@@ -26,6 +26,10 @@ public partial class SettingsWindow : Window
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, StackPanel> _teamPanels =
         new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CheckBox> _outlookFolderChecks =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, StackPanel> _outlookFolderPanels =
+        new(StringComparer.Ordinal);
     private readonly Dictionary<string, IReadOnlyList<TeamsChannelInfo>>
         _loadedChannelsByTeam = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _teamNames =
@@ -37,6 +41,12 @@ public partial class SettingsWindow : Window
         new(StringComparer.Ordinal);
     private readonly HashSet<string> _loadingTeamIds =
         new(StringComparer.Ordinal);
+    private readonly HashSet<string> _loadedOutlookFolderIds =
+        new(StringComparer.Ordinal);
+    private readonly HashSet<string> _loadingOutlookFolderIds =
+        new(StringComparer.Ordinal);
+    private readonly HashSet<string> _selectedOutlookFolders =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly string _pinnedAccount;
     private readonly string _initialModel;
     private readonly string _initialReasoningEffort;
@@ -45,7 +55,10 @@ public partial class SettingsWindow : Window
     private readonly CancellationTokenSource _loadCancellation = new();
     private bool _modelCatalogLoaded;
     private bool _loadingModels;
+    private bool _loadingOutlookRoot;
+    private bool _outlookRootLoaded;
     private bool _updatingModelControls;
+    private bool _updatingOutlookFolderControls;
     private bool _updatingSelectionControls;
     private bool _closed;
 
@@ -135,9 +148,29 @@ public partial class SettingsWindow : Window
             ModelStatusText.Text =
                 "Loading models from GitHub Copilot...";
         }
-        FoldersText.Text = string.Join(
-            Environment.NewLine,
-            settings.AdditionalOutlookFolders);
+        if (settings.IncludeActiveCasesFolder)
+        {
+            AddOutlookFolderSelection(PeggyDefaults.ActiveCasesFolder);
+        }
+        foreach (var folder in settings.AdditionalOutlookFolders
+                     .Where(path => !string.IsNullOrWhiteSpace(path))
+                     .Select(NormalizeSavedOutlookFolder)
+                     .OrderBy(
+                         path => path.Count(character => character == '/')))
+        {
+            AddOutlookFolderSelection(folder);
+        }
+        _updatingOutlookFolderControls = true;
+        try
+        {
+            AllInboxFoldersCheck.IsChecked =
+                _selectedOutlookFolders.Contains(OutlookFolderPath.Inbox);
+        }
+        finally
+        {
+            _updatingOutlookFolderControls = false;
+        }
+        RenderSelectedOutlookFolders();
         StartupCheck.IsChecked = settings.StartAtSignIn;
         PausedCheck.IsChecked = settings.MonitoringPaused;
         SpeechEnabledCheck.IsChecked = settings.SpeechEnabled;
@@ -174,6 +207,7 @@ public partial class SettingsWindow : Window
             PeggyWindowLayout.ConstrainToWorkArea(this);
         Loaded += async (_, _) => await LoadTeamsAsync();
         Loaded += async (_, _) => await LoadCopilotModelsAsync();
+        Loaded += async (_, _) => await LoadOutlookFoldersAsync();
         Closed += (_, _) =>
         {
             _closed = true;
@@ -445,6 +479,419 @@ public partial class SettingsWindow : Window
         => ContextTierCombo.SelectedValue as string ??
            (ContextTierCombo.SelectedItem as ModelSettingOption)?.Value ??
            PeggyDefaults.CopilotContextTierDefault;
+
+    private void AllInboxFoldersCheck_Changed(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_updatingOutlookFolderControls)
+        {
+            return;
+        }
+        if (AllInboxFoldersCheck.IsChecked == true)
+        {
+            AddOutlookFolderSelection(OutlookFolderPath.Inbox);
+        }
+        else
+        {
+            RemoveOutlookFolderSelection(OutlookFolderPath.Inbox);
+        }
+        UpdateOutlookFolderChecks();
+        RenderSelectedOutlookFolders();
+    }
+
+    private async Task LoadOutlookFoldersAsync()
+    {
+        if (_closed || _outlookRootLoaded || _loadingOutlookRoot)
+        {
+            return;
+        }
+        _loadingOutlookRoot = true;
+        OutlookFolderStatus.Text = "Loading Outlook folders...";
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
+                _loadCancellation.Token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(60));
+            var folders = await _provider.ListOutlookChildFoldersAsync(
+                null,
+                timeout.Token);
+            if (_closed)
+            {
+                return;
+            }
+
+            OutlookFoldersPanel.Children.Clear();
+            _outlookFolderChecks.Clear();
+            _outlookFolderPanels.Clear();
+            _loadedOutlookFolderIds.Clear();
+            _loadingOutlookFolderIds.Clear();
+            foreach (var folder in folders)
+            {
+                AddOutlookFolderNode(OutlookFoldersPanel, folder);
+            }
+            _outlookRootLoaded = true;
+            OutlookFolderStatus.Text = folders.Count == 0
+                ? "No Inbox subfolders were returned."
+                : $"{folders.Count} top-level Inbox folders loaded. Expand " +
+                  "only the folders whose children you want to browse.";
+            UpdateOutlookFolderChecks();
+            RenderSelectedOutlookFolders();
+        }
+        catch (OperationCanceledException) when (_closed)
+        {
+        }
+        catch (OperationCanceledException)
+        {
+            OutlookFolderStatus.Text =
+                "Outlook folders took too long to load. Close and reopen " +
+                "Settings to retry.";
+        }
+        catch (Exception ex)
+        {
+            OutlookFolderStatus.Text =
+                $"Outlook folders could not be loaded: {ex.Message}";
+        }
+        finally
+        {
+            _loadingOutlookRoot = false;
+        }
+    }
+
+    private void AddOutlookFolderNode(
+        Panel destination,
+        OutlookFolderInfo folder)
+    {
+        var checkBox = new CheckBox
+        {
+            Content = folder.FolderName,
+            Tag = folder,
+            IsChecked = IsOutlookFolderIncluded(folder.FolderPath),
+            FontWeight = folder.HasChildren
+                ? FontWeights.SemiBold
+                : FontWeights.Normal,
+            ToolTip = folder.IsSelectable
+                ? folder.FolderPath
+                : "This folder name cannot be represented safely as a " +
+                  "Peggy folder path."
+        };
+        checkBox.Checked += OutlookFolderCheck_Changed;
+        checkBox.Unchecked += OutlookFolderCheck_Changed;
+        _outlookFolderChecks[folder.FolderPath] = checkBox;
+
+        if (!folder.HasChildren)
+        {
+            checkBox.Margin = new Thickness(0, 2, 0, 2);
+            destination.Children.Add(checkBox);
+            return;
+        }
+
+        var childPanel = new StackPanel
+        {
+            Margin = new Thickness(12, 3, 0, 7)
+        };
+        childPanel.Children.Add(new TextBlock
+        {
+            Text = "Expand this folder to load its children.",
+            Foreground = System.Windows.Media.Brushes.DimGray
+        });
+        _outlookFolderPanels[folder.FolderId] = childPanel;
+        var expander = new Expander
+        {
+            Header = checkBox,
+            Tag = folder,
+            Content = childPanel,
+            Margin = new Thickness(0, 1, 0, 1)
+        };
+        expander.Expanded += async (_, _) =>
+            await LoadOutlookChildFoldersAsync(folder);
+        destination.Children.Add(expander);
+    }
+
+    private async Task LoadOutlookChildFoldersAsync(
+        OutlookFolderInfo parent)
+    {
+        if (_closed ||
+            _loadedOutlookFolderIds.Contains(parent.FolderId) ||
+            !_loadingOutlookFolderIds.Add(parent.FolderId) ||
+            !_outlookFolderPanels.TryGetValue(
+                parent.FolderId,
+                out var childPanel))
+        {
+            return;
+        }
+
+        ShowOutlookFolderMessage(
+            childPanel,
+            "Loading folders...",
+            retryParent: null);
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
+                _loadCancellation.Token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(60));
+            var folders = await _provider.ListOutlookChildFoldersAsync(
+                parent,
+                timeout.Token);
+            if (_closed)
+            {
+                return;
+            }
+
+            childPanel.Children.Clear();
+            if (folders.Count == 0)
+            {
+                childPanel.Children.Add(new TextBlock
+                {
+                    Text = "No child folders were returned.",
+                    Foreground = System.Windows.Media.Brushes.DimGray
+                });
+            }
+            foreach (var folder in folders)
+            {
+                AddOutlookFolderNode(childPanel, folder);
+            }
+            _loadedOutlookFolderIds.Add(parent.FolderId);
+            UpdateOutlookFolderChecks();
+        }
+        catch (OperationCanceledException) when (_closed)
+        {
+        }
+        catch (OperationCanceledException)
+        {
+            ShowOutlookFolderMessage(
+                childPanel,
+                "Child folders took too long to load.",
+                parent);
+        }
+        catch (Exception ex)
+        {
+            ShowOutlookFolderMessage(
+                childPanel,
+                $"Child folders could not be loaded: {ex.Message}",
+                parent);
+        }
+        finally
+        {
+            _loadingOutlookFolderIds.Remove(parent.FolderId);
+        }
+    }
+
+    private void OutlookFolderCheck_Changed(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_updatingOutlookFolderControls ||
+            sender is not CheckBox
+            {
+                Tag: OutlookFolderInfo folder
+            } checkBox)
+        {
+            return;
+        }
+
+        if (checkBox.IsChecked == true)
+        {
+            AddOutlookFolderSelection(folder.FolderPath);
+        }
+        else
+        {
+            RemoveOutlookFolderSelection(folder.FolderPath);
+        }
+        UpdateOutlookFolderChecks();
+        RenderSelectedOutlookFolders();
+    }
+
+    private void AddOutlookFolderSelection(string path)
+    {
+        var normalized = NormalizeSavedOutlookFolder(path);
+        if (_selectedOutlookFolders.Any(selected =>
+                OutlookFolderPath.IsSameOrDescendant(
+                    normalized,
+                    selected)))
+        {
+            return;
+        }
+        _selectedOutlookFolders.RemoveWhere(selected =>
+            OutlookFolderPath.IsSameOrDescendant(
+                selected,
+                normalized));
+        _selectedOutlookFolders.Add(normalized);
+    }
+
+    private void RemoveOutlookFolderSelection(string path)
+        => _selectedOutlookFolders.Remove(
+            NormalizeSavedOutlookFolder(path));
+
+    private bool IsOutlookFolderIncluded(string path)
+    {
+        var normalized = NormalizeSavedOutlookFolder(path);
+        return _selectedOutlookFolders.Any(selected =>
+            OutlookFolderPath.IsSameOrDescendant(
+                normalized,
+                selected));
+    }
+
+    private bool HasSelectedOutlookFolderAncestor(string path)
+    {
+        var normalized = NormalizeSavedOutlookFolder(path);
+        return _selectedOutlookFolders.Any(selected =>
+            !string.Equals(
+                normalized,
+                selected,
+                StringComparison.OrdinalIgnoreCase) &&
+            OutlookFolderPath.IsSameOrDescendant(
+                normalized,
+                selected));
+    }
+
+    private void UpdateOutlookFolderChecks()
+    {
+        var wasUpdating = _updatingOutlookFolderControls;
+        _updatingOutlookFolderControls = true;
+        try
+        {
+            AllInboxFoldersCheck.IsChecked =
+                _selectedOutlookFolders.Contains(OutlookFolderPath.Inbox);
+            foreach (var pair in _outlookFolderChecks)
+            {
+                var folder = (OutlookFolderInfo)pair.Value.Tag;
+                pair.Value.IsChecked =
+                    IsOutlookFolderIncluded(folder.FolderPath);
+                pair.Value.IsEnabled =
+                    folder.IsSelectable &&
+                    !HasSelectedOutlookFolderAncestor(folder.FolderPath);
+            }
+        }
+        finally
+        {
+            _updatingOutlookFolderControls = wasUpdating;
+        }
+    }
+
+    private void RenderSelectedOutlookFolders()
+    {
+        SelectedOutlookFoldersPanel.Children.Clear();
+        var selected = _selectedOutlookFolders
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        SelectedOutlookFolderStatus.Text =
+            $"{selected.Count} additional folder " +
+            $"{(selected.Count == 1 ? "root" : "roots")} selected";
+        if (selected.Count == 0)
+        {
+            SelectedOutlookFoldersPanel.Children.Add(new TextBlock
+            {
+                Text = "No additional folders selected. Only direct Inbox " +
+                       "messages will be monitored.",
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = System.Windows.Media.Brushes.DimGray,
+                FontSize = 11
+            });
+            return;
+        }
+
+        foreach (var path in selected)
+        {
+            var row = new DockPanel
+            {
+                Margin = new Thickness(0, 2, 0, 2)
+            };
+            var remove = new Button
+            {
+                Content = "Remove",
+                Tag = path,
+                MinWidth = 68,
+                Padding = new Thickness(7, 3, 7, 3),
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+            remove.Click += RemoveSelectedOutlookFolder_Click;
+            DockPanel.SetDock(remove, Dock.Right);
+            row.Children.Add(remove);
+            row.Children.Add(new TextBlock
+            {
+                Text = path == OutlookFolderPath.Inbox
+                    ? "Inbox (all subfolders)"
+                    : path,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            SelectedOutlookFoldersPanel.Children.Add(row);
+        }
+    }
+
+    private void RemoveSelectedOutlookFolder_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string path })
+        {
+            return;
+        }
+        RemoveOutlookFolderSelection(path);
+        UpdateOutlookFolderChecks();
+        RenderSelectedOutlookFolders();
+    }
+
+    private async void RetryOutlookFolder_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: OutlookFolderInfo parent })
+        {
+            await LoadOutlookChildFoldersAsync(parent);
+        }
+    }
+
+    private void ShowOutlookFolderMessage(
+        Panel panel,
+        string message,
+        OutlookFolderInfo? retryParent)
+    {
+        panel.Children.Clear();
+        panel.Children.Add(new TextBlock
+        {
+            Text = message,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = System.Windows.Media.Brushes.DimGray
+        });
+        if (retryParent is null)
+        {
+            return;
+        }
+        var retry = new Button
+        {
+            Content = "Retry",
+            Tag = retryParent,
+            Width = 72,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Padding = new Thickness(8, 4, 8, 4),
+            Margin = new Thickness(0, 6, 0, 0)
+        };
+        retry.Click += RetryOutlookFolder_Click;
+        panel.Children.Add(retry);
+    }
+
+    private static string NormalizeSavedOutlookFolder(string path)
+    {
+        try
+        {
+            return OutlookFolderPath.Normalize(path);
+        }
+        catch (ArgumentException)
+        {
+            return path.Trim();
+        }
+    }
+
+    private List<string> GetSavedAdditionalOutlookFolders()
+        => _selectedOutlookFolders
+            .Where(path => !string.Equals(
+                path,
+                PeggyDefaults.ActiveCasesFolder,
+                StringComparison.OrdinalIgnoreCase))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     private void TeamsScope_Changed(object sender, RoutedEventArgs e)
         => UpdateTeamsScopeControls();
@@ -1271,14 +1718,10 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        var folders = FoldersText.Text
-            .Replace(';', '\n')
-            .Split(
-                ['\r', '\n'],
-                StringSplitOptions.RemoveEmptyEntries |
-                StringSplitOptions.TrimEntries)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var folders = GetSavedAdditionalOutlookFolders();
+        var includeActiveCasesFolder =
+            _selectedOutlookFolders.Contains(
+                PeggyDefaults.ActiveCasesFolder);
         var watchlist = GetSavedWatchlist();
         var teamWatchlist = GetSavedTeamWatchlist();
         SavedSettings = new PeggySettings
@@ -1286,6 +1729,7 @@ public partial class SettingsWindow : Window
             CopilotModel = model,
             CopilotReasoningEffort = reasoningEffort,
             CopilotContextTier = contextTier,
+            IncludeActiveCasesFolder = includeActiveCasesFolder,
             AdditionalOutlookFolders = folders,
             TeamsScope = GetSelectedTeamsScope(),
             MonitorTeamsChatsInSelectedScope =
