@@ -49,16 +49,58 @@ public sealed class PeggyStateManager
         string account,
         string? mailbox,
         CancellationToken ct = default)
+        => await PinWorkIqIdentityAsync(
+            account,
+            mailbox,
+            userPrincipalName: null,
+            principalId: null,
+            ct);
+
+    public async Task PinWorkIqIdentityAsync(
+        string account,
+        string? mailbox,
+        string? userPrincipalName,
+        CancellationToken ct = default)
+        => await PinWorkIqIdentityAsync(
+            account,
+            mailbox,
+            userPrincipalName,
+            principalId: null,
+            ct);
+
+    public async Task PinWorkIqIdentityAsync(
+        string account,
+        string? mailbox,
+        string? userPrincipalName,
+        string? principalId,
+        CancellationToken ct = default)
     {
         var normalized = WorkIqSetupService.NormalizeAccount(account);
         var normalizedMailbox = string.IsNullOrWhiteSpace(mailbox)
             ? normalized
             : WorkIqSetupService.NormalizeAccount(mailbox);
+        var normalizedUserPrincipalName =
+            string.IsNullOrWhiteSpace(userPrincipalName)
+                ? string.Empty
+                : WorkIqSetupService.NormalizeAccount(userPrincipalName);
+        var normalizedPrincipalId = principalId?.Trim() ?? string.Empty;
 
         await _stateGate.WaitAsync(ct);
         try
         {
-            if (!string.IsNullOrWhiteSpace(State.PinnedAccount) &&
+            if (!string.IsNullOrWhiteSpace(State.PinnedPrincipalId) &&
+                (string.IsNullOrWhiteSpace(normalizedPrincipalId) ||
+                 !string.Equals(
+                     State.PinnedPrincipalId,
+                     normalizedPrincipalId,
+                     StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException(
+                    "Peggy is already pinned to a different Microsoft 365 " +
+                    "principal. Use Peggy's account-switch flow to change it.");
+            }
+            if (string.IsNullOrWhiteSpace(State.PinnedPrincipalId) &&
+                !string.IsNullOrWhiteSpace(State.PinnedAccount) &&
                 !string.Equals(
                     State.PinnedAccount,
                     normalized,
@@ -66,14 +108,24 @@ public sealed class PeggyStateManager
             {
                 throw new InvalidOperationException(
                     "Peggy is already pinned to a different Microsoft 365 " +
-                    "account. Clear Peggy's encrypted state before switching " +
-                    "accounts.");
+                    "account. Use Peggy's account-switch flow to change it.");
             }
 
             var previous = State.PinnedAccount;
             var previousMailbox = State.PinnedMailbox;
+            var previousUserPrincipalName =
+                State.PinnedUserPrincipalName;
+            var previousPrincipalId = State.PinnedPrincipalId;
             State.PinnedAccount = normalized;
             State.PinnedMailbox = normalizedMailbox;
+            State.PinnedUserPrincipalName =
+                normalizedUserPrincipalName.Length == 0
+                    ? previousUserPrincipalName
+                    : normalizedUserPrincipalName;
+            State.PinnedPrincipalId =
+                normalizedPrincipalId.Length == 0
+                    ? previousPrincipalId
+                    : normalizedPrincipalId;
             try
             {
                 await _store.SaveAsync(State, ct);
@@ -82,6 +134,198 @@ public sealed class PeggyStateManager
             {
                 State.PinnedAccount = previous;
                 State.PinnedMailbox = previousMailbox;
+                State.PinnedUserPrincipalName =
+                    previousUserPrincipalName;
+                State.PinnedPrincipalId = previousPrincipalId;
+                throw;
+            }
+        }
+        finally
+        {
+            _stateGate.Release();
+        }
+    }
+
+    public async Task SwitchWorkIqIdentityAsync(
+        WorkIqAccountIdentity identity,
+        string copilotSessionId,
+        DateTimeOffset nowUtc,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        var normalizedAccount = WorkIqSetupService.NormalizeAccount(
+            identity.Account);
+        var normalizedMailbox = WorkIqSetupService.NormalizeAccount(
+            identity.Mail ?? identity.UserPrincipalName ?? normalizedAccount);
+        var acceptedVersion = identity.EulaAcceptedVersion?.Trim();
+        if (string.IsNullOrWhiteSpace(acceptedVersion))
+        {
+            throw new ArgumentException(
+                "An accepted WorkIQ version is required.",
+                nameof(identity));
+        }
+        if (string.IsNullOrWhiteSpace(identity.PrincipalId))
+        {
+            throw new ArgumentException(
+                "A verified Microsoft 365 principal ID is required.",
+                nameof(identity));
+        }
+        if (!Guid.TryParse(copilotSessionId, out _))
+        {
+            throw new ArgumentException(
+                "A valid replacement Copilot session ID is required.",
+                nameof(copilotSessionId));
+        }
+
+        var configuredAccount = PeggyDefaults.ConfiguredWorkIqAccount;
+        if (!string.IsNullOrWhiteSpace(configuredAccount) &&
+            !WorkIqSetupService.RepresentsSameAccount(
+                configuredAccount,
+                configuredAccount,
+                identity))
+        {
+            throw new InvalidOperationException(
+                "The Microsoft 365 account is controlled by the " +
+                $"{PeggyDefaults.WorkIqAccountEnvironmentVariable} " +
+                "environment variable.");
+        }
+
+        await _stateGate.WaitAsync(ct);
+        try
+        {
+            if (string.IsNullOrWhiteSpace(State.PinnedAccount) ||
+                WorkIqSetupService.RepresentsSameAccount(
+                    State.PinnedAccount,
+                    State.PinnedMailbox,
+                    State.PinnedUserPrincipalName,
+                    State.PinnedPrincipalId,
+                    identity))
+            {
+                throw new InvalidOperationException(
+                    "Account switching requires a different pinned Microsoft " +
+                    "365 account.");
+            }
+
+            var candidate = new PeggyStateDocument
+            {
+                Version = State.Version,
+                PinnedAccount = normalizedAccount,
+                PinnedMailbox = normalizedMailbox,
+                PinnedUserPrincipalName =
+                    string.IsNullOrWhiteSpace(identity.UserPrincipalName)
+                        ? string.Empty
+                        : WorkIqSetupService.NormalizeAccount(
+                            identity.UserPrincipalName),
+                PinnedPrincipalId = identity.PrincipalId.Trim(),
+                WorkIqEulaAcceptedVersion = acceptedVersion,
+                Settings = CreateSettingsForAccountSwitch(State.Settings),
+                CopilotSessionDate = DateOnly.FromDateTime(
+                    nowUtc.ToLocalTime().DateTime),
+                CopilotSessionId = copilotSessionId,
+                MonitoringCursor = CreateRebasedMonitoringCursor(
+                    new MonitoringCursorState(),
+                    nowUtc)
+            };
+            await _store.SaveAsync(candidate, ct);
+            State = candidate;
+        }
+        finally
+        {
+            _stateGate.Release();
+        }
+    }
+
+    public async Task RebindWorkIqIdentityAsync(
+        WorkIqAccountIdentity identity,
+        string copilotSessionId,
+        DateTimeOffset nowUtc,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        var normalizedAccount = WorkIqSetupService.NormalizeAccount(
+            identity.Account);
+        var normalizedMailbox = WorkIqSetupService.NormalizeAccount(
+            identity.Mail ?? identity.UserPrincipalName ?? normalizedAccount);
+        var normalizedUserPrincipalName =
+            string.IsNullOrWhiteSpace(identity.UserPrincipalName)
+                ? string.Empty
+                : WorkIqSetupService.NormalizeAccount(
+                    identity.UserPrincipalName);
+        var principalId = identity.PrincipalId?.Trim();
+        var acceptedVersion = identity.EulaAcceptedVersion?.Trim();
+        if (string.IsNullOrWhiteSpace(principalId) ||
+            string.IsNullOrWhiteSpace(acceptedVersion) ||
+            !Guid.TryParse(copilotSessionId, out _))
+        {
+            throw new ArgumentException(
+                "A verified identity, accepted WorkIQ version, and valid " +
+                "Copilot session ID are required.",
+                nameof(identity));
+        }
+        var configuredAccount = PeggyDefaults.ConfiguredWorkIqAccount;
+        if (!string.IsNullOrWhiteSpace(configuredAccount) &&
+            !string.Equals(
+                configuredAccount,
+                normalizedAccount,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "The Microsoft 365 account is controlled by the " +
+                $"{PeggyDefaults.WorkIqAccountEnvironmentVariable} " +
+                "environment variable.");
+        }
+
+        await _stateGate.WaitAsync(ct);
+        try
+        {
+            if (!WorkIqSetupService.RepresentsSameAccount(
+                    State.PinnedAccount,
+                    State.PinnedMailbox,
+                    State.PinnedUserPrincipalName,
+                    State.PinnedPrincipalId,
+                    identity))
+            {
+                throw new InvalidOperationException(
+                    "A different Microsoft 365 principal requires Peggy's " +
+                    "account-switch flow.");
+            }
+
+            var previousAccount = State.PinnedAccount;
+            var previousMailbox = State.PinnedMailbox;
+            var previousUserPrincipalName =
+                State.PinnedUserPrincipalName;
+            var previousPrincipalId = State.PinnedPrincipalId;
+            var previousEulaVersion =
+                State.WorkIqEulaAcceptedVersion;
+            var previousSessionDate = State.CopilotSessionDate;
+            var previousSessionId = State.CopilotSessionId;
+            var previousSessionCredits = State.CopilotSessionCredits;
+            State.PinnedAccount = normalizedAccount;
+            State.PinnedMailbox = normalizedMailbox;
+            State.PinnedUserPrincipalName =
+                normalizedUserPrincipalName;
+            State.PinnedPrincipalId = principalId;
+            State.WorkIqEulaAcceptedVersion = acceptedVersion;
+            State.CopilotSessionDate = DateOnly.FromDateTime(
+                nowUtc.ToLocalTime().DateTime);
+            State.CopilotSessionId = copilotSessionId;
+            State.CopilotSessionCredits = 0;
+            try
+            {
+                await _store.SaveAsync(State, ct);
+            }
+            catch
+            {
+                State.PinnedAccount = previousAccount;
+                State.PinnedMailbox = previousMailbox;
+                State.PinnedUserPrincipalName =
+                    previousUserPrincipalName;
+                State.PinnedPrincipalId = previousPrincipalId;
+                State.WorkIqEulaAcceptedVersion =
+                    previousEulaVersion;
+                State.CopilotSessionDate = previousSessionDate;
+                State.CopilotSessionId = previousSessionId;
+                State.CopilotSessionCredits = previousSessionCredits;
                 throw;
             }
         }
@@ -144,6 +388,9 @@ public sealed class PeggyStateManager
                 Version = previous.Version,
                 PinnedAccount = previous.PinnedAccount,
                 PinnedMailbox = previous.PinnedMailbox,
+                PinnedUserPrincipalName =
+                    previous.PinnedUserPrincipalName,
+                PinnedPrincipalId = previous.PinnedPrincipalId,
                 WorkIqEulaAcceptedVersion =
                     previous.WorkIqEulaAcceptedVersion,
                 Settings = settings,
@@ -335,6 +582,35 @@ public sealed class PeggyStateManager
                 })
                 .ToList()
         };
+
+    public static PeggySettings CreateSettingsForAccountSwitch(
+        PeggySettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        return new()
+        {
+            CopilotModel = settings.CopilotModel,
+            CopilotReasoningEffort = settings.CopilotReasoningEffort,
+            CopilotContextTier = settings.CopilotContextTier,
+            IncludeActiveCasesFolder = false,
+            TeamsScope = settings.TeamsScope,
+            MonitorTeamsChatsInSelectedScope =
+                settings.MonitorTeamsChatsInSelectedScope,
+            StartAtSignIn = settings.StartAtSignIn,
+            MonitoringPaused = settings.MonitoringPaused,
+            MonitoringScheduleEnabled =
+                settings.MonitoringScheduleEnabled,
+            MonitoringWakeMinute = settings.MonitoringWakeMinute,
+            MonitoringSleepMinute = settings.MonitoringSleepMinute,
+            SpeechEnabled = settings.SpeechEnabled,
+            SpeechModelDirectory = settings.SpeechModelDirectory,
+            SpeechThreads = settings.SpeechThreads,
+            SpeechVoiceId = settings.SpeechVoiceId,
+            SpeechSpeed = settings.SpeechSpeed,
+            SpeechInputGain = settings.SpeechInputGain,
+            SpeechTuningVersion = settings.SpeechTuningVersion
+        };
+    }
 
     public bool EnsureDailySession()
     {

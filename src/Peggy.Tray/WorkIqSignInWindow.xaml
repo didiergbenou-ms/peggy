@@ -86,12 +86,19 @@
                        FontWeight="SemiBold"
                        Foreground="{StaticResource PeggyTextBrush}"/>
             <TextBox x:Name="AccountText" Margin="0,6,0,9"
-                     AutomationProperties.Name="Microsoft 365 account"/>
+                     AutomationProperties.Name="Microsoft 365 account"
+                     TextChanged="AccountText_Changed"/>
             <TextBlock
-                Text="A browser opens for sign-in and permission consent. Peggy verifies the selected identity before saving it."
+                Text="A browser opens for sign-in and permission consent. Peggy verifies the selected identity before saving it. Edit the address to use a different account."
                 TextWrapping="Wrap"
                 Foreground="{StaticResource PeggyMutedTextBrush}"
                 FontSize="11"/>
+            <TextBlock x:Name="AccountChangeNotice"
+                       Margin="0,8,0,0"
+                       TextWrapping="Wrap"
+                       Foreground="{StaticResource PeggyWarningBrush}"
+                       FontSize="11"
+                       Visibility="Collapsed"/>
           </StackPanel>
         </GroupBox>
 

@@ -29,6 +29,8 @@ public partial class App : Application
     private readonly SingleInstanceGuard _singleInstance = new();
     private readonly PeggyStateManager _state = new();
     private readonly PrivacyGuard _privacy = new();
+    private readonly SemaphoreSlim _runtimeGate = new(1, 1);
+    private readonly SemaphoreSlim _alertContextGate = new(1, 1);
     private readonly Dictionary<string, Message> _messageCache =
         new(StringComparer.Ordinal);
     private readonly HashSet<AlertContextWindow> _alertContextWindows = [];
@@ -38,12 +40,15 @@ public partial class App : Application
     private Forms.ToolStripMenuItem _creditsMenu = null!;
     private Forms.ToolStripMenuItem _pauseMenu = null!;
     private Forms.ToolStripMenuItem _talkMenu = null!;
+    private Forms.ToolStripMenuItem _accountMenu = null!;
     private Forms.ToolStripMenuItem _toggleMascotMenu = null!;
     private Forms.ToolStripMenuItem _quitMenu = null!;
     private MascotWindow _mascot = null!;
     private SpeechBubbleWindow _bubble = null!;
     private AlertCenterWindow _alertCenter = null!;
     private TroubleshootingWindow? _troubleshootingWindow;
+    private SettingsWindow? _settingsWindow;
+    private WorkIqSignInWindow? _workIqSignInWindow;
     private ConversationWindow _conversationWindow = null!;
     private ConversationController _conversation = null!;
     private AlertManager _alertManager = null!;
@@ -62,6 +67,7 @@ public partial class App : Application
     private bool _workIqEulaRepairRetryPending;
     private bool _quitting;
     private bool _scheduledSleeping;
+    private bool _accountSwitching;
     private int _monitoringGeneration;
     private int _monitoringCycleGeneration = -1;
     private string? _monitoringCycleWarning;
@@ -154,12 +160,14 @@ public partial class App : Application
     {
         _provider = MessageProviderFactory.Create(
             _state.State.Settings,
-            _state.State.PinnedAccount);
+            _state.State.PinnedAccount,
+            _state.State.PinnedPrincipalId);
         _copilot = new CopilotRunner(
             _state.State.Settings,
             _state.State.CopilotSessionId,
             _state.State.CopilotSessionCredits,
-            account: _state.State.PinnedAccount);
+            account: _state.State.PinnedAccount,
+            principalId: _state.State.PinnedPrincipalId);
         _alertManager = new AlertManager(_state);
         var dismissed = _alertManager.DismissAlertsWithoutVerifiedSources(
             DateTimeOffset.UtcNow);
@@ -274,19 +282,25 @@ public partial class App : Application
             CheckOnClick = true
         };
         _pauseMenu.CheckedChanged += (_, _) =>
+        {
+            if (_accountSwitching)
+            {
+                return;
+            }
             RunUiAction(
                 () => SetPausedAsync(_pauseMenu.Checked),
                 $"{AssistantName} monitoring");
+        };
         menu.Items.Add(_pauseMenu);
 
         _creditsMenu = new Forms.ToolStripMenuItem("AI credits: 0");
         menu.Items.Add(_creditsMenu);
-        menu.Items.Add(
-            "Microsoft 365 sign-in",
-            null,
-            (_, _) => RunUiAction(
-                ReauthenticateWorkIqAsync,
-                "Microsoft 365 sign-in"));
+        _accountMenu = new Forms.ToolStripMenuItem(
+            "Microsoft 365 account");
+        _accountMenu.Click += (_, _) => RunUiAction(
+            ReauthenticateWorkIqAsync,
+            "Microsoft 365 account");
+        menu.Items.Add(_accountMenu);
         menu.Items.Add(
             "Settings",
             null,
@@ -364,9 +378,14 @@ public partial class App : Application
         menu.Show(Forms.Control.MousePosition);
     }
 
-    private void StartCheck(bool force)
+    private void StartCheck(
+        bool force,
+        int? expectedGeneration = null)
     {
         if (_quitting ||
+            _accountSwitching ||
+            (expectedGeneration.HasValue &&
+             expectedGeneration.Value != _monitoringGeneration) ||
             (!force &&
              !MonitoringSchedule.CanRunAutomatic(
                  _state.State.Settings,
@@ -536,7 +555,7 @@ public partial class App : Application
             {
                 keepThinkingForContinuation = true;
                 _ = Dispatcher.BeginInvoke(
-                    new Action(() => StartCheck(force)),
+                    new Action(() => StartCheck(force, generation)),
                     DispatcherPriority.Background);
             }
             else
@@ -645,7 +664,9 @@ public partial class App : Application
                 _restartCheckRequested = false;
                 _restartCheckForced = false;
                 _ = Dispatcher.BeginInvoke(
-                    new Action(() => StartCheck(restartForce)),
+                    new Action(() => StartCheck(
+                        restartForce,
+                        generation)),
                     DispatcherPriority.Background);
             }
         }
@@ -654,6 +675,10 @@ public partial class App : Application
     private void SurfaceMaterialAlerts(
         IReadOnlyList<AlertRecord> materialAlerts)
     {
+        if (_accountSwitching)
+        {
+            return;
+        }
         var visible = materialAlerts
             .Where(alert => alert.Tier is
                 AlertTier.Critical or
@@ -827,16 +852,25 @@ public partial class App : Application
 
     private async Task SetPausedAsync(bool paused)
     {
-        if (_state.State.Settings.MonitoringPaused == paused)
+        await _runtimeGate.WaitAsync(_shutdown.Token);
+        try
         {
-            return;
+            if (_accountSwitching ||
+                _state.State.Settings.MonitoringPaused == paused)
+            {
+                return;
+            }
+            _state.State.Settings.MonitoringPaused = paused;
+            if (paused)
+            {
+                _monitoringGeneration++;
+            }
+            await _state.SaveAsync(_shutdown.Token);
         }
-        _state.State.Settings.MonitoringPaused = paused;
-        if (paused)
+        finally
         {
-            _monitoringGeneration++;
+            _runtimeGate.Release();
         }
-        await _state.SaveAsync(_shutdown.Token);
         RefreshUi(showPersistentCards: false);
         if (!paused)
         {
@@ -853,6 +887,24 @@ public partial class App : Application
 
     private async Task ShowSettingsAsync()
     {
+        if (_settingsWindow is { IsVisible: true } existingSettings)
+        {
+            existingSettings.Activate();
+            return;
+        }
+        if (_workIqSignInWindow is
+            {
+                IsVisible: true
+            } existingSignIn)
+        {
+            existingSignIn.Activate();
+            return;
+        }
+        if (_accountSwitching)
+        {
+            return;
+        }
+        var accountAtOpen = _state.State.PinnedAccount;
         var settings = CloneSettings(_state.State.Settings);
         var window = new SettingsWindow(
             settings,
@@ -864,16 +916,31 @@ public partial class App : Application
                 ? _alertCenter
                 : null
         };
-        var dialogResult = window.ShowDialog();
-        if (window.ReauthenticatedIdentity is { } identity)
+        _settingsWindow = window;
+        bool? dialogResult;
+        try
         {
-            await _state.PinWorkIqIdentityAsync(
-                identity.Account,
-                identity.Mail ?? identity.UserPrincipalName,
-                _shutdown.Token);
-            await _state.RecordWorkIqEulaAcceptanceAsync(
-                identity.EulaAcceptedVersion,
-                _shutdown.Token);
+            dialogResult = window.ShowDialog();
+        }
+        finally
+        {
+            if (ReferenceEquals(_settingsWindow, window))
+            {
+                _settingsWindow = null;
+            }
+        }
+        if (_accountSwitching ||
+            !string.Equals(
+                accountAtOpen,
+                _state.State.PinnedAccount,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        if (window.AccountConnectionRequested)
+        {
+            await ReauthenticateWorkIqAsync();
+            return;
         }
 
         if (dialogResult != true ||
@@ -882,6 +949,17 @@ public partial class App : Application
             return;
         }
 
+        await _runtimeGate.WaitAsync(_shutdown.Token);
+        try
+        {
+        if (_accountSwitching ||
+            !string.Equals(
+                accountAtOpen,
+                _state.State.PinnedAccount,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
         var previous = _state.State.Settings;
         var updated = window.SavedSettings;
         var wasScheduledSleeping = _scheduledSleeping;
@@ -939,12 +1017,14 @@ public partial class App : Application
             : _state.State.CopilotSessionCredits;
         var replacementProvider = MessageProviderFactory.Create(
             updated,
-            _state.State.PinnedAccount);
+            _state.State.PinnedAccount,
+            _state.State.PinnedPrincipalId);
         var replacementCopilot = new CopilotRunner(
             updated,
             replacementSessionId,
             replacementSessionCredits,
-            account: _state.State.PinnedAccount);
+            account: _state.State.PinnedAccount,
+            principalId: _state.State.PinnedPrincipalId);
         var startupChanged =
             previous.StartAtSignIn != updated.StartAtSignIn;
         try
@@ -1041,6 +1121,11 @@ public partial class App : Application
                 "not fully refresh.",
                 activationFailures);
         }
+        }
+        finally
+        {
+            _runtimeGate.Release();
+        }
     }
 
     private Task ShowTroubleshootingAsync()
@@ -1075,7 +1160,8 @@ public partial class App : Application
                 _state.State.MonitoringCursor),
             _state.State.PinnedAccount,
             _state.State.ConsecutiveMonitoringFailures,
-            _copilot.ListAvailableModelsAsync);
+            _copilot.ListAvailableModelsAsync,
+            principalId: _state.State.PinnedPrincipalId);
         var window = new TroubleshootingWindow(
             failure,
             troubleshooter,
@@ -1085,22 +1171,33 @@ public partial class App : Application
         };
         window.SignInRequested += () =>
         {
-            window.Close();
             RunUiAction(
-                ReauthenticateWorkIqAsync,
+                async () =>
+                {
+                    await window.CloseAndWaitAsync();
+                    await ReauthenticateWorkIqAsync();
+                },
                 "Microsoft 365 sign-in");
         };
         window.OpenSettingsRequested += () =>
         {
-            window.Close();
             RunUiAction(
-                ShowSettingsAsync,
+                async () =>
+                {
+                    await window.CloseAndWaitAsync();
+                    await ShowSettingsAsync();
+                },
                 $"{AssistantName} settings");
         };
         window.RetryMonitoringRequested += () =>
         {
-            window.Close();
-            StartCheck(force: true);
+            RunUiAction(
+                async () =>
+                {
+                    await window.CloseAndWaitAsync();
+                    StartCheck(force: true);
+                },
+                $"{AssistantName} monitoring");
         };
         window.Closed += (_, _) =>
         {
@@ -1140,9 +1237,22 @@ public partial class App : Application
                     var identity = await setup.VerifyAccountAsync(
                         account,
                         _shutdown.Token);
+                    if (!WorkIqSetupService.RepresentsSameAccount(
+                            _state.State.PinnedAccount,
+                            _state.State.PinnedMailbox,
+                            _state.State.PinnedUserPrincipalName,
+                            _state.State.PinnedPrincipalId,
+                            identity))
+                    {
+                        throw new WorkIqSetupException(
+                            "WorkIQ authenticated as a different Microsoft " +
+                            "365 principal.");
+                    }
                     await _state.PinWorkIqIdentityAsync(
                         identity.Account,
                         identity.Mail ?? identity.UserPrincipalName,
+                        identity.UserPrincipalName,
+                        identity.PrincipalId,
                         _shutdown.Token);
                     return true;
                 }
@@ -1153,22 +1263,23 @@ public partial class App : Application
             }
         }
 
-        var window = new WorkIqSignInWindow(account, setup);
+        var window = new WorkIqSignInWindow(
+            account,
+            setup,
+            _state.State.PinnedMailbox,
+            _state.State.PinnedUserPrincipalName,
+            _state.State.PinnedPrincipalId);
         if (window.ShowDialog() != true ||
             string.IsNullOrWhiteSpace(window.AuthenticatedAccount))
         {
             return false;
         }
 
-        await _state.PinWorkIqIdentityAsync(
-            window.AuthenticatedAccount,
-            window.AuthenticatedMailbox,
-            _shutdown.Token);
-        await _state.RecordWorkIqEulaAcceptanceAsync(
-            window.AcceptedEulaVersion
+        await ApplyAuthenticatedWorkIqIdentityAsync(
+            window.AuthenticatedIdentity
                 ?? throw new InvalidOperationException(
-                    "WorkIQ did not return the accepted EULA version."),
-            _shutdown.Token);
+                    "WorkIQ did not return the verified identity."),
+            refreshRuntime: false);
         return true;
     }
 
@@ -1181,30 +1292,335 @@ public partial class App : Application
                 "mock message provider.");
         }
 
-        var window = new WorkIqSignInWindow(
-            _state.State.PinnedAccount,
-            new WorkIqSetupService())
+        if (_settingsWindow is { IsVisible: true } settingsWindow)
         {
-            Owner = _alertCenter.IsVisible
-                ? _alertCenter
-                : null
-        };
-        if (window.ShowDialog() != true ||
-            string.IsNullOrWhiteSpace(window.AuthenticatedAccount))
+            settingsWindow.Activate();
+            return;
+        }
+        if (_workIqSignInWindow is
+            {
+                IsVisible: true
+            } existingWindow)
+        {
+            existingWindow.Activate();
+            return;
+        }
+        if (_accountSwitching)
         {
             return;
         }
 
-        await _state.PinWorkIqIdentityAsync(
-            window.AuthenticatedAccount,
-            window.AuthenticatedMailbox,
-            _shutdown.Token);
-        await _state.RecordWorkIqEulaAcceptanceAsync(
-            window.AcceptedEulaVersion
-                ?? throw new InvalidOperationException(
-                    "WorkIQ did not return the accepted EULA version."),
-            _shutdown.Token);
-        Say($"Microsoft 365 is connected as {window.AuthenticatedAccount}.");
+        var setup = new WorkIqSetupService();
+        var accountAtOpen = _state.State.PinnedAccount;
+        var mailboxAtOpen = _state.State.PinnedMailbox;
+        var userPrincipalNameAtOpen =
+            _state.State.PinnedUserPrincipalName;
+        var principalIdAtOpen = _state.State.PinnedPrincipalId;
+        _accountSwitching = true;
+        _monitoringGeneration++;
+        _restartCheckRequested = false;
+        _restartCheckForced = false;
+        var alertCenterWasVisible = _alertCenter.IsVisible;
+        var runtimeGateHeld = false;
+        var alertContextGateHeld = false;
+        var safeToResume = false;
+        _alertCenter.Hide();
+        _alertCenter.UpdateAlerts([], maskContent: false);
+        _alertCenter.ClearCriticalBanner();
+        _bubble.HideNow();
+        _alertsMenu.Enabled = false;
+        _talkMenu.Enabled = false;
+        _accountMenu.Enabled = false;
+        _pauseMenu.Enabled = false;
+        CloseAlertContextWindows();
+        try
+        {
+            var troubleshootingWindow = _troubleshootingWindow;
+            if (troubleshootingWindow is not null)
+            {
+                await troubleshootingWindow.CloseAndWaitAsync();
+            }
+            await _alertContextGate.WaitAsync(_shutdown.Token);
+            alertContextGateHeld = true;
+            CloseAlertContextWindows();
+            await _activeCheck;
+            await _copilotWarmup;
+            _bubble.HideNow();
+            await _runtimeGate.WaitAsync(_shutdown.Token);
+            runtimeGateHeld = true;
+            await _conversation.StopAsync();
+
+            var window = new WorkIqSignInWindow(
+                accountAtOpen,
+                setup,
+                mailboxAtOpen,
+                userPrincipalNameAtOpen,
+                principalIdAtOpen)
+            {
+                Owner = _alertCenter
+            };
+            _workIqSignInWindow = window;
+            bool? dialogResult;
+            try
+            {
+                dialogResult = window.ShowDialog();
+            }
+            finally
+            {
+                if (ReferenceEquals(_workIqSignInWindow, window))
+                {
+                    _workIqSignInWindow = null;
+                }
+            }
+
+            if (dialogResult != true ||
+                window.AuthenticatedIdentity is not { } identity)
+            {
+                safeToResume =
+                    !window.AuthenticationAttempted ||
+                    await IsPinnedPrincipalAuthenticatedAsync(setup);
+                if (!safeToResume)
+                {
+                    MessageBox.Show(
+                        "Microsoft 365 authentication changed, but Peggy's " +
+                        "pinned identity was not reconnected. Peggy will close " +
+                        "to prevent account data from crossing identities. " +
+                        "Restart Peggy and complete the connection flow.",
+                        "Microsoft 365 account",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
+                return;
+            }
+
+            await ApplyAuthenticatedWorkIqIdentityAsync(
+                identity,
+                refreshRuntime: true);
+            safeToResume = true;
+            Say($"Microsoft 365 is connected as {identity.Account}.");
+        }
+        catch
+        {
+            safeToResume =
+                await IsPinnedPrincipalAuthenticatedAsync(setup);
+            throw;
+        }
+        finally
+        {
+            if (alertContextGateHeld)
+            {
+                _alertContextGate.Release();
+            }
+            if (runtimeGateHeld)
+            {
+                _runtimeGate.Release();
+            }
+            _pauseMenu.Checked =
+                _state.State.Settings.MonitoringPaused;
+            if (safeToResume)
+            {
+                _accountSwitching = false;
+                _alertsMenu.Enabled = true;
+                _talkMenu.Enabled = true;
+                _accountMenu.Enabled = true;
+                _pauseMenu.Enabled = true;
+                RefreshUi(showPersistentCards: false);
+                if (alertCenterWasVisible)
+                {
+                    ShowAlertCenter();
+                }
+                StartCheck(force: false);
+            }
+            else
+            {
+                _ = Dispatcher.BeginInvoke(new Action(Shutdown));
+            }
+        }
+    }
+
+    private async Task<bool> IsPinnedPrincipalAuthenticatedAsync(
+        WorkIqSetupService setup)
+    {
+        if (string.IsNullOrWhiteSpace(_state.State.PinnedAccount) ||
+            string.IsNullOrWhiteSpace(_state.State.PinnedPrincipalId))
+        {
+            return false;
+        }
+
+        try
+        {
+            var identity = await setup.VerifyAccountAsync(
+                _state.State.PinnedAccount,
+                _shutdown.Token);
+            return string.Equals(
+                identity.PrincipalId,
+                _state.State.PinnedPrincipalId,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (WorkIqSetupException)
+        {
+            return false;
+        }
+    }
+
+    private async Task<bool> ApplyAuthenticatedWorkIqIdentityAsync(
+        WorkIqAccountIdentity identity,
+        bool refreshRuntime)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        var principalChanged =
+            !string.IsNullOrWhiteSpace(_state.State.PinnedAccount) &&
+            !WorkIqSetupService.RepresentsSameAccount(
+                _state.State.PinnedAccount,
+                _state.State.PinnedMailbox,
+                _state.State.PinnedUserPrincipalName,
+                _state.State.PinnedPrincipalId,
+                identity);
+        var accountSelectorChanged =
+            !principalChanged &&
+            !string.IsNullOrWhiteSpace(_state.State.PinnedAccount) &&
+            !string.Equals(
+                _state.State.PinnedAccount,
+                identity.Account,
+                StringComparison.OrdinalIgnoreCase);
+        if (!principalChanged && !accountSelectorChanged)
+        {
+            await _state.PinWorkIqIdentityAsync(
+                string.IsNullOrWhiteSpace(_state.State.PinnedAccount)
+                    ? identity.Account
+                    : _state.State.PinnedAccount,
+                identity.Mail ?? identity.UserPrincipalName,
+                identity.UserPrincipalName,
+                identity.PrincipalId,
+                _shutdown.Token);
+            await _state.RecordWorkIqEulaAcceptanceAsync(
+                identity.EulaAcceptedVersion,
+                _shutdown.Token);
+            return false;
+        }
+
+        if (!refreshRuntime)
+        {
+            var replacementSessionId = Guid.NewGuid().ToString();
+            if (principalChanged)
+            {
+                await _state.SwitchWorkIqIdentityAsync(
+                    identity,
+                    replacementSessionId,
+                    DateTimeOffset.UtcNow,
+                    _shutdown.Token);
+            }
+            else
+            {
+                await _state.RebindWorkIqIdentityAsync(
+                    identity,
+                    replacementSessionId,
+                    DateTimeOffset.UtcNow,
+                    _shutdown.Token);
+            }
+            return principalChanged;
+        }
+
+        if (!_accountSwitching)
+        {
+            throw new InvalidOperationException(
+                "Microsoft 365 runtime changes must be quiesced before " +
+                "updating the authenticated identity.");
+        }
+
+        CopilotRunner? replacementCopilot = null;
+        try
+        {
+            var switchTime = DateTimeOffset.UtcNow;
+            var replacementSessionId = Guid.NewGuid().ToString();
+            var replacementSettings =
+                principalChanged
+                    ? PeggyStateManager.CreateSettingsForAccountSwitch(
+                        _state.State.Settings)
+                    : CloneSettings(_state.State.Settings);
+            var replacementProvider = MessageProviderFactory.Create(
+                replacementSettings,
+                identity.Account,
+                identity.PrincipalId);
+            replacementCopilot = new CopilotRunner(
+                replacementSettings,
+                replacementSessionId,
+                sessionCredits: 0,
+                account: identity.Account,
+                principalId: identity.PrincipalId);
+
+            if (principalChanged)
+            {
+                await _state.SwitchWorkIqIdentityAsync(
+                    identity,
+                    replacementSessionId,
+                    switchTime,
+                    _shutdown.Token);
+            }
+            else
+            {
+                await _state.RebindWorkIqIdentityAsync(
+                    identity,
+                    replacementSessionId,
+                    switchTime,
+                    _shutdown.Token);
+            }
+
+            _troubleshootingWindow?.Close();
+            _troubleshootingWindow = null;
+            if (principalChanged)
+            {
+                _messageCache.Clear();
+            }
+            ClearAlertReveal();
+            _monitoringCycleGeneration = -1;
+            _monitoringCycleWarning = null;
+            _monitoringRemediation = null;
+            _workIqEulaRepairRetryPending = false;
+            _provider = replacementProvider;
+
+            var previousCopilot = _copilot;
+            _copilot = replacementCopilot;
+            replacementCopilot = null;
+            StartCopilotWarmup(_copilot);
+            try
+            {
+                await previousCopilot.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                Log(
+                    "COPILOT ACCOUNT SWITCH CLEANUP ERROR " +
+                    $"type={ex.GetType().Name}");
+            }
+
+            RefreshUi(showPersistentCards: false);
+            return principalChanged;
+        }
+        catch (Exception switchFailure)
+        {
+            AggregateException? cleanupException = null;
+            if (replacementCopilot is not null)
+            {
+                try
+                {
+                    await replacementCopilot.DisposeAsync();
+                }
+                catch (Exception cleanupFailure)
+                {
+                    cleanupException = new AggregateException(
+                        "The account switch failed and staged Copilot cleanup " +
+                        "was incomplete.",
+                        switchFailure,
+                        cleanupFailure);
+                }
+            }
+            if (cleanupException is not null)
+            {
+                throw cleanupException;
+            }
+            throw;
+        }
     }
 
     private async Task<bool> RestoreRecordedWorkIqEulaAsync(
@@ -1276,6 +1692,27 @@ public partial class App : Application
 
     private async Task OpenAlertContextAsync(string alertId)
     {
+        var generation = _monitoringGeneration;
+        await _alertContextGate.WaitAsync(_shutdown.Token);
+        try
+        {
+            if (_accountSwitching ||
+                generation != _monitoringGeneration)
+            {
+                return;
+            }
+            await OpenAlertContextCoreAsync(alertId, generation);
+        }
+        finally
+        {
+            _alertContextGate.Release();
+        }
+    }
+
+    private async Task OpenAlertContextCoreAsync(
+        string alertId,
+        int generation)
+    {
         var alert = _state.State.Alerts.FirstOrDefault(item =>
             string.Equals(item.Id, alertId, StringComparison.Ordinal))
             ?? throw new InvalidOperationException(
@@ -1283,7 +1720,7 @@ public partial class App : Application
         var allowMaskedContext = false;
         if (_privacy.ShouldMask)
         {
-            allowMaskedContext = ConfirmContextReveal();
+            allowMaskedContext = ConfirmContextReveal(generation);
             if (!allowMaskedContext)
             {
                 return;
@@ -1294,7 +1731,10 @@ public partial class App : Application
                 alert.SourceReference,
                 out var sourceUri))
         {
-            await OpenSourceUriAsync(sourceUri, allowMaskedContext);
+            await OpenSourceUriAsync(
+                sourceUri,
+                allowMaskedContext,
+                generation);
             return;
         }
 
@@ -1313,9 +1753,14 @@ public partial class App : Application
             var thread = await _provider.GetThreadAsync(
                 alert.ThreadId,
                 _shutdown.Token);
+            if (_accountSwitching ||
+                generation != _monitoringGeneration)
+            {
+                return;
+            }
             if (_privacy.ShouldMask && !allowMaskedContext)
             {
-                allowMaskedContext = ConfirmContextReveal();
+                allowMaskedContext = ConfirmContextReveal(generation);
                 if (!allowMaskedContext)
                 {
                     return;
@@ -1335,9 +1780,14 @@ public partial class App : Application
                     alert.Reason,
                     alert.LastActivityUtc,
                     _shutdown.Token);
+                if (_accountSwitching ||
+                    generation != _monitoringGeneration)
+                {
+                    return;
+                }
                 if (_privacy.ShouldMask && !allowMaskedContext)
                 {
-                    allowMaskedContext = ConfirmContextReveal();
+                    allowMaskedContext = ConfirmContextReveal(generation);
                     if (!allowMaskedContext)
                     {
                         return;
@@ -1347,15 +1797,24 @@ public partial class App : Application
                         resolution?.WebUrl,
                         out var resolvedUri))
                 {
+                    if (!IsAccountGenerationCurrent(generation))
+                    {
+                        return;
+                    }
                     alert.SourceReference = resolvedUri.AbsoluteUri;
                     alert.UpdatedUtc = DateTimeOffset.UtcNow;
                     await _state.SaveAsync(_shutdown.Token);
                     RefreshUi(showPersistentCards: false);
                     await OpenSourceUriAsync(
                         resolvedUri,
-                        allowMaskedContext);
+                        allowMaskedContext,
+                        generation);
                     return;
                 }
+            }
+            if (!IsAccountGenerationCurrent(generation))
+            {
+                return;
             }
             var window = new AlertContextWindow(
                 alert,
@@ -1375,7 +1834,8 @@ public partial class App : Application
                     RunUiAction(
                         () => OpenSourceUriAsync(
                             originalUri,
-                            allowMaskedContext),
+                            allowMaskedContext,
+                            generation),
                         $"{AssistantName} alert context");
             }
             window.Closed += (_, _) =>
@@ -1413,11 +1873,22 @@ public partial class App : Application
 
     private Task OpenSourceUriAsync(
         Uri uri,
-        bool allowMaskedContext = false)
+        bool allowMaskedContext = false,
+        int? expectedGeneration = null)
     {
+        if (expectedGeneration.HasValue &&
+            !IsAccountGenerationCurrent(expectedGeneration.Value))
+        {
+            return Task.CompletedTask;
+        }
         if (_privacy.ShouldMask &&
             !allowMaskedContext &&
-            !ConfirmContextReveal())
+            !ConfirmContextReveal(expectedGeneration))
+        {
+            return Task.CompletedTask;
+        }
+        if (expectedGeneration.HasValue &&
+            !IsAccountGenerationCurrent(expectedGeneration.Value))
         {
             return Task.CompletedTask;
         }
@@ -1428,7 +1899,7 @@ public partial class App : Application
         return Task.CompletedTask;
     }
 
-    private bool ConfirmContextReveal()
+    private bool ConfirmContextReveal(int? expectedGeneration = null)
     {
         var confirmed = MessageBox.Show(
             _alertCenter,
@@ -1439,12 +1910,20 @@ public partial class App : Application
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning,
             MessageBoxResult.No) == MessageBoxResult.Yes;
-        if (confirmed)
+        if (confirmed &&
+            !_accountSwitching &&
+            (!expectedGeneration.HasValue ||
+             IsAccountGenerationCurrent(expectedGeneration.Value)))
         {
             RevealAlertDetails();
+            return true;
         }
-        return confirmed;
+        return false;
     }
+
+    private bool IsAccountGenerationCurrent(int generation)
+        => !_accountSwitching &&
+           generation == _monitoringGeneration;
 
     private bool ShouldMaskAlertContent()
         => _privacy.ShouldMask &&
@@ -1479,16 +1958,43 @@ public partial class App : Application
 
     private async Task StartConversationAsync(string? alertId)
     {
-        if (_state.EnsureDailySession())
+        var generation = _monitoringGeneration;
+        if (_accountSwitching)
         {
-            await ReplaceCopilotAsync(
-                _state.State.Settings);
-            await _state.SaveAsync(_shutdown.Token);
+            return;
+        }
+        await _runtimeGate.WaitAsync(_shutdown.Token);
+        try
+        {
+            if (_accountSwitching ||
+                generation != _monitoringGeneration)
+            {
+                return;
+            }
+            if (_state.EnsureDailySession())
+            {
+                await ReplaceCopilotAsync(
+                    _state.State.Settings);
+                await _state.SaveAsync(_shutdown.Token);
+            }
+        }
+        finally
+        {
+            _runtimeGate.Release();
+        }
+        if (_accountSwitching ||
+            generation != _monitoringGeneration)
+        {
+            return;
         }
 
         try
         {
-            await _conversation.StartAsync(alertId);
+            await _conversation.StartAsync(
+                alertId,
+                () =>
+                    !_accountSwitching &&
+                    generation == _monitoringGeneration);
         }
         catch (OperationCanceledException) when (
             !_conversation.IsActive ||
@@ -1570,6 +2076,10 @@ public partial class App : Application
 
     private void ShowAlertCenter()
     {
+        if (_accountSwitching)
+        {
+            return;
+        }
         _alertCenter.ShowNearTaskbar();
     }
 
@@ -1811,7 +2321,7 @@ public partial class App : Application
                "End User License",
                StringComparison.OrdinalIgnoreCase)
             ? "The WorkIQ EULA must be accepted. Open Settings, select " +
-              "'Sign in again', then review and accept " +
+              "'Change or reconnect', then review and accept " +
               "https://github.com/microsoft/work-iq/tree/main/EULA."
             : null;
 
@@ -1887,7 +2397,8 @@ public partial class App : Application
             settings,
             _state.State.CopilotSessionId,
             _state.State.CopilotSessionCredits,
-            account: _state.State.PinnedAccount));
+            account: _state.State.PinnedAccount,
+            principalId: _state.State.PinnedPrincipalId));
 
     private async Task ReplaceCopilotAsync(CopilotRunner replacement)
     {

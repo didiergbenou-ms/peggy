@@ -218,7 +218,7 @@ public partial class SettingsWindow : Window
 
     public PeggySettings? SavedSettings { get; private set; }
 
-    public WorkIqAccountIdentity? ReauthenticatedIdentity { get; private set; }
+    public bool AccountConnectionRequested { get; private set; }
 
     private async void RefreshModels_Click(
         object sender,
@@ -1758,23 +1758,20 @@ public partial class SettingsWindow : Window
 
     private void SignInAgain_Click(object sender, RoutedEventArgs e)
     {
-        var window = new WorkIqSignInWindow(_pinnedAccount)
+        if (MessageBox.Show(
+                this,
+                "Changing or reconnecting the Microsoft 365 account closes " +
+                "Settings. Unsaved changes on this page will be discarded. " +
+                "Continue?",
+                "Microsoft 365 account",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No) != MessageBoxResult.Yes)
         {
-            Owner = this
-        };
-        if (window.ShowDialog() == true &&
-            window.AuthenticatedIdentity is { } identity)
-        {
-            ApplyReauthenticatedIdentity(identity);
+            return;
         }
-    }
-
-    private void ApplyReauthenticatedIdentity(
-        WorkIqAccountIdentity identity)
-    {
-        ArgumentNullException.ThrowIfNull(identity);
-        ReauthenticatedIdentity = identity;
-        AccountStatus.Text = $"Connected as {identity.Account}";
+        AccountConnectionRequested = true;
+        DialogResult = false;
     }
 
     private void ScheduleEnabledCheck_Changed(

@@ -9,6 +9,8 @@ public sealed record WorkIqAccountIdentity(
     string? Mail,
     string? UserPrincipalName)
 {
+    public string PrincipalId { get; init; } = string.Empty;
+
     public string EulaAcceptedVersion { get; init; } = string.Empty;
 }
 
@@ -266,10 +268,18 @@ public sealed class WorkIqSetupService
                 profile.Mail,
                 profile.UserPrincipalName,
                 normalized);
+            if (string.IsNullOrWhiteSpace(profile.Id))
+            {
+                throw new InvalidDataException(
+                    "WorkIQ returned a profile without an immutable ID.");
+            }
             return new WorkIqAccountIdentity(
                 normalized,
                 mail,
-                profile.UserPrincipalName);
+                profile.UserPrincipalName)
+            {
+                PrincipalId = profile.Id.Trim()
+            };
         }
         catch (Exception ex) when (
             ex is InvalidOperationException or
@@ -280,6 +290,81 @@ public sealed class WorkIqSetupService
             throw new WorkIqSetupException(
                 "WorkIQ could not verify the signed-in Microsoft 365 account.",
                 ex);
+        }
+    }
+
+    public static bool RepresentsSameAccount(
+        string? pinnedAccount,
+        string? pinnedMailbox,
+        WorkIqAccountIdentity identity)
+        => RepresentsSameAccount(
+            pinnedAccount,
+            pinnedMailbox,
+            pinnedUserPrincipalName: null,
+            pinnedPrincipalId: null,
+            identity);
+
+    public static bool RepresentsSameAccount(
+        string? pinnedAccount,
+        string? pinnedMailbox,
+        string? pinnedUserPrincipalName,
+        WorkIqAccountIdentity identity)
+        => RepresentsSameAccount(
+            pinnedAccount,
+            pinnedMailbox,
+            pinnedUserPrincipalName,
+            pinnedPrincipalId: null,
+            identity);
+
+    public static bool RepresentsSameAccount(
+        string? pinnedAccount,
+        string? pinnedMailbox,
+        string? pinnedUserPrincipalName,
+        string? pinnedPrincipalId,
+        WorkIqAccountIdentity identity)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        if (!string.IsNullOrWhiteSpace(pinnedPrincipalId) &&
+            !string.IsNullOrWhiteSpace(identity.PrincipalId))
+        {
+            return string.Equals(
+                pinnedPrincipalId.Trim(),
+                identity.PrincipalId.Trim(),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        if (string.IsNullOrWhiteSpace(pinnedPrincipalId) &&
+            !string.IsNullOrWhiteSpace(identity.PrincipalId))
+        {
+            return false;
+        }
+
+        var pinnedAliases = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase);
+        AddAccountAlias(pinnedAliases, pinnedAccount);
+        AddAccountAlias(pinnedAliases, pinnedMailbox);
+        AddAccountAlias(pinnedAliases, pinnedUserPrincipalName);
+        if (pinnedAliases.Count == 0)
+        {
+            return false;
+        }
+
+        return new[]
+        {
+            identity.Account,
+            identity.Mail,
+            identity.UserPrincipalName
+        }.Any(alias =>
+            !string.IsNullOrWhiteSpace(alias) &&
+            pinnedAliases.Contains(alias.Trim()));
+    }
+
+    private static void AddAccountAlias(
+        ISet<string> aliases,
+        string? account)
+    {
+        if (!string.IsNullOrWhiteSpace(account))
+        {
+            aliases.Add(account.Trim());
         }
     }
 
@@ -496,6 +581,9 @@ public sealed class WorkIqSetupService
 
     private sealed class WorkIqProfile
     {
+        [JsonPropertyName("id")]
+        public string? Id { get; init; }
+
         [JsonPropertyName("mail")]
         public string? Mail { get; init; }
 

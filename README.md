@@ -380,6 +380,30 @@ The package and checksum can also be downloaded manually:
     -ChecksumPath .\peggy-win-x64.sha256
 ```
 
+### Uninstall
+
+Exit Peggy, then run the uninstaller from its installation directory:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File `
+    "$env:LOCALAPPDATA\Programs\Peggy\uninstall.ps1"
+```
+
+The uninstaller removes Peggy's application files, Start menu shortcut, and
+optional startup entry. It preserves encrypted settings and local speech models
+so they remain available after a reinstall. To remove those files and Peggy's
+temporary runtime data too, add `-PurgeData`:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File `
+    "$env:LOCALAPPDATA\Programs\Peggy\uninstall.ps1" -PurgeData
+```
+
+Use `-WhatIf` to preview the cleanup. Shared prerequisites such as PowerShell 7,
+Node.js, GitHub Copilot CLI, and WorkIQ are not removed. An uninstaller run from
+a custom installation directory detects that directory automatically; a
+standalone copy can target it with `-InstallDirectory`.
+
 ### Build from source
 
 Open PowerShell in the repository root.
@@ -437,13 +461,17 @@ On first launch, Peggy opens **Connect Microsoft 365**:
 If the tenant has not granted the required WorkIQ permissions, an administrator
 must complete tenant consent before verification can succeed.
 
-Use **Microsoft 365 sign-in** from the tray or **Sign in again** in Settings to
-refresh authentication for the pinned account.
+Use **Microsoft 365 account** from the tray or **Change or reconnect** in
+Settings to refresh authentication or enter another account. After Peggy
+verifies a different identity, it clears local alerts, monitoring cursors,
+account-specific Outlook folders and Teams selections, Copilot conversation
+context, credit history, and action audit for the previous account. General
+schedule, model, startup, and speech preferences are preserved.
 
 If WorkIQ loses its local `I-accept-EULA` setting, Peggy restores it
 automatically only when the installed WorkIQ build exactly matches the build
 whose EULA was accepted. A WorkIQ update requires the user to review and accept
-the current EULA again through **Sign in again**.
+the current EULA again through **Change or reconnect**.
 
 ### 5. Add the optional speech-host firewall rule
 
@@ -479,7 +507,7 @@ icon opens the Alert Center.
 | **Check now** | Runs a monitoring check even while scheduled sleep is active |
 | **Pause monitoring** | Toggles manual monitoring pause |
 | **AI credits today** | Shows recent local Copilot credit entries |
-| **Microsoft 365 sign-in** | Reauthenticates the pinned account through standalone WorkIQ |
+| **Microsoft 365 account** | Reconnects the current account or switches to another verified identity |
 | **Settings** | Opens model, source, voice, schedule, startup, and watchlist settings |
 | **Show or hide Peggy** | Toggles the desktop mascot |
 | **Test animations** | Plays individual or all mascot states |
@@ -523,7 +551,7 @@ not leave a partially applied identity, model, or source scope.
 
 | Setting | Notes |
 | --- | --- |
-| Microsoft 365 connection | Shows the pinned account and opens standalone WorkIQ reauthentication |
+| Microsoft 365 connection | Shows the current account and supports reconnection or verified account switching |
 | Pinned Copilot model | Loaded live from the authenticated GitHub Copilot CLI; **Refresh** uses a new catalog connection so newly available models appear without restarting Peggy; changing it starts a fresh Copilot session |
 | Reasoning effort | Shows only the effort levels supported by the selected model; **Model default** lets Copilot choose |
 | Context tier | Offers **Default** for every model and **Long context** only when the live catalog reports support |
@@ -692,6 +720,7 @@ The release workflow runs the regression suite and publishes:
 - `peggy-win-x64.zip`, a self-contained package for Windows x64.
 - `peggy-win-x64.sha256`, the package checksum used by `install.ps1`.
 - `install.ps1`, the current-user bootstrap installer.
+- `uninstall.ps1`, the current-user uninstaller.
 
 Release packages are checksum-verified but not Authenticode-signed. Windows
 SmartScreen can therefore show an unknown-publisher warning until a code-signing
@@ -770,7 +799,7 @@ external writes.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `PEGGY_WORKIQ_ACCOUNT` | Optional account override for automation or migration | Encrypted account selected during first-run sign-in |
+| `PEGGY_WORKIQ_ACCOUNT` | Optional account lock for automation or migration | Encrypted account selected during first-run sign-in |
 | `PEGGY_WORKIQ_PATH` | Explicit `workiq.exe` or compatible wrapper path | Auto-detected |
 | `PEGGY_MESSAGE_PROVIDER` | `workiq` or `mock` | `workiq` |
 | `PEGGY_COPILOT_PATH` | Explicit `copilot.exe` path | `PATH`, then the current user's WinGet links |
@@ -936,9 +965,9 @@ team.
 | Symptom | Resolution |
 | --- | --- |
 | Connect Microsoft 365 appears | Install standalone WorkIQ if needed, review the EULA, then sign in and grant consent |
-| Authenticated account does not match | Use **Microsoft 365 sign-in** and authenticate as the pinned identity; clear encrypted state before intentionally switching accounts |
+| Authenticated account does not match | Open **Microsoft 365 account** and reconnect the current identity or enter and verify another account |
 | WorkIQ not found | Select **Install WorkIQ with npm**, run `npm install -g @microsoft/workiq`, or set `PEGGY_WORKIQ_PATH` |
-| WorkIQ terms error | Open Settings, select **Sign in again**, then review and accept the current terms |
+| WorkIQ terms error | Open Settings, select **Change or reconnect**, then review and accept the current terms |
 | WorkIQ consent fails | Ask a Microsoft Entra administrator to grant the Work IQ application permissions required by your tenant |
 | Monitoring classification repeatedly fails after installation | Run `copilot --version` and confirm version 1.0.81 or later. Run `copilot update stable`, restart Peggy, or rerun `install.ps1 -InstallPrerequisites` |
 | Monitoring interrupted | Open the Alert Center and select **Troubleshoot** to inspect the original failure and replay retrieval without changing state |

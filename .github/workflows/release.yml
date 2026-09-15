@@ -54,6 +54,7 @@ jobs:
             -Path (Join-Path $publishDirectory "scripts") `
             -Force | Out-Null
           Copy-Item .\install.ps1 $publishDirectory
+          Copy-Item .\uninstall.ps1 $publishDirectory
           Copy-Item .\README.md $publishDirectory
           Copy-Item .\THIRD-PARTY-NOTICES.txt $publishDirectory
           Copy-Item `
@@ -88,7 +89,8 @@ jobs:
           $assets = @(
             (Join-Path $env:RUNNER_TEMP "peggy-win-x64.zip"),
             (Join-Path $env:RUNNER_TEMP "peggy-win-x64.sha256"),
-            ".\install.ps1"
+            ".\install.ps1",
+            ".\uninstall.ps1"
           )
 
           gh release view $tag *> $null

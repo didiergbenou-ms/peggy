@@ -75,12 +75,13 @@
                          FontWeight="SemiBold"
                          Foreground="{StaticResource PeggyTextBrush}"/>
               <TextBlock
-                  Text="Peggy connects directly through standalone Microsoft WorkIQ and pins the verified mailbox locally."
+                  Text="Reconnect the current account or switch to another verified Microsoft 365 identity."
                   Style="{StaticResource SettingsHintStyle}"
                   Margin="0,4,16,0"/>
             </StackPanel>
-            <Button Grid.Column="1"
-                    Content="Sign in again"
+            <Button x:Name="AccountConnectionButton"
+                    Grid.Column="1"
+                    Content="Change or reconnect"
                     Style="{StaticResource PeggySecondaryButtonStyle}"
                     VerticalAlignment="Center"
                     Click="SignInAgain_Click"/>

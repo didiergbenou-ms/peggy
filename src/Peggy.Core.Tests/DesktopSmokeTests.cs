@@ -52,6 +52,7 @@ internal static class DesktopSmokeTests
             TestConversationWindow();
             TestTroubleshootingWindow();
             TestImmediateListeningWithoutGreeting();
+            TestConversationStartupDrain();
             TestDeferredConversationApproval();
             TestWorkIqSignInWindow();
             TestSettingsWindow();
@@ -1085,6 +1086,47 @@ internal static class DesktopSmokeTests
         mascot.Close();
     }
 
+    private static void TestConversationStartupDrain()
+    {
+        var window = new ConversationWindow();
+        var mascot = new MascotWindow();
+        var state = new PeggyStateManager(
+            new EncryptedStateStore(
+                Path.Combine(
+                    Path.GetTempPath(),
+                    $"peggy-startup-drain-{Guid.NewGuid():N}.dat")));
+        var speech = new BlockingWarmUpSpeechProvider();
+        var controller = new ConversationController(
+            window,
+            mascot,
+            state,
+            new AlertManager(state),
+            () => throw new InvalidOperationException(
+                "Copilot should not run during startup drain."),
+            () => new MockMessageProvider(),
+            _ => Array.Empty<Message>(),
+            () => false,
+            CancellationToken.None,
+            () => speech);
+
+        var startup = controller.StartAsync();
+        WaitWithDispatcher(speech.Started);
+        var stop = controller.StopAsync();
+        WaitWithDispatcher(Task.Delay(50));
+        TestAssert.True(
+            !stop.IsCompleted,
+            "Conversation stop did not wait for voice startup to drain.");
+        speech.ReleaseWarmUp();
+        WaitWithDispatcher(Task.WhenAll(startup, stop));
+        TestAssert.True(
+            !controller.IsActive,
+            "A drained voice startup reactivated the conversation.");
+
+        WaitWithDispatcher(controller.DisposeAsync().AsTask());
+        window.Close();
+        mascot.Close();
+    }
+
     private static void TestSettingsWindow()
     {
         var initial = new PeggySettings
@@ -1278,24 +1320,16 @@ internal static class DesktopSmokeTests
             !string.IsNullOrWhiteSpace(AutomationProperties.GetName(
                 Find<CheckBox>(window, "AllInboxFoldersCheck"))),
             "The Outlook all-folders control has no accessible name.");
-        var reauthenticated = new WorkIqAccountIdentity(
-            "person@example.com",
-            "mailbox@example.com",
-            "person@example.com")
-        {
-            EulaAcceptedVersion = "1.0.0-test"
-        };
-        InvokeInstancePrivate(
-            window,
-            "ApplyReauthenticatedIdentity",
-            reauthenticated);
+        TestAssert.Equal(
+            "Change or reconnect",
+            Find<Button>(
+                window,
+                "AccountConnectionButton").Content?.ToString(),
+            "Settings did not expose Microsoft 365 account switching.");
         TestAssert.True(
-            ReferenceEquals(
-                window.ReauthenticatedIdentity,
-                reauthenticated) &&
             Find<TextBlock>(window, "AccountStatus").Text ==
                 "Connected as person@example.com",
-            "Settings discarded a successful WorkIQ reauthentication.");
+            "Settings did not show the active Microsoft 365 account.");
         window.Loaded += (_, _) =>
             window.Dispatcher.BeginInvoke(
                 new Action(() =>
@@ -1541,29 +1575,68 @@ internal static class DesktopSmokeTests
 
     private static void TestWorkIqSignInWindow()
     {
-        var pinned = new WorkIqSignInWindow("person@example.com");
-        AssertDecorativeTextIsRaw(pinned, "Microsoft 365 connection");
-        TestAssert.True(
-            Find<TextBox>(pinned, "AccountText").Text ==
-                "person@example.com" &&
-            AutomationProperties.GetName(
-                Find<TextBox>(pinned, "AccountText")) ==
-                "Microsoft 365 account" &&
-            Find<TextBox>(pinned, "AccountText").IsReadOnly &&
-            Find<Button>(pinned, "SignInButton").Content?.ToString() ==
-                "Sign in again" &&
-            Find<CheckBox>(pinned, "EulaCheck").IsChecked != true,
-            "The reauthentication window did not preserve its account and " +
-            "EULA boundary.");
-        pinned.Close();
+        var previousConfiguredAccount = Environment.GetEnvironmentVariable(
+            PeggyDefaults.WorkIqAccountEnvironmentVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                PeggyDefaults.WorkIqAccountEnvironmentVariable,
+                null);
+            var pinned = new WorkIqSignInWindow("person@example.com");
+            AssertDecorativeTextIsRaw(pinned, "Microsoft 365 connection");
+            var accountText = Find<TextBox>(pinned, "AccountText");
+            TestAssert.True(
+                accountText.Text == "person@example.com" &&
+                AutomationProperties.GetName(accountText) ==
+                    "Microsoft 365 account" &&
+                !accountText.IsReadOnly &&
+                Find<Button>(pinned, "SignInButton").Content?.ToString() ==
+                    "Sign in again" &&
+                Find<CheckBox>(pinned, "EulaCheck").IsChecked != true,
+                "The reauthentication window did not expose its account or " +
+                "preserve the EULA boundary.");
+            accountText.Text = "other@example.com";
+            TestAssert.True(
+                Find<Button>(pinned, "SignInButton").Content?.ToString() ==
+                    "Switch account" &&
+                Find<TextBlock>(
+                    pinned,
+                    "AccountChangeNotice").Visibility == Visibility.Visible,
+                "Editing the Microsoft 365 identity did not activate account " +
+                "switching.");
+            pinned.Close();
 
-        var firstRun = new WorkIqSignInWindow();
-        TestAssert.True(
-            !Find<TextBox>(firstRun, "AccountText").IsReadOnly &&
-            Find<Button>(firstRun, "InstallButton").Content?.ToString() ==
-                "Install WorkIQ with npm",
-            "The first-run window did not expose standalone WorkIQ setup.");
-        firstRun.Close();
+            var firstRun = new WorkIqSignInWindow();
+            TestAssert.True(
+                !Find<TextBox>(firstRun, "AccountText").IsReadOnly &&
+                Find<Button>(firstRun, "InstallButton").Content?.ToString() ==
+                    "Install WorkIQ with npm",
+                "The first-run window did not expose standalone WorkIQ setup.");
+            firstRun.Close();
+
+            Environment.SetEnvironmentVariable(
+                PeggyDefaults.WorkIqAccountEnvironmentVariable,
+                "managed@example.com");
+            var managed = new WorkIqSignInWindow("managed@example.com");
+            TestAssert.True(
+                Find<TextBox>(managed, "AccountText").IsReadOnly &&
+                Find<TextBox>(managed, "AccountText").Text ==
+                    "managed@example.com" &&
+                Find<TextBlock>(
+                    managed,
+                    "AccountChangeNotice").Text.Contains(
+                        PeggyDefaults.WorkIqAccountEnvironmentVariable,
+                        StringComparison.Ordinal),
+                "The environment-controlled Microsoft 365 identity was " +
+                "incorrectly editable.");
+            managed.Close();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                PeggyDefaults.WorkIqAccountEnvironmentVariable,
+                previousConfiguredAccount);
+        }
 
         var constrained = new Window
         {
@@ -1851,6 +1924,55 @@ internal static class DesktopSmokeTests
             Spoken.Add(text);
             return Task.CompletedTask;
         }
+
+        public void CancelSpeaking()
+        {
+        }
+
+        public void CancelListening()
+        {
+        }
+
+        public void Unload()
+            => IsLoaded = false;
+
+        public void Dispose()
+            => Unload();
+    }
+
+    private sealed class BlockingWarmUpSpeechProvider : ISpeechProvider
+    {
+        private readonly TaskCompletionSource _started =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Started => _started.Task;
+
+        public bool IsSpeaking => false;
+
+        public bool IsListening => false;
+
+        public bool IsLoaded { get; private set; }
+
+        public async Task WarmUpAsync(CancellationToken ct)
+        {
+            _started.TrySetResult();
+            await _release.Task;
+            IsLoaded = true;
+        }
+
+        public void ReleaseWarmUp()
+            => _release.TrySetResult();
+
+        public Task<string?> RecognizeOnceAsync(
+            TimeSpan silenceTimeout,
+            Action<string>? onPartial,
+            CancellationToken ct)
+            => Task.FromResult<string?>(null);
+
+        public Task SpeakAsync(string text, CancellationToken ct)
+            => Task.CompletedTask;
 
         public void CancelSpeaking()
         {

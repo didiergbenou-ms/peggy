@@ -11,6 +11,7 @@ internal static class CoreBehaviorSmokeTests
     {
         await TestStateLifecycleAsync(directory);
         await TestAtomicSettingsStateAsync(directory);
+        await TestAccountSwitchStateAsync(directory);
         await TestStateValidationAsync(directory);
         TestMonitoringSchedule();
         TestMonitoringFailureInspection();
@@ -289,6 +290,241 @@ internal static class CoreBehaviorSmokeTests
             "A failed settings save replaced live state.");
     }
 
+    private static async Task TestAccountSwitchStateAsync(string directory)
+    {
+        var previousConfiguredAccount = Environment.GetEnvironmentVariable(
+            PeggyDefaults.WorkIqAccountEnvironmentVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                PeggyDefaults.WorkIqAccountEnvironmentVariable,
+                null);
+            var path = Path.Combine(directory, "account-switch-state.dat");
+            var manager = new PeggyStateManager(new EncryptedStateStore(path));
+            await manager.InitializeAsync();
+            await manager.PinWorkIqIdentityAsync(
+                "old@example.com",
+                "old-mailbox@example.com");
+            await manager.RecordWorkIqEulaAcceptanceAsync("1.0.0-old");
+
+            manager.State.Settings = new PeggySettings
+            {
+                CopilotModel = "preserved-model",
+                CopilotReasoningEffort = "high",
+                CopilotContextTier = PeggyDefaults.CopilotContextTierLong,
+                IncludeActiveCasesFolder = true,
+                AdditionalOutlookFolders = ["Inbox/Private old folder"],
+                TeamsScope = TeamsMonitoringScope.SelectedTeamsAndChannels,
+                MonitorTeamsChatsInSelectedScope = true,
+                TeamsTeamWatchlist =
+                [
+                    new TeamsTeamWatch
+                    {
+                        TeamId = "old-team",
+                        DisplayName = "Old private team",
+                        ExcludedChannelIds = ["old-channel"]
+                    }
+                ],
+                TeamsChannelWatchlist =
+                [
+                    new TeamsChannelWatch
+                    {
+                        TeamId = "old-team",
+                        ChannelId = "old-channel",
+                        DisplayName = "Old private channel"
+                    }
+                ],
+                StartAtSignIn = false,
+                MonitoringPaused = true,
+                MonitoringScheduleEnabled = false,
+                MonitoringWakeMinute = 480,
+                MonitoringSleepMinute = 1020,
+                SpeechEnabled = false,
+                SpeechModelDirectory = @"C:\Preserved\Models",
+                SpeechThreads = 4,
+                SpeechVoiceId = 3,
+                SpeechSpeed = 1.15F,
+                SpeechInputGain = 16,
+                SpeechTuningVersion = 3
+            };
+            var now = DateTimeOffset.UtcNow;
+            manager.State.MonitoringCursor.OutlookDeltaLinks["old"] =
+                "old-delta";
+            manager.State.Alerts.Add(new AlertRecord
+            {
+                ThreadId = "old-thread",
+                Summary = "Old private alert",
+                FirstSeenUtc = now,
+                LastActivityUtc = now,
+                UpdatedUtc = now
+            });
+            manager.State.FeedbackRules.Add(new FeedbackRule
+            {
+                ThreadId = "old-thread",
+                Summary = "Old private feedback",
+                CreatedUtc = now
+            });
+            manager.MarkMessagesSeen(["old-message"], now);
+            manager.RecordCredit(
+                "old-monitoring",
+                "preserved-model",
+                1,
+                1,
+                now);
+            manager.RecordAudit(
+                WorkActionKind.MarkMessageRead,
+                ["old-message"],
+                ApprovalMethod.Click,
+                "old-result",
+                true,
+                now);
+            manager.State.LastSuccessfulMonitoringUtc = now;
+            manager.State.ConsecutiveMonitoringFailures = 3;
+            manager.State.MonitoringInterrupted = true;
+            manager.State.LastMonitoringFailure = new MonitoringFailureDetails
+            {
+                OccurredUtc = now,
+                Message = "Old account failure"
+            };
+            await manager.SaveAsync();
+            var originalSessionId = manager.State.CopilotSessionId;
+
+            var switchTime = DateTimeOffset.UtcNow;
+            await manager.SwitchWorkIqIdentityAsync(
+                new WorkIqAccountIdentity(
+                    "new-mailbox@example.com",
+                    "new-mailbox@example.com",
+                    "new-upn@tenant.example")
+                {
+                    PrincipalId = "new-principal-id",
+                    EulaAcceptedVersion = "1.0.0-new"
+                },
+                Guid.NewGuid().ToString(),
+                switchTime);
+
+            TestAssert.True(
+                manager.State.PinnedAccount == "new-mailbox@example.com" &&
+                manager.State.PinnedMailbox == "new-mailbox@example.com" &&
+                manager.State.PinnedUserPrincipalName ==
+                    "new-upn@tenant.example" &&
+                manager.State.PinnedPrincipalId == "new-principal-id" &&
+                manager.State.WorkIqEulaAcceptedVersion == "1.0.0-new" &&
+                manager.State.CopilotSessionId != originalSessionId &&
+                manager.State.CopilotSessionCredits == 0 &&
+                manager.State.CreditHistory.Count == 0 &&
+                manager.State.Alerts.Count == 0 &&
+                manager.State.FeedbackRules.Count == 0 &&
+                manager.State.SeenMessages.Count == 0 &&
+                manager.State.AuditLog.Count == 0 &&
+                manager.State.LastSuccessfulMonitoringUtc is null &&
+                manager.State.ConsecutiveMonitoringFailures == 0 &&
+                !manager.State.MonitoringInterrupted &&
+                manager.State.LastMonitoringFailure is null &&
+                manager.State.MonitoringCursor.InitialScanStartedUtc ==
+                    switchTime.AddMinutes(
+                        -PeggyDefaults.StartupLookbackMinutes),
+                "Switching Microsoft 365 accounts retained account-scoped " +
+                "state or failed to reset the monitoring session.");
+            TestAssert.True(
+                manager.State.Settings.CopilotModel == "preserved-model" &&
+                manager.State.Settings.CopilotReasoningEffort == "high" &&
+                manager.State.Settings.CopilotContextTier ==
+                    PeggyDefaults.CopilotContextTierLong &&
+                !manager.State.Settings.IncludeActiveCasesFolder &&
+                manager.State.Settings.AdditionalOutlookFolders.Count == 0 &&
+                manager.State.Settings.TeamsScope ==
+                    TeamsMonitoringScope.SelectedTeamsAndChannels &&
+                manager.State.Settings.MonitorTeamsChatsInSelectedScope &&
+                manager.State.Settings.TeamsTeamWatchlist.Count == 0 &&
+                manager.State.Settings.TeamsChannelWatchlist.Count == 0 &&
+                !manager.State.Settings.StartAtSignIn &&
+                manager.State.Settings.MonitoringPaused &&
+                !manager.State.Settings.MonitoringScheduleEnabled &&
+                !manager.State.Settings.SpeechEnabled &&
+                manager.State.Settings.SpeechModelDirectory ==
+                    @"C:\Preserved\Models" &&
+                manager.State.Settings.SpeechThreads == 4 &&
+                manager.State.Settings.SpeechVoiceId == 3 &&
+                manager.State.Settings.SpeechInputGain == 16,
+                "Switching accounts did not preserve general settings or " +
+                "clear account-specific monitoring selections.");
+
+            var reloaded = new PeggyStateManager(new EncryptedStateStore(path));
+            await reloaded.InitializeAsync();
+            TestAssert.True(
+                reloaded.State.PinnedAccount == "new-mailbox@example.com" &&
+                reloaded.State.PinnedMailbox == "new-mailbox@example.com" &&
+                reloaded.State.PinnedUserPrincipalName ==
+                    "new-upn@tenant.example" &&
+                reloaded.State.PinnedPrincipalId == "new-principal-id" &&
+                reloaded.State.Alerts.Count == 0 &&
+                reloaded.State.Settings.AdditionalOutlookFolders.Count == 0 &&
+                reloaded.State.Settings.TeamsTeamWatchlist.Count == 0,
+                "The switched Microsoft 365 identity did not persist.");
+
+            await TestAssert.ThrowsAsync<InvalidOperationException>(
+                () => manager.PinWorkIqIdentityAsync(
+                    "new-mailbox@example.com",
+                    "new-mailbox@example.com",
+                    "new-upn@tenant.example",
+                    "different-principal-id"),
+                "A reassigned login alias replaced the pinned principal ID.");
+
+            manager.State.Alerts.Add(new AlertRecord
+            {
+                ThreadId = "same-principal-thread",
+                Summary = "Same principal alert",
+                FirstSeenUtc = now,
+                LastActivityUtc = now,
+                UpdatedUtc = now
+            });
+            var reboundSessionId = Guid.NewGuid().ToString();
+            await manager.RebindWorkIqIdentityAsync(
+                new WorkIqAccountIdentity(
+                    "new-upn@tenant.example",
+                    "new-mailbox@example.com",
+                    "new-upn@tenant.example")
+                {
+                    PrincipalId = "new-principal-id",
+                    EulaAcceptedVersion = "1.0.0-rebound"
+                },
+                reboundSessionId,
+                DateTimeOffset.UtcNow);
+            TestAssert.True(
+                manager.State.PinnedAccount == "new-upn@tenant.example" &&
+                manager.State.PinnedPrincipalId == "new-principal-id" &&
+                manager.State.CopilotSessionId == reboundSessionId &&
+                manager.State.CopilotSessionCredits == 0 &&
+                manager.State.Alerts.Count == 1 &&
+                manager.State.Settings.CopilotModel == "preserved-model",
+                "Rebinding the same principal did not refresh its account " +
+                "selector while preserving account-scoped state.");
+
+            Environment.SetEnvironmentVariable(
+                PeggyDefaults.WorkIqAccountEnvironmentVariable,
+                "new-upn@tenant.example");
+            await TestAssert.ThrowsAsync<InvalidOperationException>(
+                () => manager.SwitchWorkIqIdentityAsync(
+                    new WorkIqAccountIdentity(
+                        "blocked@example.com",
+                        "blocked@example.com",
+                        "blocked@example.com")
+                    {
+                        PrincipalId = "blocked-principal-id",
+                        EulaAcceptedVersion = "1.0.0-new"
+                    },
+                    Guid.NewGuid().ToString(),
+                    DateTimeOffset.UtcNow),
+                "PEGGY_WORKIQ_ACCOUNT did not prevent an account switch.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                PeggyDefaults.WorkIqAccountEnvironmentVariable,
+                previousConfiguredAccount);
+        }
+    }
+
     private static async Task TestStateValidationAsync(string directory)
     {
         var now = DateTimeOffset.UtcNow;
@@ -419,6 +655,18 @@ internal static class CoreBehaviorSmokeTests
                 new PeggyStateDocument { PinnedAccount = "other@example.com" },
                 now),
             "State account pinning was not enforced.");
+        var configuredAccount = PeggyDefaults.ConfiguredWorkIqAccount;
+        var aliasState = new PeggyStateDocument
+        {
+            PinnedAccount = "mailbox@example.com",
+            PinnedMailbox = "mailbox@example.com",
+            PinnedUserPrincipalName = configuredAccount
+        };
+        EncryptedStateStore.NormalizeAndPrune(aliasState, now);
+        TestAssert.Equal(
+            "mailbox@example.com",
+            aliasState.PinnedAccount,
+            "The environment account lock rejected a verified mailbox alias.");
 
         var corruptPath = Path.Combine(directory, "corrupt-state.dat");
         await File.WriteAllBytesAsync(corruptPath, [1, 2, 3, 4]);
@@ -631,6 +879,36 @@ internal static class CoreBehaviorSmokeTests
                 upn,
                 "other@example.com"),
             "An unrelated authenticated identity was accepted.");
+        var verified = new WorkIqAccountIdentity(upn, smtp, upn)
+        {
+            PrincipalId = "principal-id"
+        };
+        TestAssert.True(
+            !WorkIqSetupService.RepresentsSameAccount(upn, smtp, verified) &&
+            !WorkIqSetupService.RepresentsSameAccount(
+                smtp,
+                smtp,
+                verified) &&
+            !WorkIqSetupService.RepresentsSameAccount(
+                "other@example.com",
+                "other@example.com",
+                verified),
+            "Legacy WorkIQ identities were silently rebound without an " +
+            "immutable principal ID.");
+        TestAssert.True(
+            WorkIqSetupService.RepresentsSameAccount(
+                "reassigned@example.com",
+                "reassigned@example.com",
+                "old-upn@example.com",
+                "principal-id",
+                verified) &&
+            !WorkIqSetupService.RepresentsSameAccount(
+                smtp,
+                smtp,
+                upn,
+                "different-principal-id",
+                verified),
+            "WorkIQ principal IDs did not override mutable account aliases.");
     }
 
     private static async Task TestStandaloneWorkIqSetupAsync(
@@ -752,6 +1030,7 @@ internal static class CoreBehaviorSmokeTests
             TestAssert.True(
                 identity.Account == "signin@tenant.example" &&
                 identity.Mail == "mailbox@example.com" &&
+                identity.PrincipalId == "user-me" &&
                 identity.EulaAcceptedVersion == "1.0.0-test" &&
                 restored &&
                 !changedTermsRestored &&
@@ -778,6 +1057,13 @@ internal static class CoreBehaviorSmokeTests
                 commands[12] == "version",
                 "Standalone WorkIQ EULA version binding, sign-in, or safe " +
                 "restoration did not run in order.");
+            var mismatchedProvider = new WorkIqMessageProvider(
+                account: "signin@tenant.example",
+                principalId: "different-principal-id");
+            await TestAssert.ThrowsAsync<InvalidOperationException>(
+                () => mismatchedProvider.ListOutlookChildFoldersAsync(null),
+                "The WorkIQ provider accepted a different authenticated " +
+                "principal.");
         }
         finally
         {

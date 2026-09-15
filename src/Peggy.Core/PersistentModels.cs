@@ -312,6 +312,10 @@ public sealed class PeggyStateDocument
 
     public string PinnedMailbox { get; set; } = string.Empty;
 
+    public string PinnedUserPrincipalName { get; set; } = string.Empty;
+
+    public string PinnedPrincipalId { get; set; } = string.Empty;
+
     public string WorkIqEulaAcceptedVersion { get; set; } = string.Empty;
 
     public PeggySettings Settings { get; set; } = new();

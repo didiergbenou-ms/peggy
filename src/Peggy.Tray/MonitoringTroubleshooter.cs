@@ -116,6 +116,7 @@ internal sealed class MonitoringTroubleshooter
     private readonly PeggySettings _settings;
     private readonly MonitoringCursorState _cursor;
     private readonly string _account;
+    private readonly string _principalId;
     private readonly int _failureCount;
     private readonly Func<IMessageProvider> _providerFactory;
     private readonly Func<
@@ -131,16 +132,21 @@ internal sealed class MonitoringTroubleshooter
         Func<
             CancellationToken,
             Task<IReadOnlyList<CopilotModelOption>>> modelLoader,
-        Func<IMessageProvider>? providerFactory = null)
+        Func<IMessageProvider>? providerFactory = null,
+        string? principalId = null)
     {
         _failure = failure;
         _settings = Clone(settings);
         _cursor = Clone(cursor);
         _account = account;
+        _principalId = principalId?.Trim() ?? string.Empty;
         _failureCount = failureCount;
         _modelLoader = modelLoader;
         _providerFactory = providerFactory ??
-            (() => MessageProviderFactory.Create(_settings, _account));
+            (() => MessageProviderFactory.Create(
+                _settings,
+                _account,
+                _principalId));
     }
 
     public async Task<MonitoringTroubleshootingReport> RunAsync(

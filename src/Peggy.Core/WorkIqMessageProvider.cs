@@ -39,6 +39,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
     private readonly WorkIqClient _client;
     private readonly string _account;
+    private readonly string _expectedPrincipalId;
     private readonly PeggySettings _settings;
     private readonly SemaphoreSlim _identityLock = new(1, 1);
     private readonly SemaphoreSlim _folderLock = new(1, 1);
@@ -55,10 +56,16 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     public WorkIqMessageProvider(
         string? executablePath = null,
         string? account = null,
-        PeggySettings? settings = null)
+        PeggySettings? settings = null,
+        string? principalId = null)
     {
         _account = ResolvePinnedAccount(
             account ?? Environment.GetEnvironmentVariable("PEGGY_WORKIQ_ACCOUNT"));
+        _expectedPrincipalId = (
+            principalId ??
+            Environment.GetEnvironmentVariable(
+                PeggyDefaults.WorkIqPrincipalIdEnvironmentVariable)
+        )?.Trim() ?? string.Empty;
         _outlookAccount = _account;
         AddCurrentUserEmailAddress(_account);
         _settings = settings ?? ReadSettingsFromEnvironment();
@@ -4431,37 +4438,41 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
     private async Task<string> GetCurrentUserIdAsync(CancellationToken ct)
     {
-        if (_currentUserId is not null)
-        {
-            return _currentUserId;
-        }
-
         await _identityLock.WaitAsync(ct);
         try
         {
-            if (_currentUserId is null)
+            var profile = await _client.FetchAsync<UserProfile>(
+                "/me?$select=id,mail,userPrincipalName,proxyAddresses",
+                ct);
+            _outlookAccount = ResolveAuthenticatedAccount(
+                profile.Mail,
+                profile.UserPrincipalName,
+                _account);
+            _currentUserEmailAddresses.Clear();
+            AddCurrentUserEmailAddress(_account);
+            AddCurrentUserEmailAddress(profile.Mail);
+            AddCurrentUserEmailAddress(profile.UserPrincipalName);
+            foreach (var address in profile.ProxyAddresses)
             {
-                var profile = await _client.FetchAsync<UserProfile>(
-                    "/me?$select=id,mail,userPrincipalName,proxyAddresses",
-                    ct);
-                _outlookAccount = ResolveAuthenticatedAccount(
-                    profile.Mail,
-                    profile.UserPrincipalName,
-                    _account);
-                _currentUserEmailAddresses.Clear();
-                AddCurrentUserEmailAddress(_account);
-                AddCurrentUserEmailAddress(profile.Mail);
-                AddCurrentUserEmailAddress(profile.UserPrincipalName);
-                foreach (var address in profile.ProxyAddresses)
-                {
-                    AddCurrentUserEmailAddress(address);
-                }
-
-                _currentUserId = !string.IsNullOrWhiteSpace(profile.Id)
-                    ? profile.Id
-                    : throw new InvalidDataException("WorkIQ returned a profile without an ID.");
+                AddCurrentUserEmailAddress(address);
             }
 
+            var currentUserId = !string.IsNullOrWhiteSpace(profile.Id)
+                ? profile.Id.Trim()
+                : throw new InvalidDataException(
+                    "WorkIQ returned a profile without an ID.");
+            if (_expectedPrincipalId.Length > 0 &&
+                !string.Equals(
+                    _expectedPrincipalId,
+                    currentUserId,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "WorkIQ authenticated as a different Microsoft 365 " +
+                    "principal than Peggy's verified identity.");
+            }
+
+            _currentUserId = currentUserId;
             return _currentUserId;
         }
         finally

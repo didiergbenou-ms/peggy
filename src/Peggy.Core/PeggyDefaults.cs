@@ -4,6 +4,8 @@ public static class PeggyDefaults
 {
     public const string WorkIqAccountEnvironmentVariable =
         "PEGGY_WORKIQ_ACCOUNT";
+    public const string WorkIqPrincipalIdEnvironmentVariable =
+        "PEGGY_WORKIQ_PRINCIPAL_ID";
     public const string IncludeActiveCasesFolderEnvironmentVariable =
         "PEGGY_INCLUDE_ACTIVE_CASES_FOLDER";
     public const string CopilotModel = "gpt-5.4";

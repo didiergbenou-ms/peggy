@@ -164,6 +164,14 @@ public sealed class EncryptedStateStore
                  !string.Equals(
                      state.PinnedAccount,
                      configuredAccount,
+                     StringComparison.OrdinalIgnoreCase) &&
+                 !string.Equals(
+                     state.PinnedMailbox,
+                     configuredAccount,
+                     StringComparison.OrdinalIgnoreCase) &&
+                 !string.Equals(
+                     state.PinnedUserPrincipalName,
+                     configuredAccount,
                      StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidDataException(
@@ -173,6 +181,8 @@ public sealed class EncryptedStateStore
         {
             state.PinnedMailbox = state.PinnedAccount;
         }
+        state.PinnedUserPrincipalName ??= string.Empty;
+        state.PinnedPrincipalId ??= string.Empty;
         state.WorkIqEulaAcceptedVersion ??= string.Empty;
 
         state.Settings ??= new PeggySettings();

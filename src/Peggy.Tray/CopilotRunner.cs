@@ -108,6 +108,7 @@ public sealed class CopilotRunner : IAsyncDisposable
     private readonly string _mcpServerPath;
     private readonly PeggySettings _settings;
     private readonly string _account;
+    private readonly string _principalId;
     private readonly string _model;
     private readonly string _reasoningEffort;
     private readonly string _contextTier;
@@ -120,12 +121,14 @@ public sealed class CopilotRunner : IAsyncDisposable
         PeggySettings? settings = null,
         string? sessionId = null,
         decimal sessionCredits = 0,
-        string? account = null)
+        string? account = null,
+        string? principalId = null)
     {
         PurgeStaleScopeFiles();
         _settings = settings ?? new PeggySettings();
         _account = account?.Trim() ??
             PeggyDefaults.ConfiguredWorkIqAccount;
+        _principalId = principalId?.Trim() ?? string.Empty;
         _copilotPath = ResolveCopilot();
         _mcpServerPath = ResolveMcpServer();
         _model = ResolveModel(_settings);
@@ -146,7 +149,8 @@ public sealed class CopilotRunner : IAsyncDisposable
             _model,
             _copilotPath,
             _mcpServerPath,
-            _account);
+            _account,
+            _principalId);
     }
 
     public string SessionId => _sessionId;
@@ -503,7 +507,8 @@ public sealed class CopilotRunner : IAsyncDisposable
     {
         var environment = PeggyProviderEnvironment.Create(
             _settings,
-            _account);
+            _account,
+            _principalId);
         if (focusPath is not null)
         {
             environment["PEGGY_FOCUS_FILE"] = focusPath;

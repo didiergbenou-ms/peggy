@@ -212,6 +212,12 @@ function Get-PeggyOperationalState {
         $result.PinnedMailbox = Get-ObjectPropertyValue `
             $state `
             'pinnedMailbox'
+        $result.PinnedUserPrincipalName = Get-ObjectPropertyValue `
+            $state `
+            'pinnedUserPrincipalName'
+        $result.PinnedPrincipalId = Get-ObjectPropertyValue `
+            $state `
+            'pinnedPrincipalId'
         $result.WorkIqEulaAcceptedVersion = Get-ObjectPropertyValue `
             $state `
             'workIqEulaAcceptedVersion'
@@ -908,6 +914,7 @@ function Invoke-WorkIqDiagnosticProbe {
             ResponseRequestIds = @()
             AuthenticatedMail = $null
             AuthenticatedUserPrincipalName = $null
+            AuthenticatedPrincipalId = $null
             AccountMatched = $null
             Stdout = ''
             Stderr = ''
@@ -957,6 +964,7 @@ function Invoke-WorkIqDiagnosticProbe {
     $rawOutput = $null
     $authenticatedMail = $null
     $authenticatedUserPrincipalName = $null
+    $authenticatedPrincipalId = $null
     $accountMatched = $null
     if ($Name -like '*profile with Peggy fields' -and
         $null -ne $analysis.Data) {
@@ -966,6 +974,9 @@ function Invoke-WorkIqDiagnosticProbe {
         $authenticatedUserPrincipalName = Get-ObjectPropertyValue `
             $analysis.Data `
             'userPrincipalName'
+        $authenticatedPrincipalId = Get-ObjectPropertyValue `
+            $analysis.Data `
+            'id'
         if ($UseAccount) {
             $accountMatched =
                 [string]::Equals(
@@ -1006,6 +1017,7 @@ function Invoke-WorkIqDiagnosticProbe {
         ResponseRequestIds = $analysis.RequestIds
         AuthenticatedMail = $authenticatedMail
         AuthenticatedUserPrincipalName = $authenticatedUserPrincipalName
+        AuthenticatedPrincipalId = $authenticatedPrincipalId
         AccountMatched = $accountMatched
         Stdout = $result.Stdout
         Stderr = $result.Stderr
@@ -1258,6 +1270,7 @@ try {
             'Peggy.Core.dll',
             'version.txt',
             'install.ps1',
+            'uninstall.ps1',
             'Peggy.Mcp\peggy-mcp.exe',
             'Peggy.Speech.Host\peggy-speech-host.exe'
         )
@@ -1704,41 +1717,61 @@ try {
                 $env:CI = $previousCi
             }
         }
+        $configurationProbe = Invoke-WorkIqDiagnosticProbe `
+            -Name 'WorkIQ configuration' `
+            -Arguments @(
+                'config',
+                'show',
+                '--log-level',
+                'Debug'
+            ) `
+            -Account $effectiveWorkIqAccount `
+            -AllowTextOutput `
+            -FallbackPaths $workIqFallbackPaths
+        $defaultProfileProbe = Invoke-WorkIqDiagnosticProbe `
+            -Name 'WorkIQ default profile with Peggy fields' `
+            -Arguments @(
+                'fetch',
+                '--urls',
+                '/me?$select=id,mail,userPrincipalName,proxyAddresses',
+                '--log-level',
+                'Debug'
+            ) `
+            -Account $effectiveWorkIqAccount `
+            -FallbackPaths $workIqFallbackPaths
+        $pinnedProfileProbe = Invoke-WorkIqDiagnosticProbe `
+            -Name 'WorkIQ pinned profile with Peggy fields' `
+            -Arguments @(
+                'fetch',
+                '--urls',
+                '/me?$select=id,mail,userPrincipalName,proxyAddresses',
+                '--log-level',
+                'Debug'
+            ) `
+            -Account $effectiveWorkIqAccount `
+            -UseAccount `
+            -FallbackPaths $workIqFallbackPaths
         $workIqProbes = @(
-            Invoke-WorkIqDiagnosticProbe `
-                -Name 'WorkIQ configuration' `
-                -Arguments @(
-                    'config',
-                    'show',
-                    '--log-level',
-                    'Debug'
-                ) `
-                -Account $effectiveWorkIqAccount `
-                -AllowTextOutput `
-                -FallbackPaths $workIqFallbackPaths
-            Invoke-WorkIqDiagnosticProbe `
-                -Name 'WorkIQ default profile with Peggy fields' `
-                -Arguments @(
-                    'fetch',
-                    '--urls',
-                    '/me?$select=id,mail,userPrincipalName,proxyAddresses',
-                    '--log-level',
-                    'Debug'
-                ) `
-                -Account $effectiveWorkIqAccount `
-                -FallbackPaths $workIqFallbackPaths
-            Invoke-WorkIqDiagnosticProbe `
-                -Name 'WorkIQ pinned profile with Peggy fields' `
-                -Arguments @(
-                    'fetch',
-                    '--urls',
-                    '/me?$select=id,mail,userPrincipalName,proxyAddresses',
-                    '--log-level',
-                    'Debug'
-                ) `
-                -Account $effectiveWorkIqAccount `
-                -UseAccount `
-                -FallbackPaths $workIqFallbackPaths
+            $configurationProbe
+            $defaultProfileProbe
+            $pinnedProfileProbe
+        )
+        $statePrincipalId = Get-ObjectPropertyValue `
+            $operationalState `
+            'PinnedPrincipalId'
+        $principalMatched = if (-not [string]::IsNullOrWhiteSpace(
+                $statePrincipalId
+            )) {
+            [string]::Equals(
+                $statePrincipalId,
+                $pinnedProfileProbe.AuthenticatedPrincipalId,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        } else {
+            $pinnedProfileProbe.AccountMatched -eq $true
+        }
+        if ($principalMatched) {
+            $workIqProbes += @(
             Invoke-WorkIqDiagnosticProbe `
                 -Name 'WorkIQ pinned Inbox metadata' `
                 -Arguments @(
@@ -1797,7 +1830,36 @@ try {
                 -UseAccount `
                 -AllowTextOutput `
                 -FallbackPaths $workIqFallbackPaths
-        )
+            )
+        }
+        else {
+            $workIqProbes += [pscustomobject]@{
+                Name = 'WorkIQ account-scoped probes'
+                Skipped = $true
+                Reason = (
+                    'The authenticated WorkIQ principal did not match Peggy''s ' +
+                    'verified principal. Inbox, folder, message, and policy ' +
+                    'probes were not run.'
+                )
+                Arguments = @()
+                Found = $pinnedProfileProbe.Found
+                Path = $pinnedProfileProbe.Path
+                ExitCode = $null
+                Succeeded = $false
+                PayloadParsed = $false
+                ParseError = $null
+                ResponseStatusCodes = @()
+                ResponseErrors = @()
+                ResponseRequestIds = @()
+                AuthenticatedMail = $null
+                AuthenticatedUserPrincipalName = $null
+                AuthenticatedPrincipalId = $null
+                AccountMatched = $false
+                Stdout = ''
+                Stderr = ''
+                Output = ''
+            }
+        }
         Write-JsonFile `
             -Path (Join-Path $staging 'workiq-deep-diagnostics.json') `
             -Value ([ordered]@{

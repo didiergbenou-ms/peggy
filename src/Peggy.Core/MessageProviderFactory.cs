@@ -10,7 +10,8 @@ public static class MessageProviderFactory
 
     public static IMessageProvider Create(
         PeggySettings? settings = null,
-        string? account = null)
+        string? account = null,
+        string? principalId = null)
     {
         var mode = GetConfiguredMode();
         return mode switch
@@ -18,6 +19,7 @@ public static class MessageProviderFactory
             null or "" or "live" or "workiq" =>
                 new WorkIqMessageProvider(
                     account: account,
+                    principalId: principalId,
                     settings: settings),
             "mock" => new MockMessageProvider(),
             _ => throw new InvalidOperationException(

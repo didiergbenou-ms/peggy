@@ -23,6 +23,8 @@ public sealed class ConversationController : IAsyncDisposable
     private readonly Func<ISpeechProvider> _createSpeech;
     private readonly Action _restoreRestingState;
     private readonly CancellationToken _shutdown;
+    private readonly object _startupSync = new();
+    private readonly HashSet<Task> _activeStartups = [];
     private CancellationTokenSource? _conversationCts;
     private CancellationTokenSource? _activeOperationCts;
     private ISpeechProvider? _speech;
@@ -35,6 +37,7 @@ public sealed class ConversationController : IAsyncDisposable
     private ApprovalMethod? _deferredApproval;
     private string? _deferredActionId;
     private Task _activeTurn = Task.CompletedTask;
+    private long _conversationGeneration;
     private bool _disposed;
 
     public ConversationController(
@@ -74,11 +77,46 @@ public sealed class ConversationController : IAsyncDisposable
 
     public bool IsActive => _conversationCts is not null;
 
-    public async Task StartAsync(string? alertId = null)
+    public Task StartAsync(
+        string? alertId = null,
+        Func<bool>? canStart = null)
     {
         ThrowIfDisposed();
+        var startup = StartCoreAsync(alertId, canStart);
+        lock (_startupSync)
+        {
+            _activeStartups.Add(startup);
+        }
+        return ObserveStartupAsync(startup);
+    }
+
+    private async Task ObserveStartupAsync(Task startup)
+    {
+        try
+        {
+            await startup;
+        }
+        finally
+        {
+            lock (_startupSync)
+            {
+                _activeStartups.Remove(startup);
+            }
+        }
+    }
+
+    private async Task StartCoreAsync(
+        string? alertId,
+        Func<bool>? canStart)
+    {
         EndConversation();
+        var generation = Volatile.Read(ref _conversationGeneration);
         await WaitForActiveTurnAsync();
+        if (generation != Volatile.Read(ref _conversationGeneration) ||
+            (canStart is not null && !canStart()))
+        {
+            return;
+        }
         if (_shouldSuspend())
         {
             throw new InvalidOperationException(
@@ -90,9 +128,11 @@ public sealed class ConversationController : IAsyncDisposable
             throw new InvalidOperationException(
                 "Local voice is disabled in assistant settings.");
         }
-        _speech ??= _createSpeech();
-        _conversationCts = CancellationTokenSource.CreateLinkedTokenSource(
+        var speech = _speech ??= _createSpeech();
+        var conversationCts =
+            CancellationTokenSource.CreateLinkedTokenSource(
             _shutdown);
+        _conversationCts = conversationCts;
         if (_shouldSuspend())
         {
             EndConversation();
@@ -111,12 +151,29 @@ public sealed class ConversationController : IAsyncDisposable
         _mascot.SetState(PeggyState.Thinking);
         try
         {
-            await _speech.WarmUpAsync(_conversationCts.Token);
+            await speech.WarmUpAsync(conversationCts.Token);
+        }
+        catch (OperationCanceledException) when (
+            !OwnsConversation(generation, conversationCts))
+        {
+            return;
         }
         catch
         {
-            EndConversation();
+            if (OwnsConversation(generation, conversationCts))
+            {
+                EndConversation();
+            }
             throw;
+        }
+        if (!OwnsConversation(generation, conversationCts) ||
+            (canStart is not null && !canStart()))
+        {
+            if (OwnsConversation(generation, conversationCts))
+            {
+                EndConversation();
+            }
+            return;
         }
 
         string? greeting = null;
@@ -152,6 +209,7 @@ public sealed class ConversationController : IAsyncDisposable
 
     public void EndConversation()
     {
+        Interlocked.Increment(ref _conversationGeneration);
         _conversationCts?.Cancel();
         _activeOperationCts?.Cancel();
         _conversationCts?.Dispose();
@@ -178,7 +236,9 @@ public sealed class ConversationController : IAsyncDisposable
     public async Task StopAsync()
     {
         EndConversation();
+        await WaitForActiveStartupsAsync();
         await WaitForActiveTurnAsync();
+        EndConversation();
     }
 
     private async void OnMicrophoneRequested()
@@ -844,6 +904,7 @@ public sealed class ConversationController : IAsyncDisposable
         }
 
         EndConversation();
+        await WaitForActiveStartupsAsync();
         await WaitForActiveTurnAsync();
         try
         {
@@ -923,4 +984,33 @@ public sealed class ConversationController : IAsyncDisposable
             _activeTurn = Task.CompletedTask;
         }
     }
+
+    private async Task WaitForActiveStartupsAsync()
+    {
+        Task[] startups;
+        lock (_startupSync)
+        {
+            startups = _activeStartups.ToArray();
+        }
+        foreach (var startup in startups)
+        {
+            try
+            {
+                await startup;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception)
+            {
+                // Startup errors are reported by the caller that initiated it.
+            }
+        }
+    }
+
+    private bool OwnsConversation(
+        long generation,
+        CancellationTokenSource conversationCts)
+        => generation == Volatile.Read(ref _conversationGeneration) &&
+           ReferenceEquals(_conversationCts, conversationCts);
 }

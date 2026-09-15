@@ -12,14 +12,27 @@ public partial class WorkIqSignInWindow : Window
 {
     private readonly WorkIqSetupService _setup;
     private readonly string _expectedAccount;
+    private readonly string _expectedMailbox;
+    private readonly string _expectedUserPrincipalName;
+    private readonly string _expectedPrincipalId;
+    private readonly bool _accountLocked;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private CancellationTokenSource? _activeOperationCancellation;
     private bool _busy;
 
     public WorkIqSignInWindow(
         string? expectedAccount = null,
-        WorkIqSetupService? setup = null)
-        : this(expectedAccount, setup, previewMode: false)
+        WorkIqSetupService? setup = null,
+        string? expectedMailbox = null,
+        string? expectedUserPrincipalName = null,
+        string? expectedPrincipalId = null)
+        : this(
+            expectedAccount,
+            expectedMailbox,
+            expectedUserPrincipalName,
+            expectedPrincipalId,
+            setup,
+            previewMode: false)
     {
     }
 
@@ -27,18 +40,43 @@ public partial class WorkIqSignInWindow : Window
         string? expectedAccount,
         WorkIqSetupService? setup,
         bool previewMode)
+        : this(
+            expectedAccount,
+            expectedMailbox: null,
+            expectedUserPrincipalName: null,
+            expectedPrincipalId: null,
+            setup,
+            previewMode)
+    {
+    }
+
+    private WorkIqSignInWindow(
+        string? expectedAccount,
+        string? expectedMailbox,
+        string? expectedUserPrincipalName,
+        string? expectedPrincipalId,
+        WorkIqSetupService? setup,
+        bool previewMode)
     {
         InitializeComponent();
         _setup = setup ?? new WorkIqSetupService();
         _expectedAccount = expectedAccount?.Trim() ?? string.Empty;
-        AccountText.Text = _expectedAccount;
-        if (_expectedAccount.Length > 0)
+        _expectedMailbox = expectedMailbox?.Trim() ?? string.Empty;
+        _expectedUserPrincipalName =
+            expectedUserPrincipalName?.Trim() ?? string.Empty;
+        _expectedPrincipalId = expectedPrincipalId?.Trim() ?? string.Empty;
+        var configuredAccount = PeggyDefaults.ConfiguredWorkIqAccount;
+        _accountLocked = !string.IsNullOrWhiteSpace(configuredAccount);
+        AccountText.Text = _accountLocked
+            ? configuredAccount
+            : _expectedAccount;
+        AccountText.IsReadOnly = _accountLocked;
+        if (_accountLocked)
         {
-            AccountText.IsReadOnly = true;
             AccountText.ToolTip =
-                "Peggy is pinned to this Microsoft 365 account.";
-            SignInButton.Content = "Sign in again";
+                "Controlled by the PEGGY_WORKIQ_ACCOUNT environment variable.";
         }
+        UpdateAccountMode();
 
         Loaded += (_, _) =>
             PeggyWindowLayout.ConstrainToWorkArea(this);
@@ -72,6 +110,8 @@ public partial class WorkIqSignInWindow : Window
     public string? AcceptedEulaVersion { get; private set; }
 
     public WorkIqAccountIdentity? AuthenticatedIdentity { get; private set; }
+
+    public bool AuthenticationAttempted { get; private set; }
 
     private async Task RefreshInstallationStatusAsync()
     {
@@ -153,7 +193,6 @@ public partial class WorkIqSignInWindow : Window
                 MessageBoxImage.Warning);
             return;
         }
-
         SetBusy(
             true,
             "Opening Microsoft sign-in and permission consent. Complete the " +
@@ -165,9 +204,35 @@ public partial class WorkIqSignInWindow : Window
         using var operation = BeginOperation();
         try
         {
+            AuthenticationAttempted = true;
             var identity = await _setup.SignInAsync(
                 AccountText.Text,
                 operation.Token);
+            if (_expectedAccount.Length > 0 &&
+                !WorkIqSetupService.RepresentsSameAccount(
+                    _expectedAccount,
+                    _expectedMailbox,
+                    _expectedUserPrincipalName,
+                    _expectedPrincipalId,
+                    identity) &&
+                MessageBox.Show(
+                    this,
+                    $"Switch Peggy from {_expectedAccount} to " +
+                    $"{identity.Account}?\n\nPeggy will clear the current " +
+                    "account's local alerts, monitoring history, selected " +
+                    "Outlook folders and Teams, Copilot conversation context, " +
+                    "and action history. General app and speech settings will " +
+                    "be kept.",
+                    "Switch Microsoft 365 account",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning,
+                    MessageBoxResult.No) != MessageBoxResult.Yes)
+            {
+                OperationStatus.Text =
+                    $"Account switch cancelled. Peggy remains connected as " +
+                    $"{_expectedAccount}.";
+                return;
+            }
             AuthenticatedAccount = identity.Account;
             AuthenticatedMailbox = identity.Mail;
             AcceptedEulaVersion = identity.EulaAcceptedVersion;
@@ -241,6 +306,65 @@ public partial class WorkIqSignInWindow : Window
         {
             OperationStatus.Text = status;
         }
+    }
+
+    private bool IsAccountSwitchRequested()
+        => _expectedAccount.Length > 0 &&
+           !_accountLocked &&
+           !string.IsNullOrWhiteSpace(AccountText.Text) &&
+           !string.Equals(
+               _expectedAccount,
+               AccountText.Text.Trim(),
+               StringComparison.OrdinalIgnoreCase);
+
+    private void AccountText_Changed(
+        object sender,
+        System.Windows.Controls.TextChangedEventArgs e)
+        => UpdateAccountMode();
+
+    private void UpdateAccountMode()
+    {
+        if (_accountLocked)
+        {
+            SignInButton.Content = "Sign in again";
+            AccountChangeNotice.Text =
+                "This account is controlled by PEGGY_WORKIQ_ACCOUNT. Remove or " +
+                "update that environment variable before switching accounts.";
+            AccountChangeNotice.Visibility = Visibility.Visible;
+            return;
+        }
+
+        if (_expectedAccount.Length == 0)
+        {
+            SignInButton.Content = "Sign in";
+            AccountChangeNotice.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(AccountText.Text))
+        {
+            SignInButton.Content = "Switch account";
+            AccountChangeNotice.Text =
+                "Enter the Microsoft 365 email address Peggy should use.";
+            AccountChangeNotice.Visibility = Visibility.Visible;
+            return;
+        }
+
+        if (IsAccountSwitchRequested())
+        {
+            SignInButton.Content = "Switch account";
+            AccountChangeNotice.Text =
+                "Switching accounts clears local data tied to the current " +
+                "account after the new identity is verified.";
+        }
+        else
+        {
+            SignInButton.Content = "Sign in again";
+            AccountChangeNotice.Text =
+                "Edit the address above to switch to another Microsoft 365 " +
+                "account.";
+        }
+        AccountChangeNotice.Visibility = Visibility.Visible;
     }
 
     private void ShowSetupError(WorkIqSetupException exception)

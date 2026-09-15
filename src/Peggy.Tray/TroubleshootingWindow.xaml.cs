@@ -21,6 +21,8 @@ public partial class TroubleshootingWindow : Window
     private readonly CancellationTokenSource _closing = new();
     private readonly Dictionary<string, TroubleshootingCheckResult> _checks =
         new(StringComparer.Ordinal);
+    private Task _activeDiagnostics = Task.CompletedTask;
+    private Task _activeBundle = Task.CompletedTask;
     private MonitoringTroubleshootingReport? _report;
     private bool _running;
 
@@ -62,7 +64,8 @@ public partial class TroubleshootingWindow : Window
         Loaded += async (_, _) =>
         {
             PeggyWindowLayout.ConstrainToWorkArea(this);
-            await RunDiagnosticsAsync();
+            _activeDiagnostics = RunDiagnosticsAsync();
+            await _activeDiagnostics;
         };
         Closed += (_, _) =>
         {
@@ -78,7 +81,10 @@ public partial class TroubleshootingWindow : Window
     public event Action? RetryMonitoringRequested;
 
     private async void RunAgain_Click(object sender, RoutedEventArgs e)
-        => await RunDiagnosticsAsync();
+    {
+        _activeDiagnostics = RunDiagnosticsAsync();
+        await _activeDiagnostics;
+    }
 
     private async Task RunDiagnosticsAsync()
     {
@@ -218,6 +224,12 @@ public partial class TroubleshootingWindow : Window
 
     private async void CreateZip_Click(object sender, RoutedEventArgs e)
     {
+        _activeBundle = CreateZipAsync();
+        await _activeBundle;
+    }
+
+    private async Task CreateZipAsync()
+    {
         CreateZipButton.IsEnabled = false;
         RunStatusText.Text = "Creating diagnostic ZIP...";
         try
@@ -245,6 +257,31 @@ public partial class TroubleshootingWindow : Window
             {
                 CreateZipButton.IsEnabled = true;
             }
+        }
+    }
+
+    internal async Task CloseAndWaitAsync()
+    {
+        if (IsVisible)
+        {
+            Close();
+        }
+        await WaitForCompletionAsync(_activeDiagnostics);
+        await WaitForCompletionAsync(_activeBundle);
+    }
+
+    private static async Task WaitForCompletionAsync(Task operation)
+    {
+        try
+        {
+            await operation;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception)
+        {
+            // The originating UI action already reports operational failures.
         }
     }
 

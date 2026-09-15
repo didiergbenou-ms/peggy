@@ -26,6 +26,7 @@ internal sealed class PersistentCopilotConversation : IAsyncDisposable
     private readonly string _copilotPath;
     private readonly string _mcpServerPath;
     private readonly string _account;
+    private readonly string _principalId;
     private readonly string _focusPath;
     private readonly string _actionPath;
     private readonly SemaphoreSlim _initializationLock = new(1, 1);
@@ -38,13 +39,15 @@ internal sealed class PersistentCopilotConversation : IAsyncDisposable
         string model,
         string copilotPath,
         string mcpServerPath,
-        string account)
+        string account,
+        string? principalId = null)
     {
         _settings = settings;
         _model = model;
         _copilotPath = copilotPath;
         _mcpServerPath = mcpServerPath;
         _account = account;
+        _principalId = principalId?.Trim() ?? string.Empty;
         _focusPath = CreateScopePath("focus");
         _actionPath = CreateScopePath("action");
         try
@@ -218,7 +221,8 @@ internal sealed class PersistentCopilotConversation : IAsyncDisposable
 
             var environment = PeggyProviderEnvironment.Create(
                 _settings,
-                _account);
+                _account,
+                _principalId);
             environment["PEGGY_FOCUS_FILE"] = _focusPath;
             environment["PEGGY_ACTION_FILE"] = _actionPath;
 

@@ -1194,7 +1194,8 @@ internal static class AssistantBehaviorSmokeTests
                         {
                             IncludeActiveCasesFolder = false
                         },
-                        "account@example.com"
+                        "account@example.com",
+                        "principal-id"
                     ]))
             ?? throw new InvalidOperationException(
                 "The shared Peggy provider environment was not created.");
@@ -1203,6 +1204,12 @@ internal static class AssistantBehaviorSmokeTests
             providerEnvironment[
                 PeggyDefaults.IncludeActiveCasesFolderEnvironmentVariable],
             "The Active-folder selection was not forwarded to Copilot MCP " +
+            "providers.");
+        TestAssert.Equal(
+            "principal-id",
+            providerEnvironment[
+                PeggyDefaults.WorkIqPrincipalIdEnvironmentVariable],
+            "The verified principal ID was not forwarded to Copilot MCP " +
             "providers.");
 
         var previousModel = Environment.GetEnvironmentVariable(
