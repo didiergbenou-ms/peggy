@@ -895,12 +895,12 @@ If Outlook cannot send the message, the ZIP remains on the Desktop for manual
 review and sharing.
 
 The bundle includes Peggy versions, selected installation hashes, process and
-startup details, a decrypted operational-state summary, speech-model inventory,
-raw and redacted lifecycle logs, full relevant Windows Application events, and
-optional deep Copilot and WorkIQ diagnostics. WorkIQ diagnostics use Peggy's
-pinned account and test its exact profile fields, Inbox access, child-folder
-listing, message permission, configuration, and tenant policies while
-preserving full technical errors.
+startup details, the collector script hash and source Git commit, a decrypted
+operational-state summary, speech-model inventory, raw and redacted lifecycle
+logs, full relevant Windows Application events, and optional deep Copilot and
+WorkIQ diagnostics. WorkIQ diagnostics use Peggy's pinned account and test its
+exact profile fields, Inbox access, child-folder listing, message permission,
+configuration, and tenant policies while preserving full technical errors.
 
 The ZIP can contain account identifiers, folder metadata, process command
 lines, and raw CLI output. It still excludes credentials, tokens,

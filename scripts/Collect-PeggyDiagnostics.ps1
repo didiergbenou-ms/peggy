@@ -359,6 +359,65 @@ function Resolve-CommandPath {
     return $null
 }
 
+function Resolve-WorkIqExecutablePath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not ($Path.EndsWith(
+                '.cmd',
+                [StringComparison]::OrdinalIgnoreCase) -or
+            $Path.EndsWith(
+                '.bat',
+                [StringComparison]::OrdinalIgnoreCase))) {
+        return $Path
+    }
+
+    try {
+        $wrapperPath = [IO.Path]::GetFullPath($Path)
+        $wrapperDirectory = [IO.Path]::GetDirectoryName($wrapperPath)
+        if (-not [string]::IsNullOrWhiteSpace($wrapperDirectory)) {
+            $npmExecutable = Join-Path `
+                $wrapperDirectory `
+                'node_modules\@microsoft\workiq\bin\win-x64\workiq.exe'
+            if (Test-Path -LiteralPath $npmExecutable -PathType Leaf) {
+                return $npmExecutable
+            }
+        }
+
+        $contents = [IO.File]::ReadAllText($wrapperPath)
+        $matches = [Text.RegularExpressions.Regex]::Matches(
+            $contents,
+            '"(?<path>[^"]*workiq\.exe)"',
+            [Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+        for ($index = $matches.Count - 1; $index -ge 0; $index--) {
+            $candidateText = $matches[$index].Groups['path'].Value
+            $candidateText = [Text.RegularExpressions.Regex]::Replace(
+                $candidateText,
+                '%~dp0',
+                [Text.RegularExpressions.MatchEvaluator]{
+                    param($match)
+                    return $wrapperDirectory.TrimEnd('\') + '\'
+                },
+                [Text.RegularExpressions.RegexOptions]::IgnoreCase
+            )
+            $candidate = [Environment]::ExpandEnvironmentVariables(
+                $candidateText
+            )
+            if (-not [IO.Path]::IsPathRooted($candidate)) {
+                $candidate = Join-Path $wrapperDirectory $candidate
+            }
+            $candidate = [IO.Path]::GetFullPath($candidate)
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                return $candidate
+            }
+        }
+    }
+    catch {
+        return $null
+    }
+    return $null
+}
+
 function Resolve-DiagnosticDataPath {
     param(
         [Parameter(Mandatory)][string]$DefaultPath,
@@ -433,7 +492,8 @@ function Invoke-DiagnosticCommand {
         [string]$OverrideVariable,
         [string[]]$FallbackPaths = @(),
         [switch]$PreserveTechnicalOutput,
-        [switch]$RetainRawOutputForAnalysis
+        [switch]$RetainRawOutputForAnalysis,
+        [switch]$ResolveWorkIqWrapper
     )
 
     $configuredPath = if ([string]::IsNullOrWhiteSpace(
@@ -503,6 +563,23 @@ function Invoke-DiagnosticCommand {
             Stdout = ''
             Stderr = ''
             Output = 'Command not found.'
+        }
+    }
+    if ($ResolveWorkIqWrapper) {
+        $wrapperPath = $path
+        $path = Resolve-WorkIqExecutablePath -Path $wrapperPath
+        if ([string]::IsNullOrWhiteSpace($path)) {
+            return [pscustomobject]@{
+                Name = $Name
+                Found = $false
+                Path = Protect-Text $wrapperPath
+                ExitCode = $null
+                Stdout = ''
+                Stderr = ''
+                Output = (
+                    'The WorkIQ wrapper target could not be resolved safely.'
+                )
+            }
         }
     }
 
@@ -582,6 +659,38 @@ function Invoke-DiagnosticCommand {
     }
 }
 
+function Get-WorkIqJsonPayload {
+    param([Parameter(Mandatory)][string]$Text)
+
+    $candidates = New-Object Collections.Generic.List[int]
+    $candidates.Add(0)
+    $matches = [Text.RegularExpressions.Regex]::Matches(
+        $Text,
+        '(?m)^[\t ]*[\{\[]'
+    )
+    foreach ($match in $matches) {
+        if (-not $candidates.Contains($match.Index)) {
+            $candidates.Add($match.Index)
+        }
+    }
+    for ($index = $candidates.Count - 1; $index -ge 0; $index--) {
+        $candidate = $Text.Substring($candidates[$index]).Trim()
+        try {
+            return [pscustomobject]@{
+                Found = $true
+                Value = ConvertFrom-Json -InputObject $candidate
+            }
+        }
+        catch {
+            continue
+        }
+    }
+    return [pscustomobject]@{
+        Found = $false
+        Value = $null
+    }
+}
+
 function Get-WorkIqCommandAnalysis {
     param(
         [Parameter(Mandatory)]$Result,
@@ -604,8 +713,13 @@ function Get-WorkIqCommandAnalysis {
         return [pscustomobject]$analysis
     }
 
+    $jsonPayload = Get-WorkIqJsonPayload -Text $RawStdout
+    if (-not $jsonPayload.Found) {
+        $analysis.ParseError = 'WorkIQ stdout did not contain valid JSON.'
+        return [pscustomobject]$analysis
+    }
     try {
-        $payload = ConvertFrom-Json -InputObject $RawStdout
+        $payload = $jsonPayload.Value
         $analysis.PayloadParsed = $true
         $resultValue = Get-ObjectPropertyValue $payload 'results'
         $results = @()
@@ -657,7 +771,7 @@ function Get-WorkIqCommandAnalysis {
     }
     catch {
         $analysis.PayloadParsed = $false
-        $analysis.ParseError = 'WorkIQ stdout was not valid JSON.'
+        $analysis.ParseError = 'WorkIQ JSON response could not be analyzed.'
     }
     return [pscustomobject]$analysis
 }
@@ -668,6 +782,7 @@ function Invoke-WorkIqDiagnosticProbe {
         [Parameter(Mandatory)][string[]]$Arguments,
         [AllowNull()][string]$Account,
         [switch]$UseAccount,
+        [switch]$AllowTextOutput,
         [Parameter(Mandatory)][string[]]$FallbackPaths
     )
 
@@ -705,7 +820,8 @@ function Invoke-WorkIqDiagnosticProbe {
         -OverrideVariable 'PEGGY_WORKIQ_PATH' `
         -FallbackPaths $FallbackPaths `
         -PreserveTechnicalOutput `
-        -RetainRawOutputForAnalysis
+        -RetainRawOutputForAnalysis `
+        -ResolveWorkIqWrapper
     $rawStdout = Get-ObjectPropertyValue `
         $result `
         'InternalRawStdout'
@@ -713,6 +829,16 @@ function Invoke-WorkIqDiagnosticProbe {
     $analysis = Get-WorkIqCommandAnalysis `
         -Result $result `
         -RawStdout $rawStdout
+    if ($AllowTextOutput) {
+        $analysis.ParseError = $null
+        $analysis.Succeeded =
+            $result.Found -and
+            $result.ExitCode -eq 0 -and
+            -not [string]::IsNullOrWhiteSpace($result.Output) -and
+            $result.Stderr -notmatch (
+                '(?i)\b(error|critical|permission denied)\b'
+            )
+    }
     $rawStdout = $null
     $authenticatedMail = $null
     $authenticatedUserPrincipalName = $null
@@ -847,6 +973,79 @@ function Send-DiagnosticEmail {
     }
 }
 
+function Get-CollectorMetadata {
+    $metadata = [ordered]@{
+        SchemaVersion = 2
+        ScriptPath = Protect-Text $PSCommandPath
+        ScriptSha256 = $null
+        ScriptModifiedUtc = $null
+        RepositoryRoot = $null
+        GitCommit = $null
+        GitBranch = $null
+        GitDirty = $null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PSCommandPath) -and
+        (Test-Path -LiteralPath $PSCommandPath -PathType Leaf)) {
+        $scriptFile = Get-Item -LiteralPath $PSCommandPath
+        $metadata.ScriptSha256 = Get-Sha256 -Path $scriptFile.FullName
+        $metadata.ScriptModifiedUtc =
+            $scriptFile.LastWriteTimeUtc.ToString('O')
+        $git = Resolve-CommandPath -Names @('git.exe', 'git')
+        if (-not [string]::IsNullOrWhiteSpace($git)) {
+            $previousErrorActionPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $scriptDirectory = $scriptFile.DirectoryName
+                $repositoryRoot = (
+                    & $git `
+                        -C $scriptDirectory `
+                        rev-parse `
+                        --show-toplevel `
+                        2>$null |
+                        Out-String
+                ).Trim()
+                if ($LASTEXITCODE -eq 0 -and
+                    -not [string]::IsNullOrWhiteSpace($repositoryRoot)) {
+                    $metadata.RepositoryRoot =
+                        Protect-Text $repositoryRoot
+                    $metadata.GitCommit = (
+                        & $git `
+                            -C $repositoryRoot `
+                            rev-parse `
+                            HEAD `
+                            2>$null |
+                            Out-String
+                    ).Trim()
+                    $metadata.GitBranch = (
+                        & $git `
+                            -C $repositoryRoot `
+                            branch `
+                            --show-current `
+                            2>$null |
+                            Out-String
+                    ).Trim()
+                    $status = (
+                        & $git `
+                            -C $repositoryRoot `
+                            status `
+                            --porcelain `
+                            2>$null |
+                            Out-String
+                    ).Trim()
+                    $metadata.GitDirty =
+                        -not [string]::IsNullOrWhiteSpace($status)
+                }
+            }
+            catch {
+            }
+            finally {
+                $ErrorActionPreference = $previousErrorActionPreference
+            }
+        }
+    }
+    return [pscustomobject]$metadata
+}
+
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = (Get-Location).Path
@@ -895,6 +1094,9 @@ $workIqFallbackPaths = @(
 )
 
 try {
+    Write-JsonFile `
+        -Path (Join-Path $staging 'collector-metadata.json') `
+        -Value (Get-CollectorMetadata)
     $os = Get-CimInstance Win32_OperatingSystem
     $computer = Get-CimInstance Win32_ComputerSystem
     Write-JsonFile `
@@ -1381,6 +1583,7 @@ try {
                     'Debug'
                 ) `
                 -Account $effectiveWorkIqAccount `
+                -AllowTextOutput `
                 -FallbackPaths $workIqFallbackPaths
             Invoke-WorkIqDiagnosticProbe `
                 -Name 'WorkIQ default profile with Peggy fields' `
@@ -1461,6 +1664,7 @@ try {
                 ) `
                 -Account $effectiveWorkIqAccount `
                 -UseAccount `
+                -AllowTextOutput `
                 -FallbackPaths $workIqFallbackPaths
         )
         Write-JsonFile `
@@ -1517,6 +1721,7 @@ try {
 Peggy diagnostic bundle
 
 Collected:
+- Collector script hash and source Git commit when available
 - Operating system and PowerShell metadata
 - Peggy version, installed file inventory, and selected file hashes
 - Process command lines, startup, shortcut, and Installed apps status
