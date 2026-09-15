@@ -354,6 +354,10 @@ public partial class App : Application
             null,
             (_, _) => EntranceDemo());
         menu.Items.Add(animations);
+        menu.Items.Add(CreateHelpMenu(
+            (_, _) => RunUiAction(
+                ShowTroubleshootingAsync,
+                $"{AssistantName} troubleshooting")));
 
         menu.Items.Add(new Forms.ToolStripSeparator());
         _quitMenu = new Forms.ToolStripMenuItem(
@@ -365,6 +369,23 @@ public partial class App : Application
         _tray.ContextMenuStrip = menu;
         _tray.DoubleClick += (_, _) => ShowAlertCenter();
         _mascot.ContextMenuRequested += ShowTrayContextMenu;
+    }
+
+    internal static Forms.ToolStripMenuItem CreateHelpMenu(
+        EventHandler troubleshootingClick)
+    {
+        ArgumentNullException.ThrowIfNull(troubleshootingClick);
+        var help = new Forms.ToolStripMenuItem("Help");
+        var troubleshooting = new Forms.ToolStripMenuItem(
+            "Troubleshooting",
+            image: null,
+            troubleshootingClick)
+        {
+            ToolTipText =
+                "Run read-only checks and create a diagnostic ZIP."
+        };
+        help.DropDownItems.Add(troubleshooting);
+        return help;
     }
 
     private void ShowTrayContextMenu()
@@ -1139,17 +1160,9 @@ public partial class App : Application
             return Task.CompletedTask;
         }
 
-        var failure = _state.State.LastMonitoringFailure ??
-            new MonitoringFailureDetails
-            {
-                OccurredUtc = DateTimeOffset.UtcNow,
-                Stage = "unknown",
-                Code = "details-unavailable",
-                ExceptionType = "Unknown",
-                Message =
-                    "The original failure details were not captured by this " +
-                    "Peggy version."
-            };
+        var failure = CreateTroubleshootingContext(
+            _state.State.LastMonitoringFailure,
+            DateTimeOffset.UtcNow);
         var diagnosticSettings = CloneSettings(_state.State.Settings);
         diagnosticSettings.CopilotModel = _copilot.Model;
         var troubleshooter = new MonitoringTroubleshooter(
@@ -1167,7 +1180,9 @@ public partial class App : Application
             troubleshooter,
             DiagnosticCollectorRunner.CreateAsync)
         {
-            Owner = _alertCenter
+            Owner = _alertCenter.IsVisible
+                ? _alertCenter
+                : null
         };
         window.SignInRequested += () =>
         {
@@ -1210,6 +1225,20 @@ public partial class App : Application
         window.Show();
         return Task.CompletedTask;
     }
+
+    internal static MonitoringFailureDetails CreateTroubleshootingContext(
+        MonitoringFailureDetails? failure,
+        DateTimeOffset nowUtc)
+        => failure ?? new MonitoringFailureDetails
+        {
+            OccurredUtc = nowUtc,
+            Stage = "on-demand",
+            Code = "manual-check",
+            ExceptionType = "None",
+            Message =
+                "No monitoring failure is currently recorded. Peggy is " +
+                "running on-demand checks."
+        };
 
     private static MonitoringCursorState CloneMonitoringCursor(
         MonitoringCursorState cursor)

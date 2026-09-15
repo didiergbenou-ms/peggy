@@ -10,6 +10,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using Peggy.Core;
 using Peggy.Tray;
+using Forms = System.Windows.Forms;
 
 namespace Peggy.Core.Tests;
 
@@ -51,6 +52,7 @@ internal static class DesktopSmokeTests
             TestAlertContextWindow();
             TestConversationWindow();
             TestTroubleshootingWindow();
+            TestHelpMenu();
             TestImmediateListeningWithoutGreeting();
             TestConversationStartupDrain();
             TestDeferredConversationApproval();
@@ -844,6 +846,31 @@ internal static class DesktopSmokeTests
         WaitWithDispatcher(controller.DisposeAsync().AsTask());
         window.Close();
         mascot.Close();
+    }
+
+    private static void TestHelpMenu()
+    {
+        var troubleshootingInvoked = false;
+        using var help = App.CreateHelpMenu(
+            (_, _) => troubleshootingInvoked = true);
+        var troubleshooting = help.DropDownItems
+            .OfType<Forms.ToolStripMenuItem>()
+            .Single();
+        troubleshooting.PerformClick();
+        var now = DateTimeOffset.UtcNow;
+        var context = App.CreateTroubleshootingContext(null, now);
+        TestAssert.True(
+            help.Text == "Help" &&
+            troubleshooting.Text == "Troubleshooting" &&
+            troubleshootingInvoked &&
+            context.OccurredUtc == now &&
+            context.Stage == "on-demand" &&
+            context.Code == "manual-check" &&
+            context.ExceptionType == "None" &&
+            context.Message.Contains(
+                "No monitoring failure",
+                StringComparison.Ordinal),
+            "The Help menu did not expose safe on-demand troubleshooting.");
     }
 
     private static void TestDeferredConversationApproval()

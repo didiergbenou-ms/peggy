@@ -515,6 +515,7 @@ icon opens the Alert Center.
 | **Settings** | Opens model, source, voice, schedule, startup, and watchlist settings |
 | **Show or hide Peggy** | Toggles the desktop mascot |
 | **Test animations** | Plays individual or all mascot states |
+| **Help → Troubleshooting** | Runs read-only account, Teams, Copilot, and monitoring checks on demand and can create a diagnostic ZIP |
 | **Quit Peggy** | Stops monitoring, closes Copilot, unloads speech, and exits |
 
 ### Alert Center
