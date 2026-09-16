@@ -23,6 +23,7 @@ internal static class CoreBehaviorSmokeTests
         await TestStandaloneWorkIqSetupAsync(directory);
         TestConfiguredStatePath(directory);
         TestWorkIqTransportClassification();
+        TestOutlookContinuationNormalization();
         await TestWorkIqRetryPolicyAsync(directory);
         await TestOutlookFolderCatalogAsync(directory);
         await TestOutlookFolderPaginationAsync(directory);
@@ -1497,6 +1498,28 @@ internal static class CoreBehaviorSmokeTests
                 PeggyDefaults.IncludeActiveCasesFolderEnvironmentVariable,
                 previousIncludeActive);
         }
+    }
+
+    private static void TestOutlookContinuationNormalization()
+    {
+        const string folderId = "AQMkAD-test_folder/id==";
+        const string continuation =
+            "https://graph.microsoft.com/v1.0/me/" +
+            "mailFolders('AQMkAD-test_folder/id==')/childFolders" +
+            "?%24select=id%2cdisplayName%2cparentFolderId%2c" +
+            "childFolderCount&%24top=50&%24skip=50";
+        const string expected =
+            "/me/mailFolders/AQMkAD-test_folder%2Fid%3D%3D/childFolders" +
+            "?%24select=id%2cdisplayName%2cparentFolderId%2c" +
+            "childFolderCount&%24top=50&%24skip=50";
+
+        var normalized = WorkIqMessageProvider.NormalizeGraphUrl(continuation);
+
+        TestAssert.Equal(
+            expected,
+            normalized,
+            $"The Graph continuation for Outlook folder '{folderId}' was " +
+            "not converted to the WorkIQ-approved slash path.");
     }
 
     private static async Task TestOutlookFolderPaginationAsync(
