@@ -11,5 +11,6 @@
     <ProjectReference Include="..\Peggy.Core\Peggy.Core.csproj" />
     <ProjectReference Include="..\Peggy.Mcp\Peggy.Mcp.csproj" />
     <ProjectReference Include="..\Peggy.Tray\Peggy.Tray.csproj" />
+    <ProjectReference Include="..\..\installer\Peggy.UninstallCleanup\Peggy.UninstallCleanup.csproj" />
   </ItemGroup>
 </Project>

@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Peggy.Core;
+using Peggy.UninstallCleanup;
 
 namespace Peggy.Core.Tests;
 
@@ -16,6 +17,7 @@ internal static class CoreBehaviorSmokeTests
         await TestStateValidationAsync(directory);
         TestMonitoringSchedule();
         TestMonitoringFailureInspection();
+        TestUninstallUserDataCleanup(directory);
         TestOutlookFolderPaths();
         TestOpaqueIdentifiers();
         TestProviderFactory();
@@ -174,6 +176,58 @@ internal static class CoreBehaviorSmokeTests
             manager.State.MonitoringCursor.InitialScanStartedUtc >= wakeBefore &&
             manager.State.MonitoringCursor.InitialScanStartedUtc <= wakeAfter,
             "Scheduled wake did not rebase monitoring to the five-minute window.");
+    }
+
+    private static void TestUninstallUserDataCleanup(string directory)
+    {
+        var parent = Path.Combine(directory, "uninstall-cleanup");
+        var dataDirectory = Path.Combine(parent, "Peggy");
+        var sibling = Path.Combine(parent, "keep.txt");
+        var modelDirectory = Path.Combine(dataDirectory, "models", "voice");
+        Directory.CreateDirectory(modelDirectory);
+        File.WriteAllText(Path.Combine(dataDirectory, "state.dat"), "state");
+        var modelPath = Path.Combine(modelDirectory, "model.bin");
+        File.WriteAllText(modelPath, "model");
+        File.SetAttributes(modelPath, FileAttributes.ReadOnly);
+        File.WriteAllText(sibling, "keep");
+        var variable = $"PEGGY_TEST_ACCOUNT_{Guid.NewGuid():N}";
+        Environment.SetEnvironmentVariable(
+            variable,
+            "account@example.com",
+            EnvironmentVariableTarget.Process);
+        try
+        {
+            UserDataCleanup.Run(
+                dataDirectory,
+                variable,
+                EnvironmentVariableTarget.Process);
+            TestAssert.True(
+                !Directory.Exists(dataDirectory) &&
+                File.Exists(sibling) &&
+                Environment.GetEnvironmentVariable(
+                    variable,
+                    EnvironmentVariableTarget.Process) is null,
+                "True uninstall cleanup did not remove state, speech models, " +
+                "and the account preference without touching sibling data.");
+
+            UserDataCleanup.Run(
+                dataDirectory,
+                variable,
+                EnvironmentVariableTarget.Process);
+            TestAssert.Throws<InvalidOperationException>(
+                () => UserDataCleanup.Run(
+                    parent,
+                    variable,
+                    EnvironmentVariableTarget.Process),
+                "Uninstall cleanup accepted a directory broader than Peggy.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                variable,
+                null,
+                EnvironmentVariableTarget.Process);
+        }
     }
 
     private static async Task TestAtomicSettingsStateAsync(string directory)

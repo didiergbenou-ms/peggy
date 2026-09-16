@@ -30,6 +30,9 @@
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/didiergbenou-ms/peggy" />
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="ARPNOREPAIR" Value="1" />
+    <Binary
+        Id="PeggyUninstallCleanup"
+        SourceFile="$(var.UninstallCleanupPath)" />
     <Property Id="PEGGY_RUN_VALUE">
       <RegistrySearch
           Id="PeggyStartupRegistrySearch"
@@ -79,6 +82,13 @@
     </Component>
 
     <CustomAction
+        Id="RemovePeggyUserData"
+        BinaryRef="PeggyUninstallCleanup"
+        ExeCommand="--msi"
+        Execute="immediate"
+        Impersonate="yes"
+        Return="check" />
+    <CustomAction
         Id="RemoveOwnedPeggyStartupEntry"
         Directory="SystemFolder"
         ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]scripts\Remove-PeggyStartupEntry.ps1&quot; -InstalledExecutable &quot;[INSTALLFOLDER]peggy-tray.exe&quot;"
@@ -94,6 +104,10 @@
         Return="check" />
 
     <InstallExecuteSequence>
+      <Custom
+          Action="RemovePeggyUserData"
+          After="InstallFinalize"
+          Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom
           Action="RollbackOwnedPeggyStartupEntry"
           Before="RemoveOwnedPeggyStartupEntry"
