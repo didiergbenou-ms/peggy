@@ -56,6 +56,7 @@ internal static class DesktopSmokeTests
             TestImmediateListeningWithoutGreeting();
             TestConversationStartupDrain();
             TestDeferredConversationApproval();
+            TestSpeechModelSetupService();
             TestWorkIqSignInWindow();
             TestSettingsWindow();
             TestSettingsPreserveUnavailableWatchlist();
@@ -1264,12 +1265,11 @@ internal static class DesktopSmokeTests
             provider.ListOutlookRootFolderCallCount == 1 &&
             provider.ListOutlookChildFolderCallCount == 0 &&
             Descendants<Expander>(outlookPanel).Count() == 2 &&
-            InvokeInstancePrivate<bool>(
+            !InvokeInstancePrivate<bool>(
                 window,
                 "IsOutlookFolderIncluded",
                 PeggyDefaults.ActiveCasesFolder),
-            "Settings did not lazily load Outlook folders or preserve the " +
-            "default Active selection.");
+            "Settings did not default Outlook monitoring to Inbox only.");
         WaitWithDispatcher(InvokeInstancePrivate<Task>(
             window,
             "LoadCopilotModelsAsync"));
@@ -1357,6 +1357,16 @@ internal static class DesktopSmokeTests
             Find<TextBlock>(window, "AccountStatus").Text ==
                 "Connected as person@example.com",
             "Settings did not show the active Microsoft 365 account.");
+        TestAssert.True(
+            Find<Button>(
+                window,
+                "InstallSpeechModelsButton").Content?.ToString() is
+                "Install voice models" or "Repair voice models" &&
+            !string.IsNullOrWhiteSpace(
+                Find<TextBlock>(
+                    window,
+                    "SpeechModelsStatus").Text),
+            "Settings did not expose voice model installation status.");
         window.Loaded += (_, _) =>
             window.Dispatcher.BeginInvoke(
                 new Action(() =>
@@ -1428,9 +1438,8 @@ internal static class DesktopSmokeTests
                                 FolderPath: "Inbox/Cases/Active"
                             });
                     TestAssert.True(
-                        active.IsChecked == true,
-                        "Inbox/Cases/Active was not selected by default.");
-                    active.IsChecked = false;
+                        active.IsChecked == false,
+                        "Inbox/Cases/Active was selected by default.");
 
                     var projects = Descendants<Expander>(outlookPanel)
                         .Single(expander =>
@@ -1609,16 +1618,22 @@ internal static class DesktopSmokeTests
             Environment.SetEnvironmentVariable(
                 PeggyDefaults.WorkIqAccountEnvironmentVariable,
                 null);
-            var pinned = new WorkIqSignInWindow("person@example.com");
-            AssertDecorativeTextIsRaw(pinned, "Microsoft 365 connection");
+            var pinned = new WorkIqSignInWindow(
+                "person@example.com",
+                expectedPrincipalId: "principal-id");
+            AssertDecorativeTextIsRaw(pinned, "Peggy setup");
             var accountText = Find<TextBox>(pinned, "AccountText");
             TestAssert.True(
+                pinned.Title == "Peggy setup" &&
                 accountText.Text == "person@example.com" &&
                 AutomationProperties.GetName(accountText) ==
                     "Microsoft 365 account" &&
                 !accountText.IsReadOnly &&
                 Find<Button>(pinned, "SignInButton").Content?.ToString() ==
                     "Sign in again" &&
+                Find<GroupBox>(
+                    pinned,
+                    "VoiceSetupGroup").Visibility == Visibility.Collapsed &&
                 Find<CheckBox>(pinned, "EulaCheck").IsChecked != true,
                 "The reauthentication window did not expose its account or " +
                 "preserve the EULA boundary.");
@@ -1641,10 +1656,18 @@ internal static class DesktopSmokeTests
 
             var firstRun = new WorkIqSignInWindow();
             TestAssert.True(
+                firstRun.Title == "Peggy setup" &&
                 !Find<TextBox>(firstRun, "AccountText").IsReadOnly &&
                 Find<Button>(firstRun, "InstallButton").Content?.ToString() ==
-                    "Install WorkIQ with npm",
-                "The first-run window did not expose standalone WorkIQ setup.");
+                    "Install WorkIQ with npm" &&
+                Find<GroupBox>(
+                    firstRun,
+                    "VoiceSetupGroup").Visibility == Visibility.Visible &&
+                Find<Button>(
+                    firstRun,
+                    "InstallVoiceModelsButton").Content?.ToString() is
+                    "Install voice models" or "Repair voice models",
+                "Peggy setup did not expose optional voice installation.");
             firstRun.Close();
 
             Environment.SetEnvironmentVariable(
@@ -1654,11 +1677,15 @@ internal static class DesktopSmokeTests
             TestAssert.True(
                 !Find<TextBox>(managed, "AccountText").IsReadOnly &&
                 Find<TextBox>(managed, "AccountText").Text ==
-                    "person@example.com",
+                    "person@example.com" &&
+                Find<GroupBox>(
+                    managed,
+                    "VoiceSetupGroup").Visibility == Visibility.Collapsed,
                 "A stale environment preference locked or replaced the " +
-                "verified Microsoft 365 account.");
+                "existing Microsoft 365 setup state.");
             managed.Close();
         }
+
         finally
         {
             Environment.SetEnvironmentVariable(
@@ -1685,6 +1712,119 @@ internal static class DesktopSmokeTests
             constrained.MaxWidth == 224 &&
             constrained.MaxHeight == 184,
             "Window constraints exceeded an extreme-DPI work area.");
+    }
+
+    private static void TestSpeechModelSetupService()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"peggy-speech-setup-{Guid.NewGuid():N}");
+        var installer = Path.Combine(directory, "fake-installer.ps1");
+        var models = Path.Combine(directory, "models");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllText(
+                installer,
+                """
+                param([string]$Destination, [switch]$Force)
+                $marker = Join-Path $Destination (
+                  'sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\' +
+                  'encoder.int8.onnx'
+                )
+                if ((Test-Path -LiteralPath $marker) -and -not $Force) {
+                  exit 0
+                }
+                $files = @(
+                  'speech-models.json',
+                  'silero_vad_v5.onnx',
+                  'sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\encoder.int8.onnx',
+                  'sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\decoder.int8.onnx',
+                  'sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\joiner.int8.onnx',
+                  'sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8\tokens.txt',
+                  'sherpa-onnx-nemo-streaming-fast-conformer-ctc-en-80ms-int8\model.int8.onnx',
+                  'sherpa-onnx-nemo-streaming-fast-conformer-ctc-en-80ms-int8\tokens.txt',
+                  'kitten-nano-en-v0_8-int8\model.int8.onnx',
+                  'kitten-nano-en-v0_8-int8\voices.bin',
+                  'kitten-nano-en-v0_8-int8\tokens.txt'
+                )
+                foreach ($relative in $files) {
+                  $path = Join-Path $Destination $relative
+                  New-Item -ItemType Directory -Path (Split-Path $path) -Force |
+                    Out-Null
+                  Set-Content -LiteralPath $path -Value 'test' -Encoding ascii
+                }
+                New-Item -ItemType Directory -Path (
+                  Join-Path $Destination 'kitten-nano-en-v0_8-int8\espeak-ng-data'
+                ) -Force | Out-Null
+                """);
+            var service = new SpeechModelSetupService(installer);
+            TestAssert.True(
+                !service.AreModelsInstalled(models),
+                "An incomplete speech model directory was reported as ready.");
+            WaitWithDispatcher(service.InstallAsync(models));
+            TestAssert.True(
+                service.AreModelsInstalled(models),
+                "The shared voice model installer did not validate its output.");
+            var marker = Path.Combine(
+                models,
+                "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8",
+                "encoder.int8.onnx");
+            File.WriteAllText(marker, "corrupt");
+            WaitWithDispatcher(service.InstallAsync(models, force: true));
+            TestAssert.Equal(
+                "test",
+                File.ReadAllText(marker).Trim(),
+                "Repair voice models did not force replacement.");
+
+            var cancelInstaller = Path.Combine(
+                directory,
+                "cancel-installer.ps1");
+            File.WriteAllText(
+                cancelInstaller,
+                """
+                param([string]$Destination)
+                Set-Content -LiteralPath (
+                  Join-Path $Destination (
+                    'sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2.partial'
+                  )
+                ) -Value 'partial' -Encoding ascii
+                New-Item -ItemType Directory -Path (
+                  Join-Path $Destination (
+                    '.staging-sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8-123'
+                  )
+                ) -Force | Out-Null
+                Start-Sleep -Seconds 60
+                """);
+            var cancelService = new SpeechModelSetupService(cancelInstaller);
+            using var cancellation = new CancellationTokenSource(
+                TimeSpan.FromSeconds(1));
+            var canceled = false;
+            try
+            {
+                WaitWithDispatcher(cancelService.InstallAsync(
+                    models,
+                    ct: cancellation.Token));
+            }
+            catch (OperationCanceledException)
+            {
+                canceled = true;
+            }
+            TestAssert.True(
+                canceled &&
+                !File.Exists(Path.Combine(
+                    models,
+                    "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2.partial")) &&
+                !Directory.EnumerateDirectories(
+                    models,
+                    ".staging-*",
+                    SearchOption.TopDirectoryOnly).Any(),
+                "Canceling voice installation left download or staging files.");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     private static void TestSettingsPreserveUnavailableWatchlist()

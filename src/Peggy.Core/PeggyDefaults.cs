@@ -70,4 +70,46 @@ public static class PeggyDefaults
                 Environment.SpecialFolder.LocalApplicationData),
             "Peggy",
             "models");
+
+    public static string ResolveSpeechModelDirectory(
+        string? configuredDirectory = null)
+    {
+        if (TryResolveSpeechModelDirectory(
+                configuredDirectory,
+                out var directory))
+        {
+            return directory;
+        }
+        throw new ArgumentException(
+            "The configured speech model directory is not a valid path.",
+            nameof(configuredDirectory));
+    }
+
+    public static bool TryResolveSpeechModelDirectory(
+        string? configuredDirectory,
+        out string directory)
+    {
+        var environment = Environment.GetEnvironmentVariable(
+            "PEGGY_SPEECH_MODELS");
+        var selected = !string.IsNullOrWhiteSpace(environment)
+            ? environment
+            : configuredDirectory;
+        try
+        {
+            directory = string.IsNullOrWhiteSpace(selected)
+                ? SpeechModelDirectory
+                : Path.GetFullPath(
+                    Environment.ExpandEnvironmentVariables(
+                        selected.Trim().Trim('"')));
+            return true;
+        }
+        catch (Exception ex) when (
+            ex is ArgumentException or
+            NotSupportedException or
+            PathTooLongException)
+        {
+            directory = string.Empty;
+            return false;
+        }
+    }
 }

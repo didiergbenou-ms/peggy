@@ -15,6 +15,9 @@ public partial class WorkIqSignInWindow : Window
     private readonly string _expectedMailbox;
     private readonly string _expectedUserPrincipalName;
     private readonly string _expectedPrincipalId;
+    private readonly SpeechModelSetupService _speechModels;
+    private readonly string _voiceModelDirectory;
+    private readonly bool _voiceModelDirectoryValid;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private CancellationTokenSource? _activeOperationCancellation;
     private bool _busy;
@@ -31,6 +34,7 @@ public partial class WorkIqSignInWindow : Window
             expectedUserPrincipalName,
             expectedPrincipalId,
             setup,
+            speechModels: null,
             previewMode: false)
     {
     }
@@ -45,6 +49,7 @@ public partial class WorkIqSignInWindow : Window
             expectedUserPrincipalName: null,
             expectedPrincipalId: null,
             setup,
+            speechModels: null,
             previewMode)
     {
     }
@@ -55,10 +60,16 @@ public partial class WorkIqSignInWindow : Window
         string? expectedUserPrincipalName,
         string? expectedPrincipalId,
         WorkIqSetupService? setup,
+        SpeechModelSetupService? speechModels,
         bool previewMode)
     {
         InitializeComponent();
         _setup = setup ?? new WorkIqSetupService();
+        _speechModels = speechModels ?? new SpeechModelSetupService();
+        _voiceModelDirectoryValid =
+            PeggyDefaults.TryResolveSpeechModelDirectory(
+                configuredDirectory: null,
+                out _voiceModelDirectory);
         _expectedAccount = expectedAccount?.Trim() ?? string.Empty;
         _expectedMailbox = expectedMailbox?.Trim() ?? string.Empty;
         _expectedUserPrincipalName =
@@ -69,6 +80,11 @@ public partial class WorkIqSignInWindow : Window
             ? _expectedAccount
             : configuredAccount;
         AccountText.IsReadOnly = false;
+        VoiceSetupGroup.Visibility =
+            _expectedAccount.Length == 0
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        RefreshVoiceModelsStatus();
         UpdateAccountMode();
 
         Loaded += (_, _) =>
@@ -105,6 +121,8 @@ public partial class WorkIqSignInWindow : Window
     public WorkIqAccountIdentity? AuthenticatedIdentity { get; private set; }
 
     public bool AuthenticationAttempted { get; private set; }
+
+    public bool VoiceModelsReady { get; private set; }
 
     private async Task RefreshInstallationStatusAsync()
     {
@@ -166,6 +184,55 @@ public partial class WorkIqSignInWindow : Window
         finally
         {
             EndOperation(operation);
+            RefreshVoiceModelsStatus();
+            SetBusy(false);
+        }
+    }
+
+    private async void InstallVoiceModels_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        SetBusy(
+            true,
+            $"Downloading and verifying {SpeechModelSetupService
+                .DownloadSizeDescription} of English voice models...");
+        var repair = VoiceModelsReady;
+        using var operation = BeginOperation();
+        try
+        {
+            await _speechModels.InstallAsync(
+                _voiceModelDirectory,
+                force: repair,
+                ct: operation.Token);
+            RefreshVoiceModelsStatus();
+            OperationStatus.Text =
+                "Voice models are installed. You can continue setup.";
+        }
+        catch (OperationCanceledException) when (
+            operation.IsCancellationRequested)
+        {
+            OperationStatus.Text = "Voice model installation was cancelled.";
+        }
+        catch (SpeechModelSetupException ex)
+        {
+            OperationStatus.Text = ex.Message;
+            MessageBox.Show(
+                this,
+                ex.Message,
+                "Peggy setup",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            EndOperation(operation);
+            RefreshVoiceModelsStatus();
             SetBusy(false);
         }
     }
@@ -181,7 +248,7 @@ public partial class WorkIqSignInWindow : Window
             MessageBox.Show(
                 this,
                 "Review and accept the WorkIQ EULA before signing in.",
-                "Connect Microsoft 365",
+                "Peggy setup",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
             return;
@@ -269,7 +336,7 @@ public partial class WorkIqSignInWindow : Window
             MessageBox.Show(
                 this,
                 $"The WorkIQ EULA could not be opened: {ex.Message}",
-                "Connect Microsoft 365",
+                "Peggy setup",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
@@ -292,6 +359,8 @@ public partial class WorkIqSignInWindow : Window
         AccountText.IsEnabled = !busy;
         EulaCheck.IsEnabled = !busy;
         InstallButton.IsEnabled = !busy;
+        InstallVoiceModelsButton.IsEnabled =
+            !busy && _voiceModelDirectoryValid;
         SignInButton.IsEnabled =
             !busy && _setup.TryGetExecutablePath(out _);
         CancelButton.Content = busy ? "Cancel operation" : "Cancel";
@@ -349,13 +418,44 @@ public partial class WorkIqSignInWindow : Window
         AccountChangeNotice.Visibility = Visibility.Visible;
     }
 
+    private void RefreshVoiceModelsStatus()
+    {
+        if (!_voiceModelDirectoryValid)
+        {
+            VoiceModelsReady = false;
+            VoiceModelsStatus.Text =
+                "PEGGY_SPEECH_MODELS is not a valid path. Correct or remove " +
+                "that environment variable before installing voice.";
+            InstallVoiceModelsButton.Content = "Install voice models";
+            InstallVoiceModelsButton.IsEnabled = false;
+            return;
+        }
+
+        VoiceModelsReady = _speechModels.AreModelsInstalled(
+            _voiceModelDirectory);
+        VoiceModelsStatus.Text = VoiceModelsReady
+            ? $"English voice models are ready at " +
+              $"{_voiceModelDirectory}."
+            : $"Voice models are not installed. Install them now or later " +
+              "from Settings.";
+        InstallVoiceModelsButton.Content = VoiceModelsReady
+            ? "Repair voice models"
+            : "Install voice models";
+    }
+
+    internal bool RevalidateVoiceModels()
+    {
+        RefreshVoiceModelsStatus();
+        return VoiceModelsReady;
+    }
+
     private void ShowSetupError(WorkIqSetupException exception)
     {
         OperationStatus.Text = exception.Message;
         MessageBox.Show(
             this,
             exception.Message,
-            "Connect Microsoft 365",
+            "Peggy setup",
             MessageBoxButton.OK,
             MessageBoxImage.Error);
     }
