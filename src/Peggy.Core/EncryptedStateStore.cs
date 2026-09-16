@@ -200,6 +200,11 @@ public sealed class EncryptedStateStore
         {
             state.Settings.TeamsScope = TeamsMonitoringScope.AllActivity;
         }
+        if (!Enum.IsDefined(state.Settings.OutlookScope))
+        {
+            state.Settings.OutlookScope =
+                MonitoringScopes.InferLegacyOutlookScope(state.Settings);
+        }
         state.Settings.TeamsTeamWatchlist ??= [];
         state.Settings.TeamsChannelWatchlist ??= [];
         NormalizeTeamsWatchlists(state.Settings);
@@ -310,22 +315,45 @@ public sealed class EncryptedStateStore
         DateTimeOffset nowUtc)
     {
         using var document = JsonDocument.Parse(plaintext);
-        var activeCasesSettingExists =
+        var settingsExist =
             document.RootElement.TryGetProperty(
                 "settings",
                 out var settings) &&
-            settings.ValueKind == JsonValueKind.Object &&
-            settings.TryGetProperty("includeActiveCasesFolder", out _);
+            settings.ValueKind == JsonValueKind.Object;
+        var outlookScopeExists = settingsExist &&
+            settings.TryGetProperty("outlookScope", out _);
         var state = JsonSerializer.Deserialize<PeggyStateDocument>(
             plaintext,
             JsonOptions)
             ?? throw new InvalidDataException(
                 "The assistant's encrypted state was empty.");
         state.Settings ??= new PeggySettings();
-        if (!activeCasesSettingExists)
+        if (!outlookScopeExists)
         {
-            state.Settings.IncludeActiveCasesFolder = true;
+            if (!settingsExist ||
+                !settings.TryGetProperty("includeActiveCasesFolder", out _))
+            {
+                state.Settings.IncludeActiveCasesFolder = true;
+            }
+            state.Settings.OutlookScope =
+                MonitoringScopes.InferLegacyOutlookScope(state.Settings);
         }
+        if (!settingsExist || !settings.TryGetProperty("teamsScope", out _))
+        {
+            state.Settings.TeamsScope = TeamsMonitoringScope.AllActivity;
+        }
+        if ((!settingsExist ||
+             !settings.TryGetProperty("monitoringScopeVersion", out _) ||
+             state.Settings.MonitoringScopeVersion < 1) &&
+            state.Settings.TeamsScope ==
+                TeamsMonitoringScope.SelectedTeamsAndChannels &&
+            state.Settings.MonitorTeamsChatsInSelectedScope)
+        {
+            state.Settings.TeamsScope =
+                TeamsMonitoringScope.ChatsAndSelectedChannels;
+        }
+        state.Settings.MonitoringScopeVersion = 1;
+        state.Settings.MonitorTeamsChatsInSelectedScope = false;
         NormalizeAndPrune(state, nowUtc);
         return state;
     }

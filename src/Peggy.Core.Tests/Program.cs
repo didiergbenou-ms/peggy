@@ -41,6 +41,8 @@ try
 {
     await CoreBehaviorSmokeTests.RunAsync(testDirectory);
     await AssistantBehaviorSmokeTests.RunAsync(testDirectory);
+    await AppIntegrationSmokeTests.RunAsync();
+    await SettingsCatalogCacheSmokeTests.RunAsync();
     await DesktopSmokeTests.RunAsync();
     await TestEncryptedStateAsync(testDirectory);
     await TestStartupMonitoringWindowAsync(testDirectory);
@@ -1347,6 +1349,11 @@ static bool TryRunFakeWorkIq(string[] arguments)
         : null;
     var scenario = Environment.GetEnvironmentVariable(
         "PEGGY_FAKE_WORKIQ_SCENARIO");
+    if (scenario == "monitoring-modes")
+    {
+        MonitoringScopeSmokeTests.HandleFakeRequest(arguments[0], url);
+        return true;
+    }
     if (string.Equals(
             scenario,
             "setup",

@@ -8,6 +8,8 @@ public static class PeggyDefaults
         "PEGGY_WORKIQ_PRINCIPAL_ID";
     public const string IncludeActiveCasesFolderEnvironmentVariable =
         "PEGGY_INCLUDE_ACTIVE_CASES_FOLDER";
+    public const string OutlookScopeEnvironmentVariable = "PEGGY_OUTLOOK_SCOPE";
+    public const string TeamsModeEnvironmentVariable = "PEGGY_TEAMS_MODE";
     public const string CopilotModel = "gpt-5.4";
     public const string CopilotContextTierDefault = "default";
     public const string CopilotContextTierLong = "long_context";

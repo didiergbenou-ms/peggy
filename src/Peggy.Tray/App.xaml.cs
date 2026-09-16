@@ -929,7 +929,8 @@ public partial class App : Application
             settings,
             _provider,
             _state.State.PinnedAccount,
-            _copilot.ListAvailableModelsAsync)
+            _copilot.ListAvailableModelsAsync,
+            principalId: _state.State.PinnedPrincipalId)
         {
             Owner = _alertCenter.IsVisible
                 ? _alertCenter
@@ -983,6 +984,7 @@ public partial class App : Application
         var updated = window.SavedSettings;
         var wasScheduledSleeping = _scheduledSleeping;
         var outlookScopeChanged =
+            previous.OutlookScope != updated.OutlookScope ||
             previous.IncludeActiveCasesFolder !=
                 updated.IncludeActiveCasesFolder ||
             !previous.AdditionalOutlookFolders.SequenceEqual(
@@ -1605,6 +1607,7 @@ public partial class App : Application
         CopilotRunner? replacementCopilot = null;
         try
         {
+            var previousCatalogAccount = _state.State.PinnedAccount;
             var switchTime = DateTimeOffset.UtcNow;
             var replacementSessionId = Guid.NewGuid().ToString();
             var replacementSettings =
@@ -1640,6 +1643,8 @@ public partial class App : Application
                     _shutdown.Token);
             }
 
+            SettingsWindow.InvalidateAccountCatalog(previousCatalogAccount);
+            SettingsWindow.InvalidateAccountCatalog(identity.Account);
             _troubleshootingWindow?.Close();
             _troubleshootingWindow = null;
             if (principalChanged)
@@ -2427,6 +2432,7 @@ public partial class App : Application
             CopilotModel = settings.CopilotModel,
             CopilotReasoningEffort = settings.CopilotReasoningEffort,
             CopilotContextTier = settings.CopilotContextTier,
+            OutlookScope = settings.OutlookScope,
             IncludeActiveCasesFolder =
                 settings.IncludeActiveCasesFolder,
             AdditionalOutlookFolders =

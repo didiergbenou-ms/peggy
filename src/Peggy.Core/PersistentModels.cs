@@ -49,13 +49,26 @@ public enum WorkActionKind
 
 public enum TeamsMonitoringScope
 {
-    AllActivity,
-    SelectedTeamsAndChannels,
-    Off
+    AllActivity = 0,
+    SelectedTeamsAndChannels = 1,
+    Off = 2,
+    ChatsOnly = 3,
+    ChatsAndSelectedChannels = 4
+}
+
+public enum OutlookMonitoringScope
+{
+    InboxOnly = 0,
+    InboxAndSelectedFolders = 1,
+    SelectedFoldersOnly = 2,
+    InboxAndAllSubfolders = 3,
+    Off = 4
 }
 
 public sealed class PeggySettings
 {
+    public int MonitoringScopeVersion { get; set; } = 1;
+
     public string CopilotModel { get; set; } = PeggyDefaults.CopilotModel;
 
     public string CopilotReasoningEffort { get; set; } = string.Empty;
@@ -67,8 +80,11 @@ public sealed class PeggySettings
 
     public List<string> AdditionalOutlookFolders { get; set; } = [];
 
+    public OutlookMonitoringScope OutlookScope { get; set; } =
+        OutlookMonitoringScope.InboxOnly;
+
     public TeamsMonitoringScope TeamsScope { get; set; } =
-        TeamsMonitoringScope.AllActivity;
+        TeamsMonitoringScope.ChatsOnly;
 
     public bool MonitorTeamsChatsInSelectedScope { get; set; }
 

@@ -106,7 +106,7 @@ internal sealed class MonitoringTroubleshooter
 {
     public static readonly IReadOnlyList<string> CheckNames =
     [
-        "Microsoft 365 account and Inbox",
+        "Microsoft 365 account and Outlook scope",
         "Configured Teams scope",
         "GitHub Copilot model access",
         "Exact monitoring retrieval replay"
@@ -155,22 +155,33 @@ internal sealed class MonitoringTroubleshooter
     {
         var checks = new List<TroubleshootingCheckResult>();
 
-        checks.Add(await RunCheckAsync(
-            CheckNames[0],
-            async token =>
-            {
-                if (string.IsNullOrWhiteSpace(_account))
+        if (_settings.OutlookScope == OutlookMonitoringScope.Off)
+        {
+            var skipped = new TroubleshootingCheckResult(
+                CheckNames[0],
+                TroubleshootingCheckStatus.NotReached,
+                "Outlook monitoring is disabled in Settings.");
+            progress?.Report(skipped);
+            checks.Add(skipped);
+        }
+        else
+        {
+            checks.Add(await RunCheckAsync(
+                CheckNames[0],
+                async token =>
                 {
-                    throw new InvalidOperationException(
-                        "Peggy has no pinned Microsoft 365 account.");
-                }
-                var folders = await _providerFactory()
-                    .ListOutlookChildFoldersAsync(null, token);
-                return $"Pinned account and Inbox are accessible; " +
-                       $"{folders.Count} top-level folders were returned.";
-            },
-            progress,
-            ct));
+                    if (string.IsNullOrWhiteSpace(_account))
+                    {
+                        throw new InvalidOperationException(
+                            "Peggy has no pinned Microsoft 365 account.");
+                    }
+                    _ = await _providerFactory().ListUnreadAsync(
+                        MessageSource.Email, 1, token);
+                    return "Pinned account and configured Outlook scope are accessible.";
+                },
+                progress,
+                ct));
+        }
 
         if (_settings.TeamsScope == TeamsMonitoringScope.Off)
         {
@@ -212,9 +223,13 @@ internal sealed class MonitoringTroubleshooter
     private async Task<string> CheckTeamsScopeAsync(CancellationToken ct)
     {
         var provider = _providerFactory();
+        if (_settings.TeamsScope == TeamsMonitoringScope.ChatsOnly)
+        {
+            _ = await provider.ListUnreadAsync(MessageSource.Teams, 1, ct);
+            return "Direct and group chat access is ready; channels are not monitored.";
+        }
         var teams = await provider.ListJoinedTeamsAsync(ct);
-        if (_settings.TeamsScope !=
-            TeamsMonitoringScope.SelectedTeamsAndChannels)
+        if (_settings.TeamsScope == TeamsMonitoringScope.AllActivity)
         {
             return $"{teams.Count} joined teams are accessible.";
         }
@@ -266,7 +281,7 @@ internal sealed class MonitoringTroubleshooter
         }
 
         return selectedTeamIds.Count == 0
-            ? _settings.MonitorTeamsChatsInSelectedScope
+            ? MonitoringScopes.IncludesChats(_settings.TeamsScope)
                 ? "Selected-only Teams monitoring has no team or channel " +
                   "roots; direct and group chat monitoring is enabled."
                 : "Selected-only Teams monitoring has no selected sources."

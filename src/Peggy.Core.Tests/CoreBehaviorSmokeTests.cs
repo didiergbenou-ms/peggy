@@ -37,6 +37,7 @@ internal static class CoreBehaviorSmokeTests
         await TestStructuredTeamsCrossPathIdentityAsync(directory);
         await TestChannelDeltaContinuationAsync(directory);
         await TestTeamsMonitoringScopesAsync(directory);
+        await MonitoringScopeSmokeTests.RunAsync(directory);
         await TestLiveActionTransportAsync();
         TestActionPolicy();
         await TestMockProviderAsync();
@@ -413,9 +414,9 @@ internal static class CoreBehaviorSmokeTests
                 CopilotReasoningEffort = "high",
                 CopilotContextTier = PeggyDefaults.CopilotContextTierLong,
                 IncludeActiveCasesFolder = true,
+                OutlookScope = OutlookMonitoringScope.InboxAndSelectedFolders,
                 AdditionalOutlookFolders = ["Inbox/Private old folder"],
-                TeamsScope = TeamsMonitoringScope.SelectedTeamsAndChannels,
-                MonitorTeamsChatsInSelectedScope = true,
+                TeamsScope = TeamsMonitoringScope.ChatsAndSelectedChannels,
                 TeamsTeamWatchlist =
                 [
                     new TeamsTeamWatch
@@ -532,9 +533,10 @@ internal static class CoreBehaviorSmokeTests
                     PeggyDefaults.CopilotContextTierLong &&
                 !manager.State.Settings.IncludeActiveCasesFolder &&
                 manager.State.Settings.AdditionalOutlookFolders.Count == 0 &&
+                manager.State.Settings.OutlookScope ==
+                    OutlookMonitoringScope.InboxAndSelectedFolders &&
                 manager.State.Settings.TeamsScope ==
-                    TeamsMonitoringScope.SelectedTeamsAndChannels &&
-                manager.State.Settings.MonitorTeamsChatsInSelectedScope &&
+                    TeamsMonitoringScope.ChatsAndSelectedChannels &&
                 manager.State.Settings.TeamsTeamWatchlist.Count == 0 &&
                 manager.State.Settings.TeamsChannelWatchlist.Count == 0 &&
                 !manager.State.Settings.StartAtSignIn &&
@@ -671,7 +673,9 @@ internal static class CoreBehaviorSmokeTests
             normalizedSettings.SpeechSpeed == 1.15F &&
             normalizedSettings.SpeechTuningVersion == 3 &&
             normalizedSettings.TeamsScope ==
-                TeamsMonitoringScope.AllActivity &&
+                TeamsMonitoringScope.ChatsOnly &&
+            normalizedSettings.OutlookScope ==
+                OutlookMonitoringScope.InboxOnly &&
             normalizedSettings.TeamsTeamWatchlist is not null &&
             normalizedSettings.TeamsChannelWatchlist is not null &&
             normalizedSettings.MonitoringScheduleEnabled &&
@@ -1391,6 +1395,7 @@ internal static class CoreBehaviorSmokeTests
                 settings: new PeggySettings
                 {
                     IncludeActiveCasesFolder = true,
+                    OutlookScope = OutlookMonitoringScope.InboxAndSelectedFolders,
                     TeamsScope = TeamsMonitoringScope.Off
                 });
             var cursor = new MonitoringCursorState
@@ -1549,6 +1554,7 @@ internal static class CoreBehaviorSmokeTests
                 {
                     IncludeActiveCasesFolder = false,
                     AdditionalOutlookFolders = [OutlookFolderPath.Inbox],
+                    OutlookScope = OutlookMonitoringScope.InboxAndAllSubfolders,
                     TeamsScope = TeamsMonitoringScope.Off
                 });
             _ = await allFoldersProvider.ListUnreadAsync(
@@ -1645,6 +1651,7 @@ internal static class CoreBehaviorSmokeTests
                 settings: new PeggySettings
                 {
                     IncludeActiveCasesFolder = true,
+                    OutlookScope = OutlookMonitoringScope.InboxAndSelectedFolders,
                     TeamsScope = TeamsMonitoringScope.Off
                 });
 
@@ -2043,8 +2050,7 @@ internal static class CoreBehaviorSmokeTests
                 settings: new PeggySettings
                 {
                     TeamsScope =
-                        TeamsMonitoringScope.SelectedTeamsAndChannels,
-                    MonitorTeamsChatsInSelectedScope = true
+                        TeamsMonitoringScope.ChatsAndSelectedChannels
                 });
             var directFirst = await directChatProvider.GetChangesAsync(
                 new MonitoringCursorState
@@ -2308,7 +2314,7 @@ internal static class CoreBehaviorSmokeTests
                 "primary@example.invalid");
             var provider = new WorkIqMessageProvider(
                 executablePath: executable,
-                settings: new PeggySettings());
+                settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity });
             var firstBatch = await provider.GetChangesAsync(
                 new MonitoringCursorState(),
                 100,
@@ -2384,7 +2390,7 @@ internal static class CoreBehaviorSmokeTests
             File.WriteAllText(logPath, string.Empty);
             var promptOnlyProvider = new WorkIqMessageProvider(
                 executablePath: executable,
-                settings: new PeggySettings());
+                settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity });
             TestAssert.Equal(
                 "Configured semantic answer.",
                 await promptOnlyProvider.AskWorkAsync(
@@ -2409,7 +2415,7 @@ internal static class CoreBehaviorSmokeTests
             File.WriteAllText(logPath, string.Empty);
             var contextProvider = new WorkIqMessageProvider(
                 executablePath: executable,
-                settings: new PeggySettings());
+                settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity });
             var resolution = await contextProvider.ResolveContextAsync(
                 MessageSource.Teams,
                 "A decision is requested.",
@@ -2537,7 +2543,7 @@ internal static class CoreBehaviorSmokeTests
                 unlinkedResponse);
             var withheld = await new WorkIqMessageProvider(
                         executablePath: executable,
-                        settings: new PeggySettings())
+                        settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity })
                 .GetChangesAsync(
                         new MonitoringCursorState(),
                         100,
@@ -2555,7 +2561,7 @@ internal static class CoreBehaviorSmokeTests
                 """{"value":[]}""");
             var degraded = await new WorkIqMessageProvider(
                     executablePath: executable,
-                    settings: new PeggySettings())
+                    settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity })
                 .GetChangesAsync(
                     new MonitoringCursorState(),
                     100,
@@ -2664,7 +2670,7 @@ internal static class CoreBehaviorSmokeTests
             var now = DateTimeOffset.UtcNow;
             var batch = await new WorkIqMessageProvider(
                     executablePath: executable,
-                    settings: new PeggySettings())
+                    settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity })
                 .GetChangesAsync(
                     new MonitoringCursorState(),
                     100,
@@ -2812,6 +2818,7 @@ internal static class CoreBehaviorSmokeTests
                 executablePath: executable,
                 settings: new PeggySettings
                 {
+                    TeamsScope = TeamsMonitoringScope.AllActivity,
                     TeamsChannelWatchlist =
                     [
                         new TeamsChannelWatch
@@ -2899,7 +2906,7 @@ internal static class CoreBehaviorSmokeTests
                 "chat-metadata");
             var metadataOnly = await new WorkIqMessageProvider(
                     executablePath: executable,
-                    settings: new PeggySettings())
+                    settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity })
                 .GetChangesAsync(
                     new MonitoringCursorState(),
                     100,
@@ -2925,7 +2932,7 @@ internal static class CoreBehaviorSmokeTests
                 "chat-edit");
             var actualEdit = await new WorkIqMessageProvider(
                     executablePath: executable,
-                    settings: new PeggySettings())
+                    settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity })
                 .GetChangesAsync(
                     new MonitoringCursorState(),
                     100,

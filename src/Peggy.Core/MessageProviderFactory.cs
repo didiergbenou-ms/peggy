@@ -21,7 +21,7 @@ public static class MessageProviderFactory
                     account: account,
                     principalId: principalId,
                     settings: settings),
-            "mock" => new MockMessageProvider(),
+            "mock" => new MockMessageProvider(settings),
             _ => throw new InvalidOperationException(
                 $"Unknown PEGGY_MESSAGE_PROVIDER value '{mode}'. Use 'workiq' or 'mock'.")
         };

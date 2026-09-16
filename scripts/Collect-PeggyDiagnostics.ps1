@@ -286,6 +286,7 @@ function Get-PeggyOperationalState {
             CopilotContextTier = Get-ObjectPropertyValue `
                 $settings `
                 'copilotContextTier'
+            OutlookScope = Get-ObjectPropertyValue $settings 'outlookScope'
             IncludeActiveCasesFolder = Get-ObjectPropertyValue `
                 $settings `
                 'includeActiveCasesFolder'
@@ -1508,7 +1509,9 @@ try {
         'PEGGY_MESSAGE_PROVIDER',
         'PEGGY_COPILOT_MODEL',
         'PEGGY_INCLUDE_ACTIVE_CASES_FOLDER',
+        'PEGGY_OUTLOOK_SCOPE',
         'PEGGY_TEAMS_SCOPE',
+        'PEGGY_TEAMS_MODE',
         'PEGGY_TEAMS_MONITOR_CHATS',
         'PEGGY_LOG_PATH',
         'PEGGY_STATE_PATH',

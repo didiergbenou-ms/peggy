@@ -11,6 +11,7 @@ public sealed class MockMessageProvider : IMessageProvider
     private readonly ConcurrentDictionary<string, WorkActionRequest> _executedActions =
         new();
     private readonly List<MessageThread> _threads;
+    private readonly PeggySettings _settings;
 
     public int ListJoinedTeamsCallCount { get; private set; }
 
@@ -28,8 +29,9 @@ public sealed class MockMessageProvider : IMessageProvider
 
     public int ListOutlookChildFolderCallCount { get; private set; }
 
-    public MockMessageProvider()
+    public MockMessageProvider(PeggySettings? settings = null)
     {
+        _settings = settings ?? new PeggySettings();
         var now = DateTimeOffset.Now;
 
         var seed = new List<Message>
@@ -108,7 +110,8 @@ public sealed class MockMessageProvider : IMessageProvider
     public Task<IReadOnlyList<Message>> ListUnreadAsync(MessageSource? source, int limit, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        IEnumerable<Message> q = _messages.Values.Where(m => !m.IsRead);
+        IEnumerable<Message> q = _messages.Values.Where(m =>
+            !m.IsRead && IsMonitored(m));
         if (source is not null) q = q.Where(m => m.Source == source);
         var result = q.OrderByDescending(m => m.ReceivedAt)
                       .Take(Math.Clamp(limit, 1, 100))
@@ -134,6 +137,7 @@ public sealed class MockMessageProvider : IMessageProvider
         var boundaryIds = updated.TeamsBoundaryMessageIds.ToHashSet(
             StringComparer.Ordinal);
         var candidates = _messages.Values
+            .Where(IsMonitored)
             .Where(message =>
                 message.ReceivedAt > cutoff ||
                 (message.ReceivedAt == cutoff &&
@@ -170,6 +174,13 @@ public sealed class MockMessageProvider : IMessageProvider
         return Task.FromResult(
             new MessageChangeBatch(selected, updated, hasMore));
     }
+
+    private bool IsMonitored(Message message)
+        => message.Source == MessageSource.Email
+            ? _settings.OutlookScope is OutlookMonitoringScope.InboxOnly or
+                OutlookMonitoringScope.InboxAndSelectedFolders or
+                OutlookMonitoringScope.InboxAndAllSubfolders
+            : MonitoringScopes.IncludesChats(_settings.TeamsScope);
 
     public Task<MessageThread?> GetThreadAsync(string threadId, CancellationToken ct = default)
     {
