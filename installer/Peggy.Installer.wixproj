@@ -1,0 +1,31 @@
+<Project Sdk="WixToolset.Sdk/6.0.2">
+  <PropertyGroup>
+    <OutputName>peggy-win-x64</OutputName>
+    <OutputType>Package</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <CabinetCreationThreadCount>1</CabinetCreationThreadCount>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Non-elevated Windows runners cannot activate ICE custom actions. -->
+    <SuppressValidation>true</SuppressValidation>
+    <DefineConstants>
+      $(DefineConstants);
+      ProductVersion=$(ProductVersion);
+      SemanticVersion=$(SemanticVersion);
+      ProductCode=$(ProductCode);
+      IconPath=$(IconPath)
+    </DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Package.wxs" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(GeneratedPayloadSource)' != ''">
+    <Compile Include="$(GeneratedPayloadSource)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(PayloadDirectory)' != ''">
+    <BindPath Include="$(PayloadDirectory)" BindName="Payload" />
+  </ItemGroup>
+</Project>

@@ -340,9 +340,44 @@ Peggy resolves standalone WorkIQ in this order:
 
 ### Install from a GitHub Release
 
-Download `install.ps1` from the
-[latest GitHub Release](https://github.com/didiergbenou-ms/peggy/releases/latest),
-then run:
+The
+[latest GitHub Release](https://github.com/didiergbenou-ms/peggy/releases/latest)
+offers three current-user installation paths:
+
+1. **`peggy-win-x64-setup.exe` (recommended)** checks for PowerShell 7,
+   Node.js 18 with npm, and GitHub Copilot CLI 1.0.81 or later, then installs
+   the embedded MSI. It never installs prerequisites or credentials silently.
+   If a check fails, install the named prerequisite or use `install.ps1
+   -InstallPrerequisites` explicitly.
+2. **`peggy-win-x64.msi`** installs Peggy directly when prerequisites are
+   already available.
+3. **`install.ps1`** retains the existing checksum-verified ZIP path, optional
+   WinGet prerequisite installation, and optional speech-model download.
+
+The bootstrapper and MSI install x64 Peggy per user at
+`%LOCALAPPDATA%\Programs\Peggy`, register it in Installed Apps, and create the
+Peggy Start menu shortcut. WorkIQ installation, EULA acceptance, and Microsoft
+365 sign-in remain explicit first-run actions. The MSI and bootstrapper do not
+download the optional speech models; run the packaged
+`scripts\Install-SpeechModels.ps1` if voice is wanted.
+
+Interactive installation:
+
+```powershell
+.\peggy-win-x64-setup.exe
+# Or:
+msiexec.exe /i .\peggy-win-x64.msi
+```
+
+Unattended installation:
+
+```powershell
+.\peggy-win-x64-setup.exe /quiet /norestart
+# Or:
+msiexec.exe /i .\peggy-win-x64.msi /qn /norestart
+```
+
+For the script path, download `install.ps1`, then run:
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\install.ps1 `
@@ -366,7 +401,7 @@ The installer:
 Add `-SkipSpeechModels` to install without the local voice models, or
 `-NoLaunch` to install without starting Peggy. The former
 `-InstallSpeechModels` switch remains accepted for compatibility. Use
-`-Version v0.1.8` to install a specific release.
+`-Version <release-tag>` to install a specific published release.
 
 This repository is currently private. Authenticate GitHub CLI with repository
 access (`gh auth login`) or set `GH_TOKEN` before running the installer. If the
@@ -383,7 +418,22 @@ The package and checksum can also be downloaded manually:
 
 ### Uninstall
 
-Exit Peggy, then run the uninstaller from its installation directory:
+Use **Installed Apps**, or use the same package type unattended:
+
+```powershell
+.\peggy-win-x64-setup.exe /uninstall /quiet /norestart
+# Direct MSI installation:
+msiexec.exe /x .\peggy-win-x64.msi /qn /norestart
+```
+
+Normal MSI/bootstrapper uninstall removes application files, the Start menu
+shortcut, ARP registration, and the Peggy startup Run entry only when it points
+to this canonical installation. It preserves `%LOCALAPPDATA%\Peggy\state.dat`
+and `%LOCALAPPDATA%\Peggy\models`. It never removes shared PowerShell, Node.js,
+GitHub Copilot CLI, or WorkIQ installations.
+
+For the script-installed path, exit Peggy and run the uninstaller from its
+installation directory:
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File `
@@ -400,6 +450,10 @@ temporary runtime data and synchronized account preference too, add
 powershell.exe -ExecutionPolicy Bypass -File `
     "$env:LOCALAPPDATA\Programs\Peggy\uninstall.ps1" -PurgeData
 ```
+
+After an MSI/bootstrapper uninstall, download the standalone `uninstall.ps1`
+release asset and run `.\uninstall.ps1 -PurgeData` to perform the same full data
+purge. Do not purge data by deleting broad LocalAppData directories.
 
 Use `-WhatIf` to preview the cleanup. Shared prerequisites such as PowerShell 7,
 Node.js, GitHub Copilot CLI, and WorkIQ are not removed. An uninstaller run from
@@ -729,16 +783,56 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The release workflow runs the regression suite and publishes:
+The release workflow runs the regression suite, builds with pinned WiX Toolset
+6.0.2 packages, performs MSI database and administrative-image validation, and
+publishes:
 
 - `peggy-win-x64.zip`, a self-contained package for Windows x64.
 - `peggy-win-x64.sha256`, the package checksum used by `install.ps1`.
+- `peggy-win-x64.msi` and `peggy-win-x64.msi.sha256`, the per-user MSI and its
+  checksum.
+- `peggy-win-x64-setup.exe` and `peggy-win-x64-setup.exe.sha256`, the WiX Burn
+  prerequisite-checking bootstrapper and its checksum.
 - `install.ps1`, the current-user bootstrap installer.
 - `uninstall.ps1`, the current-user uninstaller.
 
-Release packages are checksum-verified but not Authenticode-signed. Windows
-SmartScreen can therefore show an unknown-publisher warning until a code-signing
-certificate is added to the release pipeline.
+Build all Windows artifacts locally with:
+
+```powershell
+$version = '<semver>'
+.\scripts\Build-WindowsRelease.ps1 -Version $version
+.\scripts\Test-PeggyWindowsInstaller.ps1 -Version $version
+```
+
+MSI uses three numeric version fields. To keep upgrade ordering correct, Peggy
+maps stable `major.minor.patch` to `major.minor.(patch*100+99)`. Prereleases use
+ordered slots: `alpha.1` through `alpha.29`, `beta.1` through `beta.30`, and
+`rc.1` through `rc.39`. Major and minor must be at most 255 and patch at most
+654. The semantic release version remains in `version.txt`, assembly metadata,
+release notes, and artifact context. Unsupported prerelease forms fail the
+build rather than producing an unsafe upgrade.
+
+WiX ICE custom actions can be blocked by policy in non-elevated build
+environments (the local validation attempt returned `WIX1105`), so the build
+suppresses that unavailable pass.
+`Test-PeggyWindowsInstaller.ps1` instead inspects the MSI database, verifies the
+stable UpgradeCode and upgrade sequence, compares every File-table entry,
+creates a disposable `msiexec /a` administrative image, hashes every extracted
+payload file, and extracts the Burn container with the pinned WiX command.
+
+The MSI relies on Windows Installer Restart Manager for files in use, so only
+processes holding this installation's files are asked to stop. A single checked,
+current-user deferred custom action is used on a real uninstall (not a major
+upgrade) to remove the startup Run value only when it resolves exactly to the
+canonical Peggy executable. A paired rollback action restores that exact value
+if MSI rolls the uninstall back. Both validate the path, preserve mismatched
+values, return errors to MSI, and make no elevated or broad filesystem changes.
+
+Release packages are currently checksum-verified but not Authenticode-signed.
+Windows SmartScreen can therefore show an unknown-publisher warning. The
+workflow has explicit signing boundaries: sign the MSI before building the
+bundle, sign the Burn engine/bundle using WiX's detach/reattach procedure, and
+only then generate checksums. No certificate or signing secret is assumed.
 
 ## Testing
 

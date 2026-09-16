@@ -1,0 +1,112 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Peggy"
+      Manufacturer="Didier Gbenou"
+      Version="$(var.ProductVersion)"
+      ProductCode="$(var.ProductCode)"
+      UpgradeCode="{D661EFB2-155E-51B2-9951-C35E621D9E11}"
+      Scope="perUser"
+      InstallerVersion="500"
+      Language="1033"
+      Compressed="yes">
+    <SummaryInformation
+        Description="Peggy local-first Microsoft 365 desktop assistant"
+        Manufacturer="Didier Gbenou" />
+
+    <MajorUpgrade
+        DowngradeErrorMessage="A newer version of Peggy is already installed. Uninstall it before installing this older version."
+        Schedule="afterInstallExecute"
+        IgnoreRemoveFailure="no" />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <Icon Id="Peggy.exe" SourceFile="$(var.IconPath)" />
+
+    <Property
+        Id="ARPCOMMENTS"
+        Value="Peggy $(var.SemanticVersion), a local-first Microsoft 365 desktop assistant" />
+    <Property Id="ARPCONTACT" Value="Peggy maintainers" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/didiergbenou-ms/peggy#troubleshooting" />
+    <Property Id="ARPPRODUCTICON" Value="Peggy.exe" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/didiergbenou-ms/peggy" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+    <Property Id="PEGGY_RUN_VALUE">
+      <RegistrySearch
+          Id="PeggyStartupRegistrySearch"
+          Root="HKCU"
+          Key="Software\Microsoft\Windows\CurrentVersion\Run"
+          Name="Peggy"
+          Type="raw" />
+    </Property>
+    <SetProperty
+        Id="ARPINSTALLLOCATION"
+        Value="[INSTALLFOLDER]"
+        After="CostFinalize"
+        Sequence="execute" />
+    <SetProperty
+        Id="EXPECTED_PEGGY_RUN_VALUE"
+        Value="&quot;[INSTALLFOLDER]peggy-tray.exe&quot;"
+        After="CostFinalize"
+        Sequence="execute" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="LocalProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Peggy" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Component
+        Id="PeggyStartMenuShortcut"
+        Directory="ProgramMenuFolder"
+        Guid="{624E9FE0-77E5-5983-B628-67306B05C44B}">
+      <Shortcut
+          Id="PeggyStartMenuShortcutLink"
+          Name="Peggy"
+          Description="Peggy Microsoft 365 assistant"
+          Target="[INSTALLFOLDER]peggy-tray.exe"
+          Icon="Peggy.exe"
+          IconIndex="0"
+          WorkingDirectory="INSTALLFOLDER" />
+      <RegistryValue
+          Root="HKCU"
+          Key="Software\Peggy\Installer"
+          Name="StartMenuShortcut"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+    </Component>
+
+    <CustomAction
+        Id="RemoveOwnedPeggyStartupEntry"
+        Directory="SystemFolder"
+        ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]scripts\Remove-PeggyStartupEntry.ps1&quot; -InstalledExecutable &quot;[INSTALLFOLDER]peggy-tray.exe&quot;"
+        Execute="deferred"
+        Impersonate="yes"
+        Return="check" />
+    <CustomAction
+        Id="RollbackOwnedPeggyStartupEntry"
+        Directory="SystemFolder"
+        ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]scripts\Remove-PeggyStartupEntry.ps1&quot; -InstalledExecutable &quot;[INSTALLFOLDER]peggy-tray.exe&quot; -Restore"
+        Execute="rollback"
+        Impersonate="yes"
+        Return="check" />
+
+    <InstallExecuteSequence>
+      <Custom
+          Action="RollbackOwnedPeggyStartupEntry"
+          Before="RemoveOwnedPeggyStartupEntry"
+          Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE AND PEGGY_RUN_VALUE = EXPECTED_PEGGY_RUN_VALUE" />
+      <Custom
+          Action="RemoveOwnedPeggyStartupEntry"
+          Before="RemoveFiles"
+          Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE AND PEGGY_RUN_VALUE = EXPECTED_PEGGY_RUN_VALUE" />
+    </InstallExecuteSequence>
+
+    <Feature Id="MainFeature" Title="Peggy" Level="1">
+      <ComponentGroupRef Id="PayloadComponents" />
+      <ComponentRef Id="PeggyStartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

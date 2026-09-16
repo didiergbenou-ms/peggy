@@ -1,0 +1,24 @@
+<Project Sdk="WixToolset.Sdk/6.0.2">
+  <PropertyGroup>
+    <OutputName>peggy-win-x64-setup</OutputName>
+    <OutputType>Bundle</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DefineConstants>
+      $(DefineConstants);
+      BundleVersion=$(BundleVersion);
+      SemanticVersion=$(SemanticVersion);
+      MsiPath=$(MsiPath);
+      PrerequisiteCheckerPath=$(PrerequisiteCheckerPath);
+      IconPath=$(IconPath)
+    </DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Bundle.wxs" />
+    <PackageReference
+        Include="WixToolset.BootstrapperApplications.wixext"
+        Version="6.0.2" />
+  </ItemGroup>
+</Project>
