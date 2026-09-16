@@ -90,7 +90,7 @@
         ExeCommand="--msi"
         Execute="immediate"
         Impersonate="yes"
-        Return="check" />
+        Return="ignore" />
     <CustomAction
         Id="RemovePeggyUserData"
         BinaryRef="PeggyUninstallCleanup"

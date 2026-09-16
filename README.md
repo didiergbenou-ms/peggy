@@ -826,7 +826,8 @@ if MSI rolls the uninstall back. After `InstallFinalize` successfully commits a
 true uninstall, a separate current-user action removes Peggy's user-data root
 and synchronized account preference. The cleanup action does not run during
 upgrades or failed uninstalls and does not remove shared prerequisites or
-broader LocalAppData.
+broader LocalAppData. Any post-commit cleanup error is recorded by Windows
+Installer without reversing the already-completed application uninstall.
 
 Release packages are currently checksum-verified but not Authenticode-signed.
 Windows SmartScreen can therefore show an unknown-publisher warning. The

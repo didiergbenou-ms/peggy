@@ -378,11 +378,12 @@ try {
     })
     Assert-Installer `
         ($userDataAction.Count -eq 1 -and
+            (([int]$userDataAction[0][1] -band 64) -ne 0) -and
             (([int]$userDataAction[0][1] -band 512) -eq 0) -and
             (([int]$userDataAction[0][1] -band 1024) -eq 0) -and
             (([int]$userDataAction[0][1] -band 2048) -eq 0) -and
             $userDataAction[0][3] -eq '--msi') `
-        'The post-commit current-user cleanup action is missing from the MSI.'
+        'The non-fatal post-commit current-user cleanup action is missing from the MSI.'
     $binaries = @(Get-MsiRows `
         -Database $database `
         -Query 'SELECT `Name` FROM `Binary`')
