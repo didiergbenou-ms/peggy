@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -2767,48 +2766,28 @@ public partial class App : Application
                     configured.Trim().Trim('"')));
     }
 
-    private static Icon CreateIcon()
+    internal static Icon CreateIcon()
     {
-        using var bitmap = new Bitmap(32, 32);
-        using (var graphics = Graphics.FromImage(bitmap))
+        var iconPath = Path.Combine(
+            AppContext.BaseDirectory,
+            "Assets",
+            "Peggy.ico");
+        if (File.Exists(iconPath))
         {
-            graphics.SmoothingMode =
-                System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            graphics.Clear(Color.Transparent);
-            using var body = new SolidBrush(
-                Color.FromArgb(0x8a, 0x5a, 0x3b));
-            using var belly = new SolidBrush(
-                Color.FromArgb(0xe2, 0x69, 0x4a));
-            using var white = new SolidBrush(Color.White);
-            using var beak = new SolidBrush(
-                Color.FromArgb(0xf6, 0xa9, 0x3a));
-            using var eye = new SolidBrush(
-                Color.FromArgb(0x2b, 0x2b, 0x2b));
-            graphics.FillEllipse(body, 5, 3, 22, 26);
-            graphics.FillEllipse(belly, 9, 14, 13, 13);
-            graphics.FillEllipse(white, 12, 8, 7, 7);
-            graphics.FillEllipse(eye, 14, 10, 3, 3);
-            graphics.FillPolygon(
-                beak,
-                [
-                    new System.Drawing.Point(21, 12),
-                    new System.Drawing.Point(28, 15),
-                    new System.Drawing.Point(21, 18)
-                ]);
-        }
-        var handle = bitmap.GetHicon();
-        try
-        {
-            using var icon = Icon.FromHandle(handle);
+            using var icon = new Icon(iconPath, 32, 32);
             return (Icon)icon.Clone();
         }
-        finally
-        {
-            _ = DestroyIcon(handle);
-        }
-    }
 
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DestroyIcon(IntPtr handle);
+        var executable = Environment.ProcessPath;
+        if (!string.IsNullOrWhiteSpace(executable))
+        {
+            using var icon = Icon.ExtractAssociatedIcon(executable);
+            if (icon is not null)
+            {
+                return (Icon)icon.Clone();
+            }
+        }
+
+        return (Icon)SystemIcons.Application.Clone();
+    }
 }
