@@ -3971,7 +3971,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             : results.Take(maximumItems.Value).ToList();
     }
 
-    private static string? NormalizeGraphUrl(string? url)
+    internal static string? NormalizeGraphUrl(string? url)
     {
         if (string.IsNullOrWhiteSpace(url))
         {
