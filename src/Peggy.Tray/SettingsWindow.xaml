@@ -150,7 +150,7 @@
         <GroupBox Header="Outlook monitoring" Margin="0,0,0,16">
           <StackPanel>
             <TextBlock
-                Text="Inbox messages are always monitored. Inbox/Cases/Active starts selected for compatibility, but can be removed like any other folder. Selecting a folder includes all its descendants."
+                Text="Inbox messages are always monitored. Additional folders are optional, and selecting one includes all its descendants."
                 Style="{StaticResource SettingsHintStyle}"
                 Margin="0,0,0,10"/>
             <CheckBox x:Name="AllInboxFoldersCheck"
@@ -201,6 +201,7 @@
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <CheckBox x:Name="SpeechEnabledCheck"
                       Grid.ColumnSpan="4"
@@ -215,13 +216,30 @@
                      Grid.Row="1" Grid.Column="1"
                      Grid.ColumnSpan="3"
                      AutomationProperties.Name="Speech model directory"
+                     TextChanged="SpeechModelsText_Changed"
                      Margin="0,0,0,9"/>
-            <TextBlock Grid.Row="2" Text="Voice"
+            <Grid Grid.Row="2" Grid.ColumnSpan="4"
+                  Margin="0,0,0,10">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock x:Name="SpeechModelsStatus"
+                         Style="{StaticResource SettingsHintStyle}"
+                         VerticalAlignment="Center"
+                         Margin="0,0,12,0"/>
+              <Button x:Name="InstallSpeechModelsButton"
+                      Grid.Column="1"
+                      Content="Install voice models"
+                      Style="{StaticResource PeggySecondaryButtonStyle}"
+                      Click="InstallSpeechModels_Click"/>
+            </Grid>
+            <TextBlock Grid.Row="3" Text="Voice"
                        VerticalAlignment="Center"
                        Style="{StaticResource SettingsLabelStyle}"
                        Margin="0,0,10,9"/>
             <ComboBox x:Name="SpeechVoice"
-                      Grid.Row="2" Grid.Column="1"
+                      Grid.Row="3" Grid.Column="1"
                       AutomationProperties.Name="Voice"
                       Margin="0,0,14,9">
               <ComboBoxItem Content="Bella (warm)" Tag="0"/>
@@ -229,13 +247,13 @@
               <ComboBoxItem Content="Rosie (clear)" Tag="4"/>
               <ComboBoxItem Content="Kiki (lively)" Tag="6"/>
             </ComboBox>
-            <TextBlock Grid.Row="2" Grid.Column="2"
+            <TextBlock Grid.Row="3" Grid.Column="2"
                        Text="CPU threads"
                        VerticalAlignment="Center"
                        Style="{StaticResource SettingsLabelStyle}"
                        Margin="0,0,10,9"/>
             <ComboBox x:Name="SpeechThreads"
-                      Grid.Row="2" Grid.Column="3"
+                      Grid.Row="3" Grid.Column="3"
                       AutomationProperties.Name="CPU threads"
                       Margin="0,0,0,9">
               <ComboBoxItem Content="1"/>
@@ -243,12 +261,12 @@
               <ComboBoxItem Content="4"/>
               <ComboBoxItem Content="8"/>
             </ComboBox>
-            <TextBlock Grid.Row="3" Text="Mic gain"
+            <TextBlock Grid.Row="4" Text="Mic gain"
                        VerticalAlignment="Center"
                        Style="{StaticResource SettingsLabelStyle}"
                        Margin="0,0,10,9"/>
             <ComboBox x:Name="SpeechInputGain"
-                      Grid.Row="3" Grid.Column="1"
+                      Grid.Row="4" Grid.Column="1"
                       AutomationProperties.Name="Microphone gain"
                       Margin="0,0,14,9">
               <ComboBoxItem Content="4x" Tag="4"/>
@@ -256,7 +274,7 @@
               <ComboBoxItem Content="12x" Tag="12"/>
               <ComboBoxItem Content="16x" Tag="16"/>
             </ComboBox>
-            <Border Grid.Row="4" Grid.ColumnSpan="4"
+            <Border Grid.Row="5" Grid.ColumnSpan="4"
                     Background="{StaticResource PeggySoftSurfaceBrush}"
                     CornerRadius="8" Padding="10,8">
               <TextBlock

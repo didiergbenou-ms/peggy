@@ -1,5 +1,6 @@
 using System.IO;
 using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using Peggy.Core;
 
@@ -564,7 +565,7 @@ internal static class CoreBehaviorSmokeTests
             normalizedSettings.CopilotReasoningEffort.Length == 0 &&
             normalizedSettings.CopilotContextTier ==
                 PeggyDefaults.CopilotContextTierDefault &&
-            normalizedSettings.IncludeActiveCasesFolder &&
+            !normalizedSettings.IncludeActiveCasesFolder &&
             normalizedSettings.SpeechThreads == 8 &&
             normalizedSettings.SpeechVoiceId == 0 &&
             normalizedSettings.SpeechSpeed == 1.15F &&
@@ -579,6 +580,21 @@ internal static class CoreBehaviorSmokeTests
             normalizedSettings.MonitoringSleepMinute ==
                 PeggyDefaults.DefaultSleepMinute,
             "State normalization left nullable collections unset.");
+        var legacyActiveCases = EncryptedStateStore.DeserializeState(
+            Encoding.UTF8.GetBytes(
+                """{"version":1,"settings":{}}"""),
+            now);
+        var explicitInboxOnly = EncryptedStateStore.DeserializeState(
+            Encoding.UTF8.GetBytes(
+                """
+                {"version":1,"settings":{"includeActiveCasesFolder":false}}
+                """),
+            now);
+        TestAssert.True(
+            legacyActiveCases.Settings.IncludeActiveCasesFolder &&
+            !explicitInboxOnly.Settings.IncludeActiveCasesFolder,
+            "Active Cases migration did not distinguish a missing legacy " +
+            "setting from an explicit Inbox-only choice.");
         normalizedSettings.SpeechThreads = 1;
         EncryptedStateStore.NormalizeAndPrune(state, now);
         TestAssert.Equal(
@@ -600,6 +616,36 @@ internal static class CoreBehaviorSmokeTests
             normalizedSettings.CopilotContextTier ==
                 PeggyDefaults.CopilotContextTierDefault,
             "Model settings were not normalized safely.");
+        var previousSpeechModels = Environment.GetEnvironmentVariable(
+            "PEGGY_SPEECH_MODELS");
+        try
+        {
+            var overrideDirectory = Path.Combine(
+                directory,
+                "overridden-speech-models");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_SPEECH_MODELS",
+                overrideDirectory);
+            TestAssert.Equal(
+                Path.GetFullPath(overrideDirectory),
+                PeggyDefaults.ResolveSpeechModelDirectory(
+                    Path.Combine(directory, "ignored-models")),
+                "The effective speech model override was not resolved.");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_SPEECH_MODELS",
+                null);
+            TestAssert.True(
+                !PeggyDefaults.TryResolveSpeechModelDirectory(
+                    "\"",
+                    out _),
+                "An invalid speech model path was accepted.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_SPEECH_MODELS",
+                previousSpeechModels);
+        }
 
         normalizedSettings.IncludeActiveCasesFolder = false;
         normalizedSettings.AdditionalOutlookFolders =
@@ -1244,6 +1290,7 @@ internal static class CoreBehaviorSmokeTests
                 executablePath: executable,
                 settings: new PeggySettings
                 {
+                    IncludeActiveCasesFolder = true,
                     TeamsScope = TeamsMonitoringScope.Off
                 });
             var cursor = new MonitoringCursorState
@@ -1364,7 +1411,6 @@ internal static class CoreBehaviorSmokeTests
                 executablePath: executable,
                 settings: new PeggySettings
                 {
-                    IncludeActiveCasesFolder = false,
                     TeamsScope = TeamsMonitoringScope.Off
                 });
             var roots = await provider.ListOutlookChildFoldersAsync(null);
@@ -1394,8 +1440,7 @@ internal static class CoreBehaviorSmokeTests
                 monitoringRequests.All(request => !request.Contains(
                     "/me/mailFolders/cases/childFolders",
                     StringComparison.Ordinal)),
-                "Deselecting Inbox/Cases/Active did not remove its subtree " +
-                "from Outlook monitoring.");
+                "Default Inbox-only monitoring included an Inbox subfolder.");
 
             File.WriteAllText(logPath, string.Empty);
             var allFoldersProvider = new WorkIqMessageProvider(

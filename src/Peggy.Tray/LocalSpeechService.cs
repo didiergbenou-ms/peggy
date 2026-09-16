@@ -329,18 +329,8 @@ public sealed class LocalSpeechService : ISpeechProvider
     }
 
     private string ResolveModelRoot()
-    {
-        var environment = Environment.GetEnvironmentVariable(
-            "PEGGY_SPEECH_MODELS");
-        var configured = !string.IsNullOrWhiteSpace(environment)
-            ? environment
-            : _settings.SpeechModelDirectory;
-        return string.IsNullOrWhiteSpace(configured)
-            ? PeggyDefaults.SpeechModelDirectory
-            : Path.GetFullPath(
-                Environment.ExpandEnvironmentVariables(
-                    configured.Trim().Trim('"')));
-    }
+        => PeggyDefaults.ResolveSpeechModelDirectory(
+            _settings.SpeechModelDirectory);
 
     private static string ResolveSpeechHost()
     {

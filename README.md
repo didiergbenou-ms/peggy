@@ -119,8 +119,9 @@ Peggy monitors:
 
 - Inbox.
 - Folder roots selected in Settings and every descendant of those folders.
-- `Inbox\Cases\Active` by default for backward compatibility; it can be
-  deselected.
+
+Fresh installs select no additional folder roots. Existing saved selections
+remain unchanged during upgrades.
 
 Outlook cursors use message activity boundaries and delta links where
 available. Source references are verified before they are attached to alerts.
@@ -446,21 +447,28 @@ dotnet run --project .\src\Peggy.Tray\Peggy.Tray.csproj -c Release
 The tray project automatically builds and packages the MCP server and speech
 host beside the tray executable.
 
-#### 4. Connect Microsoft 365
+#### 4. Complete Peggy setup
 
-On first launch, Peggy opens **Connect Microsoft 365**:
+On first launch, Peggy opens **Peggy setup**:
 
 1. Install standalone WorkIQ if it is not already available.
-2. Review and accept the WorkIQ EULA. Peggy records the exact accepted WorkIQ
+2. Enter the Microsoft 365 email address Peggy should use.
+3. Review and accept the WorkIQ EULA. Peggy records the exact accepted WorkIQ
    build in its encrypted state.
-3. Enter the Microsoft 365 email address Peggy should use.
-4. Select **Sign in** and complete any Microsoft sign-in or permission-consent
+4. Optionally select **Install voice models** to download and SHA-256 verify
+   about 803 MiB of local English speech models.
+5. Select **Sign in** and complete any Microsoft sign-in or permission-consent
    prompt WorkIQ opens.
-5. Peggy reads `/me`, verifies the selected identity, and pins the canonical
+6. Peggy reads `/me`, verifies the selected identity, and pins the canonical
    account in DPAPI-encrypted state.
 
 If the tenant has not granted the required WorkIQ permissions, an administrator
 must complete tenant consent before verification can succeed.
+
+Voice setup can be skipped. Open **Settings → Local voice (English only)** and
+select **Install voice models** later; the same verified downloader is used.
+Fresh installs monitor Inbox only. Additional Inbox folders, including
+`Inbox/Cases/Active`, are opt-in through Settings.
 
 Use **Microsoft 365 account** from the tray or **Change or reconnect** in
 Settings to refresh authentication or enter another account. After Peggy
@@ -560,9 +568,10 @@ not leave a partially applied identity, model, or source scope.
 | Pinned Copilot model | Loaded live from the authenticated GitHub Copilot CLI; **Refresh** uses a new catalog connection so newly available models appear without restarting Peggy; changing it starts a fresh Copilot session |
 | Reasoning effort | Shows only the effort levels supported by the selected model; **Model default** lets Copilot choose |
 | Context tier | Offers **Default** for every model and **Long context** only when the live catalog reports support |
-| Outlook folders | Loads the live Inbox hierarchy lazily; selected folder roots include all descendants, saved unavailable paths remain visible, and `Inbox/Cases/Active` is selected by default but configurable |
+| Outlook folders | Monitors Inbox only by default; loads its hierarchy lazily so optional folder roots and all their descendants can be selected, while saved unavailable paths remain visible |
 | Enable local speech | Enables or disables the isolated English speech host |
 | Speech model directory | Defaults to `%LOCALAPPDATA%\Peggy\models` |
+| Install voice models | Downloads or repairs the SHA-256-verified English model bundle; about 803 MiB |
 | Voice | Bella, Luna, Rosie, or Kiki |
 | CPU threads | 1, 2, 4, or 8 |
 | Microphone gain | 4x, 8x, 12x, or 16x |
@@ -969,14 +978,14 @@ team.
 
 | Symptom | Resolution |
 | --- | --- |
-| Connect Microsoft 365 appears | Install standalone WorkIQ if needed, review the EULA, then sign in and grant consent |
+| Peggy setup appears | Install standalone WorkIQ if needed, optionally install voice models, review the EULA, then sign in and grant consent |
 | Authenticated account does not match | Open **Microsoft 365 account** and reconnect the current identity or enter and verify another account |
 | WorkIQ not found | Select **Install WorkIQ with npm**, run `npm install -g @microsoft/workiq`, or set `PEGGY_WORKIQ_PATH` |
 | WorkIQ terms error | Open Settings, select **Change or reconnect**, then review and accept the current terms |
 | WorkIQ consent fails | Ask a Microsoft Entra administrator to grant the Work IQ application permissions required by your tenant |
 | Monitoring classification repeatedly fails after installation | Run `copilot --version` and confirm version 1.0.81 or later. Run `copilot update stable`, restart Peggy, or rerun `install.ps1 -InstallPrerequisites` |
 | Monitoring interrupted | Open the Alert Center and select **Troubleshoot** to inspect the original failure and replay retrieval without changing state |
-| Speech models missing | Run `.\scripts\Install-SpeechModels.ps1` |
+| Speech models missing | Open Settings and select **Install voice models**, or run `.\scripts\Install-SpeechModels.ps1` |
 | Incomplete model directory | Rerun the installer with `-Force` |
 | Speech host missing | Rebuild/publish `Peggy.Tray` or set `PEGGY_SPEECH_HOST_PATH` |
 | Voice input is too quiet | Increase **Mic gain** in Settings |

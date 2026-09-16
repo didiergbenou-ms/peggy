@@ -37,6 +37,8 @@ public partial class SettingsWindow : Window
     private readonly Func<
         CancellationToken,
         Task<IReadOnlyList<CopilotModelOption>>>? _loadCopilotModels;
+    private readonly SpeechModelSetupService _speechModels;
+    private readonly bool _speechModelDirectoryOverridden;
     private readonly HashSet<string> _loadedTeamIds =
         new(StringComparer.Ordinal);
     private readonly HashSet<string> _loadingTeamIds =
@@ -56,6 +58,7 @@ public partial class SettingsWindow : Window
     private bool _modelCatalogLoaded;
     private bool _loadingModels;
     private bool _loadingOutlookRoot;
+    private bool _installingSpeechModels;
     private bool _outlookRootLoaded;
     private bool _updatingModelControls;
     private bool _updatingOutlookFolderControls;
@@ -73,6 +76,9 @@ public partial class SettingsWindow : Window
         InitializeComponent();
         _provider = provider;
         _loadCopilotModels = loadCopilotModels;
+        _speechModels = new SpeechModelSetupService();
+        _speechModelDirectoryOverridden = !string.IsNullOrWhiteSpace(
+            Environment.GetEnvironmentVariable("PEGGY_SPEECH_MODELS"));
         _pinnedAccount = pinnedAccount?.Trim() ?? string.Empty;
         AccountStatus.Text = _pinnedAccount.Length == 0
             ? "Microsoft 365 is not connected."
@@ -174,10 +180,20 @@ public partial class SettingsWindow : Window
         StartupCheck.IsChecked = settings.StartAtSignIn;
         PausedCheck.IsChecked = settings.MonitoringPaused;
         SpeechEnabledCheck.IsChecked = settings.SpeechEnabled;
-        SpeechModelsText.Text = string.IsNullOrWhiteSpace(
-            settings.SpeechModelDirectory)
-            ? PeggyDefaults.SpeechModelDirectory
-            : settings.SpeechModelDirectory;
+        var environmentSpeechModels = Environment.GetEnvironmentVariable(
+            "PEGGY_SPEECH_MODELS");
+        SpeechModelsText.Text = _speechModelDirectoryOverridden
+            ? environmentSpeechModels?.Trim() ?? string.Empty
+            : string.IsNullOrWhiteSpace(settings.SpeechModelDirectory)
+                ? PeggyDefaults.SpeechModelDirectory
+                : settings.SpeechModelDirectory;
+        if (_speechModelDirectoryOverridden)
+        {
+            SpeechModelsText.IsReadOnly = true;
+            SpeechModelsText.ToolTip =
+                "Controlled by the PEGGY_SPEECH_MODELS environment variable.";
+        }
+        RefreshSpeechModelsStatus();
         SelectComboItem(SpeechThreads, settings.SpeechThreads.ToString());
         SelectComboItem(SpeechVoice, settings.SpeechVoiceId.ToString());
         SelectComboItem(
@@ -219,6 +235,101 @@ public partial class SettingsWindow : Window
     public PeggySettings? SavedSettings { get; private set; }
 
     public bool AccountConnectionRequested { get; private set; }
+
+    private async void InstallSpeechModels_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_installingSpeechModels)
+        {
+            return;
+        }
+
+        _installingSpeechModels = true;
+        SpeechModelsText.IsEnabled = false;
+        InstallSpeechModelsButton.IsEnabled = false;
+        InstallSpeechModelsButton.Content = "Installing...";
+        SpeechModelsStatus.Text =
+            $"Downloading and verifying {SpeechModelSetupService
+                .DownloadSizeDescription} of English voice models...";
+        if (!TryGetSpeechModelDirectory(out var directory))
+        {
+            _installingSpeechModels = false;
+            RefreshSpeechModelsStatus();
+            return;
+        }
+        var repair = _speechModels.AreModelsInstalled(directory);
+        try
+        {
+            await _speechModels.InstallAsync(
+                directory,
+                force: repair,
+                ct: _loadCancellation.Token);
+            SpeechEnabledCheck.IsChecked = true;
+            RefreshSpeechModelsStatus();
+        }
+        catch (OperationCanceledException) when (
+            _loadCancellation.IsCancellationRequested)
+        {
+        }
+        catch (SpeechModelSetupException ex)
+        {
+            SpeechModelsStatus.Text = ex.Message;
+            MessageBox.Show(
+                this,
+                ex.Message,
+                "Peggy voice models",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            _installingSpeechModels = false;
+            if (!_closed)
+            {
+                SpeechModelsText.IsEnabled = true;
+                RefreshSpeechModelsStatus();
+            }
+        }
+    }
+
+    private void SpeechModelsText_Changed(
+        object sender,
+        TextChangedEventArgs e)
+    {
+        if (SpeechModelsStatus is not null &&
+            InstallSpeechModelsButton is not null &&
+            !_installingSpeechModels)
+        {
+            RefreshSpeechModelsStatus();
+        }
+    }
+
+    private bool TryGetSpeechModelDirectory(out string directory)
+        => PeggyDefaults.TryResolveSpeechModelDirectory(
+            SpeechModelsText.Text,
+            out directory);
+
+    private void RefreshSpeechModelsStatus()
+    {
+        if (!TryGetSpeechModelDirectory(out var directory))
+        {
+            SpeechModelsStatus.Text =
+                "Enter a valid speech model directory.";
+            InstallSpeechModelsButton.Content = "Install voice models";
+            InstallSpeechModelsButton.IsEnabled = false;
+            return;
+        }
+        var installed = _speechModels.AreModelsInstalled(directory);
+        SpeechModelsStatus.Text = installed
+            ? "English voice models are ready at this location."
+            : $"Voice models are not installed here. Installing downloads " +
+              $"{SpeechModelSetupService.DownloadSizeDescription}.";
+        InstallSpeechModelsButton.Content = installed
+            ? "Repair voice models"
+            : "Install voice models";
+        InstallSpeechModelsButton.IsEnabled = !_installingSpeechModels;
+    }
 
     private async void RefreshModels_Click(
         object sender,
@@ -1632,6 +1743,18 @@ public partial class SettingsWindow : Window
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
+        if (_installingSpeechModels)
+        {
+            MessageBox.Show(
+                this,
+                "Wait for voice model installation to finish or close Settings " +
+                "to cancel it.",
+                "Assistant settings",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
         var model = GetSelectedModel().Trim();
         if (model.Length == 0)
         {

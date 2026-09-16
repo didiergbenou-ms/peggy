@@ -1256,6 +1256,8 @@ public partial class App : Application
 
         var setup = new WorkIqSetupService();
         var account = _state.State.PinnedAccount;
+        var completingInitialSetup =
+            string.IsNullOrWhiteSpace(_state.State.PinnedAccount);
         if (!string.IsNullOrWhiteSpace(account) &&
             setup.TryGetExecutablePath(out _))
         {
@@ -1313,6 +1315,12 @@ public partial class App : Application
         await ApplyAuthenticatedWorkIqIdentityAsync(
             connectedIdentity,
             refreshRuntime: false);
+        if (completingInitialSetup)
+        {
+            _state.State.Settings.SpeechEnabled =
+                window.RevalidateVoiceModels();
+            await _state.SaveAsync(_shutdown.Token);
+        }
         SynchronizeWorkIqAccountPreference(
             connectedIdentity.Account,
             showWarning: true);

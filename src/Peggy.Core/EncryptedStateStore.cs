@@ -76,12 +76,7 @@ public sealed class EncryptedStateStore
 
             try
             {
-                var state = JsonSerializer.Deserialize<PeggyStateDocument>(
-                    plaintext,
-                    JsonOptions)
-                    ?? throw new InvalidDataException("The assistant's encrypted state was empty.");
-                NormalizeAndPrune(state, DateTimeOffset.UtcNow);
-                return state;
+                return DeserializeState(plaintext, DateTimeOffset.UtcNow);
             }
             catch (JsonException ex)
             {
@@ -159,6 +154,7 @@ public sealed class EncryptedStateStore
         {
             state.PinnedMailbox = state.PinnedAccount;
         }
+
         state.PinnedUserPrincipalName ??= string.Empty;
         state.PinnedPrincipalId ??= string.Empty;
         state.WorkIqEulaAcceptedVersion ??= string.Empty;
@@ -307,6 +303,31 @@ public sealed class EncryptedStateStore
         state.Alerts.RemoveAll(alert =>
             alert.Status != AlertStatus.Active &&
             alert.UpdatedUtc < cutoff);
+    }
+
+    internal static PeggyStateDocument DeserializeState(
+        byte[] plaintext,
+        DateTimeOffset nowUtc)
+    {
+        using var document = JsonDocument.Parse(plaintext);
+        var activeCasesSettingExists =
+            document.RootElement.TryGetProperty(
+                "settings",
+                out var settings) &&
+            settings.ValueKind == JsonValueKind.Object &&
+            settings.TryGetProperty("includeActiveCasesFolder", out _);
+        var state = JsonSerializer.Deserialize<PeggyStateDocument>(
+            plaintext,
+            JsonOptions)
+            ?? throw new InvalidDataException(
+                "The assistant's encrypted state was empty.");
+        state.Settings ??= new PeggySettings();
+        if (!activeCasesSettingExists)
+        {
+            state.Settings.IncludeActiveCasesFolder = true;
+        }
+        NormalizeAndPrune(state, nowUtc);
+        return state;
     }
 
     private static string TryNormalizeOutlookFolderPath(string path)
