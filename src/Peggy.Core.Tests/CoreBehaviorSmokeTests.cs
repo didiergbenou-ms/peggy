@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Peggy.Core;
+using Peggy.PrerequisiteCheck;
 using Peggy.UninstallCleanup;
 
 namespace Peggy.Core.Tests;
@@ -17,6 +18,7 @@ internal static class CoreBehaviorSmokeTests
         await TestStateValidationAsync(directory);
         TestMonitoringSchedule();
         TestMonitoringFailureInspection();
+        TestInstallerCopilotOverride(directory);
         TestUninstallUserDataCleanup(directory);
         TestOutlookFolderPaths();
         TestOpaqueIdentifiers();
@@ -223,12 +225,53 @@ internal static class CoreBehaviorSmokeTests
                     EnvironmentVariableTarget.Process),
                 "Uninstall cleanup accepted a directory broader than Peggy.");
         }
+
         finally
         {
             Environment.SetEnvironmentVariable(
                 variable,
                 null,
                 EnvironmentVariableTarget.Process);
+        }
+    }
+
+    private static void TestInstallerCopilotOverride(string directory)
+    {
+        var previous = Environment.GetEnvironmentVariable(
+            "PEGGY_COPILOT_PATH");
+        var copilotPath = Path.Combine(directory, "override-copilot.exe");
+        File.WriteAllText(copilotPath, "test");
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_COPILOT_PATH",
+                $"\"{copilotPath}\"");
+            var valid = CopilotPrerequisite.ResolveCandidates(directory);
+            TestAssert.True(
+                valid.Error is null &&
+                valid.Candidates.SequenceEqual(
+                    [Path.GetFullPath(copilotPath)],
+                    StringComparer.OrdinalIgnoreCase),
+                "The installer did not prioritize Peggy's configured Copilot " +
+                "executable.");
+
+            Environment.SetEnvironmentVariable(
+                "PEGGY_COPILOT_PATH",
+                Path.Combine(directory, "missing-copilot.exe"));
+            var missing = CopilotPrerequisite.ResolveCandidates(directory);
+            TestAssert.True(
+                missing.Candidates.Count == 0 &&
+                missing.Error?.Contains(
+                    "does not identify",
+                    StringComparison.Ordinal) == true,
+                "The installer silently bypassed an invalid configured " +
+                "Copilot executable.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_COPILOT_PATH",
+                previous);
         }
     }
 

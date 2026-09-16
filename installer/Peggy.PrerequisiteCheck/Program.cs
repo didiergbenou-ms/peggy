@@ -36,26 +36,20 @@ internal static partial class Program
         CheckAvailable(failures, ["npm.cmd", "npm.exe", "npm"], "npm");
         var localAppData = Environment.GetFolderPath(
             Environment.SpecialFolder.LocalApplicationData);
-        CheckMinimumVersion(
-            failures,
-            [
-                "copilot.exe",
-                "copilot",
-                Path.Combine(
-                    localAppData,
-                    "Microsoft",
-                    "WinGet",
-                    "Links",
-                    "copilot.exe"),
-                Path.Combine(
-                    localAppData,
-                    "Microsoft",
-                    "WindowsApps",
-                    "copilot.exe")
-            ],
-            ["--version"],
-            new Version(1, 0, 81),
-            "GitHub Copilot CLI 1.0.81");
+        var copilot = CopilotPrerequisite.ResolveCandidates(localAppData);
+        if (copilot.Error is not null)
+        {
+            failures.Add(copilot.Error);
+        }
+        else
+        {
+            CheckMinimumVersion(
+                failures,
+                copilot.Candidates,
+                ["--version"],
+                new Version(1, 0, 81),
+                "GitHub Copilot CLI 1.0.81");
+        }
 
         if (failures.Count == 0)
         {
@@ -87,7 +81,7 @@ internal static partial class Program
 
     private static void CheckAvailable(
         ICollection<string> failures,
-        string[] candidates,
+        IReadOnlyList<string> candidates,
         string displayName)
     {
         if (ResolveCommand(candidates) is null)
@@ -98,7 +92,7 @@ internal static partial class Program
 
     private static void CheckMinimumVersion(
         ICollection<string> failures,
-        string[] candidates,
+        IReadOnlyList<string> candidates,
         string[] arguments,
         Version minimum,
         string displayName)
@@ -201,4 +195,61 @@ internal static partial class Program
 
     [GeneratedRegex(@"\d+(?:\.\d+){1,3}", RegexOptions.CultureInvariant)]
     private static partial Regex VersionRegex();
+}
+
+internal sealed record CopilotCandidateResolution(
+    IReadOnlyList<string> Candidates,
+    string? Error);
+
+internal static class CopilotPrerequisite
+{
+    internal static CopilotCandidateResolution ResolveCandidates(
+        string localAppData)
+    {
+        var configuredPath = Environment.GetEnvironmentVariable(
+            "PEGGY_COPILOT_PATH");
+        if (!string.IsNullOrWhiteSpace(configuredPath))
+        {
+            string expanded;
+            try
+            {
+                expanded = Path.GetFullPath(
+                    Environment.ExpandEnvironmentVariables(
+                        configuredPath.Trim().Trim('"')));
+            }
+            catch (Exception ex) when (
+                ex is ArgumentException or
+                NotSupportedException or
+                PathTooLongException)
+            {
+                return new CopilotCandidateResolution(
+                    [],
+                    $"PEGGY_COPILOT_PATH is invalid: {ex.Message}");
+            }
+
+            return File.Exists(expanded)
+                ? new CopilotCandidateResolution([expanded], null)
+                : new CopilotCandidateResolution(
+                    [],
+                    "PEGGY_COPILOT_PATH does not identify copilot.exe.");
+        }
+
+        return new CopilotCandidateResolution(
+            [
+                "copilot.exe",
+                "copilot",
+                Path.Combine(
+                    localAppData,
+                    "Microsoft",
+                    "WinGet",
+                    "Links",
+                    "copilot.exe"),
+                Path.Combine(
+                    localAppData,
+                    "Microsoft",
+                    "WindowsApps",
+                    "copilot.exe")
+            ],
+            null);
+    }
 }
