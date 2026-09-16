@@ -262,6 +262,10 @@ try {
     Assert-Installer `
         (-not $properties.ContainsKey('MSIRESTARTMANAGERCONTROL')) `
         'Restart Manager must remain enabled.'
+    Assert-Installer `
+        (-not $properties.ContainsKey('PEGGY_BUNDLE') -and
+            -not $properties.ContainsKey('PEGGY_LAUNCH')) `
+        'The MSI must not default to a launch opt-in or bootstrapper context.'
 
     $directories = @{}
     foreach ($row in Get-MsiRows `
@@ -333,6 +337,15 @@ try {
                 $sequence['InstallInitialize'].Number) `
         'The MSI prerequisite check is not safely conditioned before installation.'
     $userDataCondition = 'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE'
+    $launchCondition = (
+        'UILevel = 5 AND NOT PEGGY_BUNDLE AND NOT Installed AND NOT REMOVE AND ' +
+        'NOT REINSTALL AND NOT UPGRADINGPRODUCTCODE AND NOT ACTION~="ADMIN"'
+    )
+    Assert-Installer `
+        ($sequence['LaunchPeggyAfterInstall'].Condition -eq $launchCondition -and
+            $sequence['LaunchPeggyAfterInstall'].Number -gt
+                $sequence['InstallFinalize'].Number) `
+        'Auto-launch must follow commit and exclude quiet/passive, Burn, maintenance, uninstall and admin images.'
     Assert-Installer `
         ($sequence['RemovePeggyUserData'].Condition -eq
             $userDataCondition -and
@@ -376,6 +389,16 @@ try {
     $userDataAction = @($customActions | Where-Object {
         $_[0] -eq 'RemovePeggyUserData'
     })
+    $launchAction = @($customActions | Where-Object {
+        $_[0] -eq 'LaunchPeggyAfterInstall'
+    })
+    Assert-Installer `
+        ($launchAction.Count -eq 1 -and
+            [int]$launchAction[0][1] -eq 66 -and
+            $launchAction[0][2] -eq 'PeggyPrerequisiteChecker' -and
+            $launchAction[0][3] -eq
+                '--launch-msi --display [UILevel] --target "[INSTALLFOLDER]peggy-tray.exe"') `
+        'Post-commit launch must be non-fatal, immediate, impersonated and use the identity-checking helper.'
     Assert-Installer `
         ($userDataAction.Count -eq 1 -and
             (([int]$userDataAction[0][1] -band 64) -ne 0) -and
@@ -485,6 +508,7 @@ $adminRoot = Join-Path $validationRoot 'admin-image'
 $adminLog = Join-Path $validationRoot 'admin-image.log'
 $bundleExtractRoot = Join-Path $validationRoot 'bundle-extract'
 $bundleWorkRoot = Join-Path $validationRoot 'bundle-work'
+$bundleBaRoot = Join-Path $validationRoot 'bundle-ba'
 if (Test-Path -LiteralPath $validationRoot) {
     Remove-Item -LiteralPath $validationRoot -Recurse -Force
 }
@@ -597,7 +621,8 @@ try {
     & dotnet $wixCommand burn extract `
         -intermediateFolder $bundleWorkRoot `
         $bundlePath `
-        -o $bundleExtractRoot
+        -o $bundleExtractRoot `
+        -oba $bundleBaRoot
     Assert-Installer `
         ($LASTEXITCODE -eq 0) `
         'Pinned WiX could not extract the Burn bundle.'
@@ -612,11 +637,50 @@ try {
                 $msiHash
         }).Count -eq 1) `
         'Burn does not embed the exact validated MSI.'
-    Assert-Installer `
-        (@($embeddedPayloads | Where-Object {
+    $embeddedCheckers = @($embeddedPayloads | Where-Object {
             $_.VersionInfo.ProductName -eq 'peggy-prerequisite-check'
-        }).Count -eq 1) `
-        'Burn does not embed the Peggy prerequisite checker.'
+        })
+    Assert-Installer `
+        ($embeddedCheckers.Count -ge 1 -and $embeddedCheckers.Count -le 2) `
+        'Burn must embed the prerequisite/launch helper payloads.'
+    $checkerHashes = @($embeddedCheckers | ForEach-Object {
+        (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+    } | Select-Object -Unique)
+    Assert-Installer ($checkerHashes.Count -eq 1) `
+        'Prerequisite and launch packages must use the same helper implementation.'
+
+    [xml]$bundleManifest = Get-Content -LiteralPath (Join-Path $bundleBaRoot 'manifest.xml') -Raw
+    $ns = [Xml.XmlNamespaceManager]::new($bundleManifest.NameTable)
+    $ns.AddNamespace('w', 'http://wixtoolset.org/schemas/v4/2008/Burn')
+    $chain = $bundleManifest.SelectSingleNode('//w:Chain', $ns)
+    $packages = @($chain.ChildNodes | Where-Object { $_.NodeType -eq 'Element' })
+    Assert-Installer `
+        ($packages.Count -eq 3 -and $packages[0].Id -eq 'PeggyPrerequisiteCheck' -and
+            $packages[1].Id -eq 'PeggyMsi' -and $packages[2].Id -eq 'LaunchPeggy') `
+        'Prerequisite UI must run before MSI and auto-launch exactly once after it.'
+    Assert-Installer `
+        ($packages[0].InstallArguments -eq '--bundle --display [WixBundleUILevel]' -and
+            $packages[0].RepairArguments -eq '--bundle --display [WixBundleUILevel]' -and
+            $packages[0].PerMachine -eq 'no' -and $packages[0].Vital -eq 'yes') `
+        'Burn must pass the real display level to its current-user prerequisite helper.'
+    Assert-Installer `
+        ($packages[2].InstallCondition -eq (
+            'WixBundleUILevel = 4 AND WixBundleAction = 6 AND NOT WixBundleInstalled AND PeggyCurrentMsiState <> 5'
+        ) -and $packages[2].PerMachine -eq 'no' -and $packages[2].Vital -eq 'no' -and
+            $packages[2].Repairable -eq 'no' -and
+            $packages[2].Permanent -eq 'yes') `
+        'Burn launch must be non-fatal, full-UI new-install only, and unavailable during repair/uninstall.'
+    Assert-Installer `
+        ($null -ne $packages[1].SelectSingleNode('w:MsiProperty[@Id="PEGGY_BUNDLE" and @Value="1"]', $ns) -and
+            $null -ne $bundleManifest.SelectSingleNode(
+                '//w:MsiProductSearch[@Variable="PeggyCurrentMsiState" and @Type="state"]', $ns)) `
+        'Burn must suppress MSI auto-launch and detect already-installed product maintenance.'
+    Assert-Installer `
+        ($packages[2].InstallArguments -eq (
+            '--launch-bundle --display [WixBundleUILevel] --action [WixBundleAction] --target ' +
+            '"[LocalAppDataFolder]Programs\Peggy\peggy-tray.exe"'
+        ) -and $packages[2].CacheId -ne $packages[0].CacheId) `
+        'The launch helper needs explicit full-UI intent and its own package cache identity.'
 
     $bundleVersion = (Get-Item -LiteralPath $bundlePath).VersionInfo
     Assert-Installer `

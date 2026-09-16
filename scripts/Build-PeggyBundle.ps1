@@ -76,6 +76,7 @@ $bundleArguments = @(
     '-c', $Configuration,
     '--nologo',
     "-p:BundleVersion=$($versionInfo.BundleVersion)",
+    "-p:ProductCode=$($versionInfo.ProductCode)",
     "-p:SemanticVersion=$($versionInfo.SemanticVersion)",
     "-p:MsiPath=$resolvedMsi",
     "-p:PrerequisiteCheckerPath=$checkerPath",

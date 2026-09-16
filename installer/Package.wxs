@@ -30,6 +30,7 @@
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/didiergbenou-ms/peggy" />
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="ARPNOREPAIR" Value="1" />
+    <Property Id="PEGGY_BUNDLE" Secure="yes" />
     <Binary
         Id="PeggyPrerequisiteChecker"
         SourceFile="$(var.PrerequisiteCheckerPath)" />
@@ -92,6 +93,13 @@
         Impersonate="yes"
         Return="check" />
     <CustomAction
+        Id="LaunchPeggyAfterInstall"
+        BinaryRef="PeggyPrerequisiteChecker"
+        ExeCommand="--launch-msi --display [UILevel] --target &quot;[INSTALLFOLDER]peggy-tray.exe&quot;"
+        Execute="immediate"
+        Impersonate="yes"
+        Return="ignore" />
+    <CustomAction
         Id="RemovePeggyUserData"
         BinaryRef="PeggyUninstallCleanup"
         ExeCommand="--msi"
@@ -118,6 +126,10 @@
           Action="CheckPeggyPrerequisites"
           Before="InstallInitialize"
           Condition="NOT Installed AND NOT ACTION~=&quot;ADMIN&quot;" />
+      <Custom
+          Action="LaunchPeggyAfterInstall"
+          After="InstallFinalize"
+          Condition="UILevel = 5 AND NOT PEGGY_BUNDLE AND NOT Installed AND NOT REMOVE AND NOT REINSTALL AND NOT UPGRADINGPRODUCTCODE AND NOT ACTION~=&quot;ADMIN&quot;" />
       <Custom
           Action="RemovePeggyUserData"
           After="InstallFinalize"

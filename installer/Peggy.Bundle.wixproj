@@ -8,6 +8,7 @@
     <DefineConstants>
       $(DefineConstants);
       BundleVersion=$(BundleVersion);
+      ProductCode=$(ProductCode);
       SemanticVersion=$(SemanticVersion);
       MsiPath=$(MsiPath);
       PrerequisiteCheckerPath=$(PrerequisiteCheckerPath);
@@ -19,6 +20,9 @@
     <Compile Include="Bundle.wxs" />
     <PackageReference
         Include="WixToolset.BootstrapperApplications.wixext"
+        Version="6.0.2" />
+    <PackageReference
+        Include="WixToolset.Util.wixext"
         Version="6.0.2" />
   </ItemGroup>
 </Project>
