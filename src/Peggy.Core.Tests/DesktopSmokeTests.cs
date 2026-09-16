@@ -820,6 +820,7 @@ internal static class DesktopSmokeTests
                 Path.Combine(
                     Path.GetTempPath(),
                     $"peggy-listening-{Guid.NewGuid():N}.dat")));
+        state.State.Settings.SpeechEnabled = true;
         var speech = new SilentSpeechProvider();
         var controller = new ConversationController(
             window,
@@ -1123,6 +1124,7 @@ internal static class DesktopSmokeTests
                 Path.Combine(
                     Path.GetTempPath(),
                     $"peggy-startup-drain-{Guid.NewGuid():N}.dat")));
+        state.State.Settings.SpeechEnabled = true;
         var speech = new BlockingWarmUpSpeechProvider();
         var controller = new ConversationController(
             window,

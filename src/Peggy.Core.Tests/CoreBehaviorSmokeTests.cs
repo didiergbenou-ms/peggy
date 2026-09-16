@@ -566,6 +566,7 @@ internal static class CoreBehaviorSmokeTests
             normalizedSettings.CopilotContextTier ==
                 PeggyDefaults.CopilotContextTierDefault &&
             !normalizedSettings.IncludeActiveCasesFolder &&
+            !normalizedSettings.SpeechEnabled &&
             normalizedSettings.SpeechThreads == 8 &&
             normalizedSettings.SpeechVoiceId == 0 &&
             normalizedSettings.SpeechSpeed == 1.15F &&
