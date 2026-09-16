@@ -25,6 +25,7 @@ internal static class CoreBehaviorSmokeTests
         TestWorkIqTransportClassification();
         await TestWorkIqRetryPolicyAsync(directory);
         await TestOutlookFolderCatalogAsync(directory);
+        await TestOutlookFolderPaginationAsync(directory);
         await TestOutlookSelfAuthoredFilteringAsync(directory);
         await TestStructuredTeamsMonitoringAsync(directory);
         await TestStructuredSearchTransportRetryAsync(directory);
@@ -1495,6 +1496,77 @@ internal static class CoreBehaviorSmokeTests
             Environment.SetEnvironmentVariable(
                 PeggyDefaults.IncludeActiveCasesFolderEnvironmentVariable,
                 previousIncludeActive);
+        }
+    }
+
+    private static async Task TestOutlookFolderPaginationAsync(
+        string directory)
+    {
+        var executable = Environment.ProcessPath
+            ?? throw new InvalidOperationException(
+                "The test executable path is unavailable.");
+        var logPath = Path.Combine(
+            directory,
+            "outlook-folder-pagination.log");
+        var previousScenario = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SCENARIO");
+        var previousLog = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_LOG");
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                "outlook-folder-pagination");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                logPath);
+            var provider = new WorkIqMessageProvider(
+                executablePath: executable,
+                settings: new PeggySettings
+                {
+                    IncludeActiveCasesFolder = true,
+                    TeamsScope = TeamsMonitoringScope.Off
+                });
+
+            var unread = await provider.ListUnreadAsync(
+                MessageSource.Email,
+                10);
+            var requests = File.ReadAllLines(logPath);
+            TestAssert.True(
+                unread.Select(message => message.From).ToHashSet(
+                    StringComparer.Ordinal).SetEquals(
+                    ["First sender", "Second sender"]),
+                "Outlook message pagination did not return both pages.");
+            TestAssert.True(
+                requests.Any(request =>
+                    request.StartsWith(
+                        "fetch /me/mailFolders/opaque-inbox%2Fid%3D%3D/" +
+                        "childFolders?",
+                        StringComparison.Ordinal) &&
+                    request.Contains(
+                        "%24skip=50",
+                        StringComparison.OrdinalIgnoreCase)) &&
+                requests.Any(request =>
+                    request.StartsWith(
+                        "fetch /me/mailFolders/active/messages?",
+                        StringComparison.Ordinal) &&
+                    request.Contains(
+                        "%24skip=50",
+                        StringComparison.OrdinalIgnoreCase)) &&
+                requests.All(request => !request.Contains(
+                    "mailFolders('",
+                    StringComparison.OrdinalIgnoreCase)),
+                "Graph Outlook continuations were not normalized to " +
+                "WorkIQ-approved paths.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                previousScenario);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                previousLog);
         }
     }
 

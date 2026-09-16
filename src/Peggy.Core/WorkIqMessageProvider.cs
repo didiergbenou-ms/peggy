@@ -36,6 +36,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         @"^/teams/(?<team>[^/]+)/channels/(?<channel>[^/]+)/messages/" +
         @"(?<root>[^/?]+)(?:/replies/(?<message>[^/?]+))?",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex OutlookFolderEntityPathRegex = new(
+        @"^/me/mailFolders\('(?<id>(?:[^']|'')+)'\)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private readonly WorkIqClient _client;
     private readonly string _account;
@@ -3983,6 +3986,21 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 StringComparison.OrdinalIgnoreCase))
         {
             relative = relative["/v1.0".Length..];
+        }
+
+        // Graph emits OData key syntax that WorkIQ rejects even though the
+        // equivalent slash-style entity path is allowed.
+        var outlookFolder = OutlookFolderEntityPathRegex.Match(relative);
+        if (outlookFolder.Success)
+        {
+            var folderId = Uri.UnescapeDataString(
+                outlookFolder.Groups["id"].Value.Replace(
+                    "''",
+                    "'",
+                    StringComparison.Ordinal));
+            relative =
+                $"/me/mailFolders/{Uri.EscapeDataString(folderId)}" +
+                relative[outlookFolder.Length..];
         }
 
         // WorkIQ validates "$skip" before distinguishing Graph's opaque
