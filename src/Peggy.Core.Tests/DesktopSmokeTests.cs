@@ -60,6 +60,7 @@ internal static class DesktopSmokeTests
             TestWorkIqSignInWindow();
             TestSettingsWindow();
             TestSettingsPreserveUnavailableWatchlist();
+            TestApplicationIcon();
             TestMascotAndBubble();
             TestLocalSpeech();
         }
@@ -1873,6 +1874,52 @@ internal static class DesktopSmokeTests
             "Settings erased a whole-team selection before channel loading " +
             "completed.");
         window.Close();
+    }
+
+    private static void TestApplicationIcon()
+    {
+        var iconPath = Path.Combine(
+            AppContext.BaseDirectory,
+            "Assets",
+            "Peggy.ico");
+        TestAssert.True(
+            File.Exists(iconPath),
+            "Peggy's application icon was not copied to the output.");
+
+        using (var stream = File.OpenRead(iconPath))
+        using (var reader = new BinaryReader(stream))
+        {
+            TestAssert.True(
+                reader.ReadUInt16() == 0 &&
+                reader.ReadUInt16() == 1,
+                "Peggy's application icon header is invalid.");
+            var frameCount = reader.ReadUInt16();
+            TestAssert.Equal(
+                9,
+                frameCount,
+                "Peggy's application icon does not contain every Windows size.");
+            var sizes = new List<int>(frameCount);
+            for (var index = 0; index < frameCount; index++)
+            {
+                var width = reader.ReadByte();
+                var height = reader.ReadByte();
+                sizes.Add(width == 0 ? 256 : width);
+                TestAssert.Equal(
+                    width,
+                    height,
+                    "Peggy's application icon contains a non-square frame.");
+                stream.Position += 14;
+            }
+
+            TestAssert.True(
+                sizes.SequenceEqual([16, 20, 24, 32, 40, 48, 64, 128, 256]),
+                "Peggy's application icon sizes regressed.");
+        }
+
+        using var icon = App.CreateIcon();
+        TestAssert.True(
+            icon.Width == 32 && icon.Height == 32,
+            "Peggy's tray did not load the packaged 32-pixel icon.");
     }
 
     private static void TestMascotAndBubble()

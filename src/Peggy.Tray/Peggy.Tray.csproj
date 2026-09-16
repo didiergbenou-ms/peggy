@@ -12,12 +12,19 @@
     <AssemblyTitle>Peggy</AssemblyTitle>
     <Product>Peggy</Product>
     <Description>Local-first Microsoft 365 desktop assistant</Description>
+    <ApplicationIcon>Assets\Peggy.ico</ApplicationIcon>
     <CopilotSkipCliDownload>true</CopilotSkipCliDownload>
     <NoWarn>$(NoWarn);GHCP001</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="GitHub.Copilot.SDK" Version="1.0.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\Peggy.ico"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
