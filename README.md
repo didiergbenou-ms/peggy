@@ -349,8 +349,8 @@ offers three current-user installation paths:
    the embedded MSI. It never installs prerequisites or credentials silently.
    If a check fails, install the named prerequisite or use `install.ps1
    -InstallPrerequisites` explicitly.
-2. **`peggy-win-x64.msi`** installs Peggy directly when prerequisites are
-   already available.
+2. **`peggy-win-x64.msi`** runs the same prerequisite check and installs
+   Peggy directly when all requirements are available.
 3. **`install.ps1`** retains the existing checksum-verified ZIP path, optional
    WinGet prerequisite installation, and optional speech-model download.
 

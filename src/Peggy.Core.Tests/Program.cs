@@ -1382,6 +1382,15 @@ static bool TryRunFakeWorkIq(string[] arguments)
         return true;
     }
 
+    if (string.Equals(
+            scenario,
+            "outlook-folder-pagination",
+            StringComparison.Ordinal))
+    {
+        HandleFakeOutlookFolderPaginationRequest(arguments[0], url);
+        return true;
+    }
+
     if (scenario is "semantic" or "structured-search")
     {
         HandleFakeSemanticReadRequest(arguments[0], url);
@@ -2019,6 +2028,160 @@ static void HandleFakeSemanticReadRequest(
     {
         throw new InvalidOperationException(
             $"Unexpected semantic fake WorkIQ URL: {url}");
+    }
+
+    Console.WriteLine(JsonSerializer.Serialize(response));
+}
+
+static void HandleFakeOutlookFolderPaginationRequest(
+    string command,
+    string url)
+{
+    WriteFakeWorkIqLog($"{command} {url}");
+    const string inboxId = "opaque-inbox/id==";
+    const string encodedInboxId = "opaque-inbox%2Fid%3D%3D";
+    var isSecondPage =
+        url.Contains("%24skip=50", StringComparison.OrdinalIgnoreCase) ||
+        url.Contains("$skip=50", StringComparison.OrdinalIgnoreCase);
+    object response;
+    if (url.StartsWith("/me?$select=", StringComparison.Ordinal))
+    {
+        response = new
+        {
+            id = "user-me",
+            mail = PeggyDefaults.ConfiguredWorkIqAccount,
+            userPrincipalName = PeggyDefaults.ConfiguredWorkIqAccount
+        };
+    }
+    else if (url.StartsWith(
+                 "/me/mailFolders/inbox?",
+                 StringComparison.Ordinal))
+    {
+        response = new
+        {
+            id = inboxId,
+            displayName = "Inbox",
+            childFolderCount = 97
+        };
+    }
+    else if (url.Contains(
+                 "mailFolders('",
+                 StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException(
+            $"WorkIQ rejected an unnormalized Outlook URL: {url}");
+    }
+    else if (url.StartsWith(
+                 $"/me/mailFolders/{encodedInboxId}/childFolders?",
+                 StringComparison.Ordinal) &&
+             isSecondPage)
+    {
+        response = new
+        {
+            value = Enumerable.Range(51, 47)
+                .Select(index => new
+                {
+                    id = index == 97 ? "cases" : $"folder-{index}",
+                    displayName = index == 97 ? "Cases" : $"Folder {index}",
+                    parentFolderId = inboxId,
+                    childFolderCount = index == 97 ? 1 : 0
+                })
+                .ToArray()
+        };
+    }
+    else if (url.StartsWith(
+                 $"/me/mailFolders/{encodedInboxId}/childFolders?",
+                 StringComparison.Ordinal))
+    {
+        response = new Dictionary<string, object?>
+        {
+            ["value"] = Enumerable.Range(1, 50)
+                .Select(index => new
+                {
+                    id = $"folder-{index}",
+                    displayName = $"Folder {index}",
+                    parentFolderId = inboxId,
+                    childFolderCount = 0
+                })
+                .ToArray(),
+            ["@odata.nextLink"] =
+                "https://graph.microsoft.com/v1.0/me/" +
+                "mailFolders('opaque-inbox/id==')/childFolders" +
+                "?%24select=id%2cdisplayName%2cparentFolderId%2c" +
+                "childFolderCount&%24top=50&%24skip=50"
+        };
+    }
+    else if (url.StartsWith(
+                 "/me/mailFolders/cases/childFolders?",
+                 StringComparison.Ordinal))
+    {
+        response = new
+        {
+            value = new[]
+            {
+                new
+                {
+                    id = "active",
+                    displayName = "Active",
+                    parentFolderId = "cases",
+                    childFolderCount = 0
+                }
+            }
+        };
+    }
+    else if (url.StartsWith(
+                 "/me/mailFolders/active/messages?",
+                 StringComparison.Ordinal) &&
+             isSecondPage)
+    {
+        response = new
+        {
+            value = new[]
+            {
+                FakeMonitoredOutlookMessage(
+                    "paged-message-2",
+                    "Second sender",
+                    "second@example.com",
+                    "second@example.com",
+                    DateTimeOffset.UtcNow.AddMinutes(-1),
+                    isRead: false)
+            }
+        };
+    }
+    else if (url.StartsWith(
+                 "/me/mailFolders/active/messages?",
+                 StringComparison.Ordinal))
+    {
+        response = new Dictionary<string, object?>
+        {
+            ["value"] = new[]
+            {
+                FakeMonitoredOutlookMessage(
+                    "paged-message-1",
+                    "First sender",
+                    "first@example.com",
+                    "first@example.com",
+                    DateTimeOffset.UtcNow.AddMinutes(-2),
+                    isRead: false)
+            },
+            ["@odata.nextLink"] =
+                "https://graph.microsoft.com/v1.0/me/" +
+                "mailFolders('active')/messages" +
+                "?%24select=id%2cconversationId%2cfrom%2csender%2c" +
+                "subject%2cbodyPreview%2creceivedDateTime%2cisRead%2c" +
+                "webLink&%24top=50&%24skip=50"
+        };
+    }
+    else if (url.StartsWith(
+                 $"/me/mailFolders/{encodedInboxId}/messages?",
+                 StringComparison.Ordinal))
+    {
+        response = new { value = Array.Empty<object>() };
+    }
+    else
+    {
+        throw new InvalidOperationException(
+            $"Unexpected Outlook pagination fake WorkIQ URL: {url}");
     }
 
     Console.WriteLine(JsonSerializer.Serialize(response));

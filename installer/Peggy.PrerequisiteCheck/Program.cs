@@ -34,9 +34,25 @@ internal static partial class Program
             new Version(18, 0),
             "Node.js 18");
         CheckAvailable(failures, ["npm.cmd", "npm.exe", "npm"], "npm");
+        var localAppData = Environment.GetFolderPath(
+            Environment.SpecialFolder.LocalApplicationData);
         CheckMinimumVersion(
             failures,
-            ["copilot.exe", "copilot"],
+            [
+                "copilot.exe",
+                "copilot",
+                Path.Combine(
+                    localAppData,
+                    "Microsoft",
+                    "WinGet",
+                    "Links",
+                    "copilot.exe"),
+                Path.Combine(
+                    localAppData,
+                    "Microsoft",
+                    "WindowsApps",
+                    "copilot.exe")
+            ],
             ["--version"],
             new Version(1, 0, 81),
             "GitHub Copilot CLI 1.0.81");
@@ -47,14 +63,14 @@ internal static partial class Program
             return 0;
         }
 
-        Console.Error.WriteLine("Peggy cannot be installed by this bootstrapper:");
+        Console.Error.WriteLine("Peggy cannot be installed:");
         foreach (var failure in failures)
         {
             Console.Error.WriteLine($"  - {failure}");
         }
         Console.Error.WriteLine();
         Console.Error.WriteLine(
-            "Install or update these prerequisites, then run Peggy Setup again.");
+            "Install or update these prerequisites, then run the installer again.");
         Console.Error.WriteLine(
             "Alternatively, download install.ps1 and run it with " +
             "-InstallPrerequisites to use WinGet explicitly.");

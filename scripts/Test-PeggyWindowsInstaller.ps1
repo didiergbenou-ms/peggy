@@ -326,6 +326,12 @@ try {
             $sequence['RemoveExistingProducts'].Number -lt
                 $sequence['InstallFinalize'].Number) `
         'RemoveExistingProducts is not transactionally scheduled after InstallExecute.'
+    Assert-Installer `
+        ($sequence['CheckPeggyPrerequisites'].Condition -eq
+            'NOT Installed AND NOT ACTION~="ADMIN"' -and
+            $sequence['CheckPeggyPrerequisites'].Number -lt
+                $sequence['InstallInitialize'].Number) `
+        'The MSI prerequisite check is not safely conditioned before installation.'
     $startupCondition = (
         'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE AND ' +
         'PEGGY_RUN_VALUE = EXPECTED_PEGGY_RUN_VALUE'
@@ -352,6 +358,22 @@ try {
     $startupRollback = @($customActions | Where-Object {
         $_[0] -eq 'RollbackOwnedPeggyStartupEntry'
     })
+    $prerequisiteAction = @($customActions | Where-Object {
+        $_[0] -eq 'CheckPeggyPrerequisites'
+    })
+    Assert-Installer `
+        ($prerequisiteAction.Count -eq 1 -and
+            [int]$prerequisiteAction[0][1] -eq 2 -and
+            $prerequisiteAction[0][3] -eq '--msi') `
+        'The MSI does not execute its embedded prerequisite checker.'
+    $binaries = @(Get-MsiRows `
+        -Database $database `
+        -Query 'SELECT `Name` FROM `Binary`')
+    Assert-Installer `
+        (@($binaries | Where-Object {
+            $_[0] -eq 'PeggyPrerequisiteChecker'
+        }).Count -eq 1) `
+        'The MSI does not embed the Peggy prerequisite checker.'
     Assert-Installer `
         ($startupAction.Count -eq 1 -and
             (([int]$startupAction[0][1] -band 1024) -ne 0) -and

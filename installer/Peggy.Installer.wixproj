@@ -13,6 +13,7 @@
       ProductVersion=$(ProductVersion);
       SemanticVersion=$(SemanticVersion);
       ProductCode=$(ProductCode);
+      PrerequisiteCheckerPath=$(PrerequisiteCheckerPath);
       IconPath=$(IconPath)
     </DefineConstants>
   </PropertyGroup>
