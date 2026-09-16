@@ -42,12 +42,13 @@ internal static class DesktopSmokeTests
         SynchronizationContext.SetSynchronizationContext(
             new DispatcherSynchronizationContext(
                 Dispatcher.CurrentDispatcher));
-        var application = new Application
+        var application = new App
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown
         };
         try
         {
+            AlertNotificationSmokeTests.Run(application);
             TestAlertCenter();
             TestAlertContextWindow();
             TestConversationWindow();

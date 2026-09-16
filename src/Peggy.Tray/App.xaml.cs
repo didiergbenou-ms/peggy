@@ -723,7 +723,6 @@ public partial class App : Application
             : top.Summary;
         _bubble.Say(text, _mascot.HeadAnchor(), seconds: 12);
         ReturnToRestAfter(TimeSpan.FromSeconds(13));
-        ShowAlertCenter();
 
         var critical = visible.FirstOrDefault(alert =>
             alert.Tier == AlertTier.Critical);
