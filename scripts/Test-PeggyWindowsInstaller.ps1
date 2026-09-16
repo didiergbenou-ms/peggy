@@ -332,6 +332,13 @@ try {
             $sequence['CheckPeggyPrerequisites'].Number -lt
                 $sequence['InstallInitialize'].Number) `
         'The MSI prerequisite check is not safely conditioned before installation.'
+    $userDataCondition = 'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE'
+    Assert-Installer `
+        ($sequence['RemovePeggyUserData'].Condition -eq
+            $userDataCondition -and
+            $sequence['RemovePeggyUserData'].Number -gt
+                $sequence['InstallFinalize'].Number) `
+        'User-data cleanup is not safely limited to a committed true uninstall.'
     $startupCondition = (
         'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE AND ' +
         'PEGGY_RUN_VALUE = EXPECTED_PEGGY_RUN_VALUE'
@@ -366,6 +373,16 @@ try {
             [int]$prerequisiteAction[0][1] -eq 2 -and
             $prerequisiteAction[0][3] -eq '--msi') `
         'The MSI does not execute its embedded prerequisite checker.'
+    $userDataAction = @($customActions | Where-Object {
+        $_[0] -eq 'RemovePeggyUserData'
+    })
+    Assert-Installer `
+        ($userDataAction.Count -eq 1 -and
+            (([int]$userDataAction[0][1] -band 512) -eq 0) -and
+            (([int]$userDataAction[0][1] -band 1024) -eq 0) -and
+            (([int]$userDataAction[0][1] -band 2048) -eq 0) -and
+            $userDataAction[0][3] -eq '--msi') `
+        'The post-commit current-user cleanup action is missing from the MSI.'
     $binaries = @(Get-MsiRows `
         -Database $database `
         -Query 'SELECT `Name` FROM `Binary`')
@@ -374,6 +391,11 @@ try {
             $_[0] -eq 'PeggyPrerequisiteChecker'
         }).Count -eq 1) `
         'The MSI does not embed the Peggy prerequisite checker.'
+    Assert-Installer `
+        (@($binaries | Where-Object {
+            $_[0] -eq 'PeggyUninstallCleanup'
+        }).Count -eq 1) `
+        'The MSI does not embed the user-data cleanup executable.'
     Assert-Installer `
         ($startupAction.Count -eq 1 -and
             (([int]$startupAction[0][1] -band 1024) -ne 0) -and

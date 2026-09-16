@@ -14,6 +14,7 @@
       SemanticVersion=$(SemanticVersion);
       ProductCode=$(ProductCode);
       PrerequisiteCheckerPath=$(PrerequisiteCheckerPath);
+      UninstallCleanupPath=$(UninstallCleanupPath);
       IconPath=$(IconPath)
     </DefineConstants>
   </PropertyGroup>

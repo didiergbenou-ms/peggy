@@ -45,11 +45,13 @@ foreach ($artifactName in @(
 $publishDirectory = Join-Path $outputRoot 'peggy-win-x64'
 $buildRoot = Join-Path $outputRoot 'build'
 $checkerOutput = Join-Path $buildRoot 'prerequisite-check'
+$cleanupOutput = Join-Path $buildRoot 'uninstall-cleanup'
 $msiOutput = Join-Path $buildRoot 'msi'
 $msiIntermediate = Join-Path $buildRoot 'obj-msi'
 foreach ($path in @(
         $publishDirectory,
         $checkerOutput,
+        $cleanupOutput,
         $msiOutput,
         $msiIntermediate
     )) {
@@ -100,6 +102,24 @@ Set-Content `
     -Value $versionInfo.Tag `
     -Encoding ascii
 
+$cleanupProject = Join-Path (
+    Join-Path $repoRoot 'installer\Peggy.UninstallCleanup'
+) 'Peggy.UninstallCleanup.csproj'
+& dotnet publish $cleanupProject `
+    -c $Configuration `
+    -r win-x64 `
+    --self-contained true `
+    --nologo `
+    -p:Version=$($versionInfo.SemanticVersion) `
+    -o $cleanupOutput
+if ($LASTEXITCODE -ne 0) {
+    throw "Peggy uninstall cleanup publish failed (exit $LASTEXITCODE)."
+}
+$cleanupPath = Join-Path $cleanupOutput 'peggy-uninstall-cleanup.exe'
+if (-not (Test-Path -LiteralPath $cleanupPath -PathType Leaf)) {
+    throw 'The Peggy uninstall cleanup executable was not produced.'
+}
+
 $checkerProject = Join-Path (
     Join-Path $repoRoot 'installer\Peggy.PrerequisiteCheck'
 ) 'Peggy.PrerequisiteCheck.csproj'
@@ -145,6 +165,7 @@ $msiArguments = @(
     "-p:SemanticVersion=$($versionInfo.SemanticVersion)",
     "-p:ProductCode=$($versionInfo.ProductCode)",
     "-p:PrerequisiteCheckerPath=$checkerPath",
+    "-p:UninstallCleanupPath=$cleanupPath",
     "-p:PayloadDirectory=$publishDirectory",
     "-p:GeneratedPayloadSource=$payloadSource",
     "-p:IconPath=$iconPath",

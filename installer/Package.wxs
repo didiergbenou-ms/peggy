@@ -33,6 +33,9 @@
     <Binary
         Id="PeggyPrerequisiteChecker"
         SourceFile="$(var.PrerequisiteCheckerPath)" />
+    <Binary
+        Id="PeggyUninstallCleanup"
+        SourceFile="$(var.UninstallCleanupPath)" />
     <Property Id="PEGGY_RUN_VALUE">
       <RegistrySearch
           Id="PeggyStartupRegistrySearch"
@@ -89,6 +92,13 @@
         Impersonate="yes"
         Return="check" />
     <CustomAction
+        Id="RemovePeggyUserData"
+        BinaryRef="PeggyUninstallCleanup"
+        ExeCommand="--msi"
+        Execute="immediate"
+        Impersonate="yes"
+        Return="check" />
+    <CustomAction
         Id="RemoveOwnedPeggyStartupEntry"
         Directory="SystemFolder"
         ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]scripts\Remove-PeggyStartupEntry.ps1&quot; -InstalledExecutable &quot;[INSTALLFOLDER]peggy-tray.exe&quot;"
@@ -108,6 +118,10 @@
           Action="CheckPeggyPrerequisites"
           Before="InstallInitialize"
           Condition="NOT Installed AND NOT ACTION~=&quot;ADMIN&quot;" />
+      <Custom
+          Action="RemovePeggyUserData"
+          After="InstallFinalize"
+          Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom
           Action="RollbackOwnedPeggyStartupEntry"
           Before="RemoveOwnedPeggyStartupEntry"

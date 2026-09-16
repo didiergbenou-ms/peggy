@@ -427,10 +427,11 @@ msiexec.exe /x .\peggy-win-x64.msi /qn /norestart
 ```
 
 Normal MSI/bootstrapper uninstall removes application files, the Start menu
-shortcut, ARP registration, and the Peggy startup Run entry only when it points
-to this canonical installation. It preserves `%LOCALAPPDATA%\Peggy\state.dat`
-and `%LOCALAPPDATA%\Peggy\models`. It never removes shared PowerShell, Node.js,
-GitHub Copilot CLI, or WorkIQ installations.
+shortcut, ARP registration, the Peggy startup Run entry only when it points to
+this canonical installation, `%LOCALAPPDATA%\Peggy` (including encrypted state
+and speech models), and the current-user `PEGGY_WORKIQ_ACCOUNT` preference.
+Major upgrades preserve that data. Uninstall never removes shared PowerShell,
+Node.js, GitHub Copilot CLI, or WorkIQ installations.
 
 For the script-installed path, exit Peggy and run the uninstaller from its
 installation directory:
@@ -450,10 +451,6 @@ temporary runtime data and synchronized account preference too, add
 powershell.exe -ExecutionPolicy Bypass -File `
     "$env:LOCALAPPDATA\Programs\Peggy\uninstall.ps1" -PurgeData
 ```
-
-After an MSI/bootstrapper uninstall, download the standalone `uninstall.ps1`
-release asset and run `.\uninstall.ps1 -PurgeData` to perform the same full data
-purge. Do not purge data by deleting broad LocalAppData directories.
 
 Use `-WhatIf` to preview the cleanup. Shared prerequisites such as PowerShell 7,
 Node.js, GitHub Copilot CLI, and WorkIQ are not removed. An uninstaller run from
@@ -821,12 +818,15 @@ creates a disposable `msiexec /a` administrative image, hashes every extracted
 payload file, and extracts the Burn container with the pinned WiX command.
 
 The MSI relies on Windows Installer Restart Manager for files in use, so only
-processes holding this installation's files are asked to stop. A single checked,
+processes holding this installation's files are asked to stop. A checked,
 current-user deferred custom action is used on a real uninstall (not a major
 upgrade) to remove the startup Run value only when it resolves exactly to the
 canonical Peggy executable. A paired rollback action restores that exact value
-if MSI rolls the uninstall back. Both validate the path, preserve mismatched
-values, return errors to MSI, and make no elevated or broad filesystem changes.
+if MSI rolls the uninstall back. After `InstallFinalize` successfully commits a
+true uninstall, a separate current-user action removes Peggy's user-data root
+and synchronized account preference. The cleanup action does not run during
+upgrades or failed uninstalls and does not remove shared prerequisites or
+broader LocalAppData.
 
 Release packages are currently checksum-verified but not Authenticode-signed.
 Windows SmartScreen can therefore show an unknown-publisher warning. The
