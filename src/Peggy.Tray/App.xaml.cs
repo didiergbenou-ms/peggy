@@ -1302,7 +1302,8 @@ public partial class App : Application
             setup,
             _state.State.PinnedMailbox,
             _state.State.PinnedUserPrincipalName,
-            _state.State.PinnedPrincipalId);
+            _state.State.PinnedPrincipalId,
+            requireMailAccess: _state.State.Settings.OutlookScope != OutlookMonitoringScope.Off);
         if (window.ShowDialog() != true ||
             string.IsNullOrWhiteSpace(window.AuthenticatedAccount))
         {
@@ -1399,7 +1400,8 @@ public partial class App : Application
                 setup,
                 mailboxAtOpen,
                 userPrincipalNameAtOpen,
-                principalIdAtOpen)
+                principalIdAtOpen,
+                requireMailAccess: _state.State.Settings.OutlookScope != OutlookMonitoringScope.Off)
             {
                 Owner = alertCenterWasVisible
                     ? _alertCenter

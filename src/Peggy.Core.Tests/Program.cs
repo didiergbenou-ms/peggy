@@ -43,6 +43,7 @@ try
     await AssistantBehaviorSmokeTests.RunAsync(testDirectory);
     await AppIntegrationSmokeTests.RunAsync();
     await SettingsCatalogCacheSmokeTests.RunAsync();
+    await SetupExperienceSmokeTests.RunAsync();
     await DesktopSmokeTests.RunAsync();
     await TestEncryptedStateAsync(testDirectory);
     await TestStartupMonitoringWindowAsync(testDirectory);
@@ -441,6 +442,15 @@ static bool TryRenderUiSuite(string[] arguments)
                 signIn,
                 Path.Combine(directory, "microsoft-365-connection.png"));
             signIn.Close();
+
+            var firstRun = new WorkIqSignInWindow(
+                expectedAccount: null, setup: null, previewMode: true);
+            firstRun.SetPreviewInstallationState(
+                "WorkIQ 1.0.0 is ready.", "Review setup readiness before connecting.");
+            firstRun.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(120));
+            SaveWindowContent(firstRun, Path.Combine(directory, "setup-readiness.png"));
+            firstRun.Close();
 
             var bubble = new SpeechBubbleWindow();
             bubble.Say(

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Mail;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Peggy.Core;
@@ -12,6 +13,8 @@ public sealed record WorkIqAccountIdentity(
     public string PrincipalId { get; init; } = string.Empty;
 
     public string EulaAcceptedVersion { get; init; } = string.Empty;
+
+    public string DisplayName { get; init; } = string.Empty;
 }
 
 public class WorkIqSetupException : InvalidOperationException
@@ -35,13 +38,40 @@ public sealed class WorkIqEulaChangedException : WorkIqSetupException
     }
 }
 
-public sealed class WorkIqSetupService
+public interface IWorkIqSetupService
+{
+    bool TryGetExecutablePath(out string executablePath);
+    Task<string> GetVersionAsync(CancellationToken ct = default);
+    Task InstallAsync(CancellationToken ct = default);
+    Task<WorkIqAccountIdentity> SignInAsync(
+        string expectedAccount, string acceptedEulaVersion,
+        CancellationToken ct = default);
+    Task<WorkIqAccountIdentity> VerifyAccountAsync(
+        string expectedAccount, CancellationToken ct = default);
+    Task ProbeInboxAccessAsync(
+        WorkIqAccountIdentity identity, CancellationToken ct = default);
+}
+
+public sealed class WorkIqSetupService : IWorkIqSetupService
 {
     public const string EulaUrl =
         "https://github.com/microsoft/work-iq/tree/main/EULA";
     public const string PackageName = "@microsoft/workiq";
 
     private static readonly TimeSpan SetupTimeout = TimeSpan.FromMinutes(10);
+    private readonly Func<string, string, CancellationToken, Task<JsonElement>> _fetch;
+
+    public WorkIqSetupService()
+        : this((account, url, ct) =>
+            new WorkIqClient(account: account).FetchAsync<JsonElement>(url, ct))
+    {
+    }
+
+    internal WorkIqSetupService(
+        Func<string, string, CancellationToken, Task<JsonElement>> fetch)
+    {
+        _fetch = fetch;
+    }
 
     public bool TryGetExecutablePath(out string executablePath)
         => WorkIqClient.TryResolveExecutable(out executablePath);
@@ -68,7 +98,12 @@ public sealed class WorkIqSetupService
                 "WorkIQ version check failed",
                 result);
         }
-        return result.StandardOutput.Trim();
+        var version = result.StandardOutput.Trim();
+        if (version.Length == 0)
+        {
+            throw new WorkIqSetupException("WorkIQ returned an empty version.");
+        }
+        return version;
     }
 
     public async Task InstallAsync(CancellationToken ct = default)
@@ -224,11 +259,30 @@ public sealed class WorkIqSetupService
     public async Task<WorkIqAccountIdentity> SignInAsync(
         string expectedAccount,
         CancellationToken ct = default)
+        => await SignInCoreAsync(expectedAccount, expectedVersion: null, ct);
+
+    public async Task<WorkIqAccountIdentity> SignInAsync(
+        string expectedAccount,
+        string acceptedEulaVersion,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(acceptedEulaVersion))
+        {
+            throw new WorkIqSetupException(
+                "Check the installed WorkIQ version and explicitly accept its EULA.");
+        }
+        return await SignInCoreAsync(expectedAccount, acceptedEulaVersion, ct);
+    }
+
+    private async Task<WorkIqAccountIdentity> SignInCoreAsync(
+        string expectedAccount,
+        string? expectedVersion,
+        CancellationToken ct)
     {
         var normalized = NormalizeAccount(expectedAccount);
         var executable = RequireExecutable();
 
-        var acceptedVersion = await AcceptEulaAsync(ct: ct);
+        var acceptedVersion = await AcceptEulaAsync(expectedVersion, ct);
         await RunRequiredCommandAsync(
             executable,
             ["auth", "login", "--account", normalized],
@@ -255,15 +309,12 @@ public sealed class WorkIqSetupService
         CancellationToken ct = default)
     {
         var normalized = NormalizeAccount(expectedAccount);
-        var executable = RequireExecutable();
         try
         {
-            var profile = await new WorkIqClient(
-                    executable,
-                    normalized)
-                .FetchAsync<WorkIqProfile>(
-                    "/me?$select=id,mail,userPrincipalName",
-                    ct);
+            var payload = await _fetch(
+                normalized, "/me?$select=id,mail,userPrincipalName,displayName", ct);
+            var profile = payload.Deserialize<WorkIqProfile>()
+                ?? throw new InvalidDataException("WorkIQ returned no profile.");
             var mail = WorkIqMessageProvider.ResolveAuthenticatedAccount(
                 profile.Mail,
                 profile.UserPrincipalName,
@@ -278,18 +329,73 @@ public sealed class WorkIqSetupService
                 mail,
                 profile.UserPrincipalName)
             {
-                PrincipalId = profile.Id.Trim()
+                PrincipalId = profile.Id.Trim(),
+                DisplayName = profile.DisplayName?.Trim() ?? string.Empty
             };
         }
         catch (Exception ex) when (
             ex is InvalidOperationException or
             InvalidDataException or
+            JsonException or
             IOException or
             TimeoutException)
         {
             throw new WorkIqSetupException(
                 "WorkIQ could not verify the signed-in Microsoft 365 account.",
                 ex);
+        }
+    }
+
+    public async Task ProbeInboxAccessAsync(
+        WorkIqAccountIdentity identity,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        if (string.IsNullOrWhiteSpace(identity.PrincipalId))
+        {
+            throw new WorkIqSetupException(
+                "Verify the Microsoft 365 account before checking mail access.");
+        }
+        try
+        {
+            await VerifyPinnedIdentityAsync(identity, ct);
+            // Address the verified principal, never a mutable global /me mailbox.
+            var payload = await _fetch(
+                NormalizeAccount(identity.Account),
+                $"/users/{Uri.EscapeDataString(identity.PrincipalId)}/" +
+                "mailFolders/inbox/messages?$select=id&$top=1",
+                ct);
+            if (!payload.TryGetProperty("value", out var messages) ||
+                messages.ValueKind != JsonValueKind.Array ||
+                messages.EnumerateArray().Any(message =>
+                    message.ValueKind != JsonValueKind.Object ||
+                    !message.TryGetProperty("id", out var id) ||
+                    id.ValueKind != JsonValueKind.String ||
+                    string.IsNullOrWhiteSpace(id.GetString())))
+            {
+                throw new InvalidDataException(
+                    "WorkIQ returned an invalid Inbox access response.");
+            }
+            await VerifyPinnedIdentityAsync(identity, ct);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or
+            InvalidDataException or IOException or TimeoutException or JsonException)
+        {
+            throw new WorkIqSetupException(
+                "Mail access is not ready. Check Microsoft 365 permissions " +
+                "and mailbox availability, then retry.", ex);
+        }
+    }
+
+    private async Task VerifyPinnedIdentityAsync(
+        WorkIqAccountIdentity identity, CancellationToken ct)
+    {
+        var actual = await VerifyAccountAsync(identity.Account, ct);
+        if (!RepresentsSameAccount(identity.Account, identity.Mail,
+                identity.UserPrincipalName, identity.PrincipalId, actual))
+        {
+            throw new WorkIqSetupException(
+                "WorkIQ changed accounts during the mail access check. Sign in again.");
         }
     }
 
@@ -368,6 +474,20 @@ public sealed class WorkIqSetupService
         }
     }
 
+    public static bool IsValidAccount(string? account)
+    {
+        if (string.IsNullOrWhiteSpace(account))
+        {
+            return false;
+        }
+        var trimmed = account.Trim();
+        return !trimmed.Any(char.IsWhiteSpace) &&
+            MailAddress.TryCreate(trimmed, out var parsed) &&
+            string.Equals(parsed.Address, trimmed, StringComparison.OrdinalIgnoreCase) &&
+            parsed.Host.Contains('.') && !parsed.Host.StartsWith('.') &&
+            !parsed.Host.EndsWith('.');
+    }
+
     internal static string NormalizeAccount(string account)
     {
         if (string.IsNullOrWhiteSpace(account))
@@ -376,16 +496,12 @@ public sealed class WorkIqSetupService
                 "Enter the Microsoft 365 email address Peggy should use.");
         }
 
-        try
-        {
-            return new MailAddress(account.Trim()).Address;
-        }
-        catch (FormatException ex)
+        if (!IsValidAccount(account))
         {
             throw new WorkIqSetupException(
-                "Enter a valid Microsoft 365 email address.",
-                ex);
+                "Enter a valid Microsoft 365 email address.");
         }
+        return new MailAddress(account.Trim()).Address;
     }
 
     private static async Task RunRequiredCommandAsync(
@@ -544,6 +660,16 @@ public sealed class WorkIqSetupService
             }
         }
 
+        if (OperatingSystem.IsWindows() && name == "npm.cmd")
+        {
+            var installed = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "nodejs", name);
+            if (File.Exists(installed))
+            {
+                return installed;
+            }
+        }
         return null;
     }
 
@@ -589,5 +715,8 @@ public sealed class WorkIqSetupService
 
         [JsonPropertyName("userPrincipalName")]
         public string? UserPrincipalName { get; init; }
+
+        [JsonPropertyName("displayName")]
+        public string? DisplayName { get; init; }
     }
 }

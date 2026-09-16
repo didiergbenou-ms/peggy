@@ -161,8 +161,12 @@ public sealed class CopilotRunner : IAsyncDisposable
 
     public async Task<IReadOnlyList<CopilotModelOption>>
         ListAvailableModelsAsync(CancellationToken ct = default)
+        => await ListAvailableModelsAsync(_copilotPath, ct);
+
+    internal static async Task<IReadOnlyList<CopilotModelOption>>
+        ListAvailableModelsAsync(string copilotPath, CancellationToken ct)
     {
-        await using var client = CopilotClientFactory.Create(_copilotPath);
+        await using var client = CopilotClientFactory.Create(copilotPath);
         await client.StartAsync(ct);
         var models = await client.ListModelsAsync(ct);
 
@@ -1248,7 +1252,7 @@ public sealed class CopilotRunner : IAsyncDisposable
             : detail[..300] + "...";
     }
 
-    private static string ResolveCopilot()
+    internal static string ResolveCopilot()
     {
         var configuredPath = Environment.GetEnvironmentVariable(
             "PEGGY_COPILOT_PATH");

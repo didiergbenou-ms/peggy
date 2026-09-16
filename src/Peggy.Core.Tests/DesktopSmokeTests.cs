@@ -59,6 +59,7 @@ internal static class DesktopSmokeTests
             TestDeferredConversationApproval();
             TestSpeechModelSetupService();
             TestWorkIqSignInWindow();
+            SetupExperienceSmokeTests.RunDesktop();
             TestSettingsWindow();
             TestSettingsPreserveUnavailableWatchlist();
             TestApplicationIcon();
@@ -1637,10 +1638,10 @@ internal static class DesktopSmokeTests
                 pinned.Title == "Peggy setup" &&
                 accountText.Text == "person@example.com" &&
                 AutomationProperties.GetName(accountText) ==
-                    "Microsoft 365 account" &&
+                    "Work email" &&
                 !accountText.IsReadOnly &&
                 Find<Button>(pinned, "SignInButton").Content?.ToString() ==
-                    "Sign in again" &&
+                    "Sign in with Microsoft" &&
                 Find<GroupBox>(
                     pinned,
                     "VoiceSetupGroup").Visibility == Visibility.Collapsed &&
@@ -1656,7 +1657,7 @@ internal static class DesktopSmokeTests
             accountText.Text = "other@example.com";
             TestAssert.True(
                 Find<Button>(pinned, "SignInButton").Content?.ToString() ==
-                    "Switch account" &&
+                    "Sign in with Microsoft" &&
                 Find<TextBlock>(
                     pinned,
                     "AccountChangeNotice").Visibility == Visibility.Visible,
