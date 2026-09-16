@@ -88,7 +88,7 @@ public sealed class PeggySettings
     public int MonitoringSleepMinute { get; set; } =
         PeggyDefaults.DefaultSleepMinute;
 
-    public bool SpeechEnabled { get; set; } = true;
+    public bool SpeechEnabled { get; set; }
 
     public string SpeechModelDirectory { get; set; } = string.Empty;
 
