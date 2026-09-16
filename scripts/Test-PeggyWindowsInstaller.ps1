@@ -14,6 +14,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'PeggyInstallerVersion.ps1')
@@ -40,6 +41,50 @@ function Assert-Installer {
 
     if (-not $Condition) {
         throw "Installer validation failed: $Message"
+    }
+}
+
+function Get-IconFingerprint {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [switch]$Associated,
+        [int]$Width,
+        [int]$Height
+    )
+
+    $icon = if ($Associated) {
+        [Drawing.Icon]::ExtractAssociatedIcon($Path)
+    } else {
+        [Drawing.Icon]::new($Path, $Width, $Height)
+    }
+    if ($null -eq $icon) {
+        throw "No icon could be loaded from '$Path'."
+    }
+    try {
+        $bitmap = $icon.ToBitmap()
+        try {
+            $pixels = [byte[]]::new($bitmap.Width * $bitmap.Height * 4)
+            for ($y = 0; $y -lt $bitmap.Height; $y++) {
+                for ($x = 0; $x -lt $bitmap.Width; $x++) {
+                    $color = $bitmap.GetPixel($x, $y)
+                    $offset = (($y * $bitmap.Width) + $x) * 4
+                    $pixels[$offset] = $color.A
+                    $pixels[$offset + 1] = $color.R
+                    $pixels[$offset + 2] = $color.G
+                    $pixels[$offset + 3] = $color.B
+                }
+            }
+            $hash = [Security.Cryptography.SHA256]::HashData($pixels)
+            return [pscustomobject]@{
+                Width = $bitmap.Width
+                Height = $bitmap.Height
+                Hash = [Convert]::ToHexString($hash)
+            }
+        } finally {
+            $bitmap.Dispose()
+        }
+    } finally {
+        $icon.Dispose()
     }
 }
 
@@ -211,6 +256,7 @@ try {
     Assert-Installer `
         ($properties['ARPNOMODIFY'] -eq '1' -and
             $properties['ARPNOREPAIR'] -eq '1' -and
+            $properties['ARPPRODUCTICON'] -eq 'Peggy.exe' -and
             -not [string]::IsNullOrWhiteSpace($properties['ARPHELPLINK'])) `
         'ARP metadata is incomplete.'
     Assert-Installer `
@@ -234,15 +280,24 @@ try {
             $directories['LocalProgramsFolder'].Name -eq 'Programs') `
         'INSTALLFOLDER is not LocalAppDataFolder\Programs\Peggy.'
 
+    $icons = @(Get-MsiRows `
+        -Database $database `
+        -Query 'SELECT `Name` FROM `Icon`')
+    Assert-Installer `
+        ($icons.Count -eq 1 -and $icons[0][0] -eq 'Peggy.exe') `
+        'The MSI does not contain Peggy''s product icon.'
+
     $shortcuts = @(Get-MsiRows `
         -Database $database `
-        -Query 'SELECT `Directory_`,`Name`,`Target`,`WkDir` FROM `Shortcut`')
+        -Query 'SELECT `Directory_`,`Name`,`Target`,`WkDir`,`Icon_`,`IconIndex` FROM `Shortcut`')
     Assert-Installer `
         ($shortcuts.Count -eq 1 -and
             $shortcuts[0][0] -eq 'ProgramMenuFolder' -and
             (Get-MsiLongName $shortcuts[0][1]) -eq 'Peggy' -and
             $shortcuts[0][2] -eq '[INSTALLFOLDER]peggy-tray.exe' -and
-            $shortcuts[0][3] -eq 'INSTALLFOLDER') `
+            $shortcuts[0][3] -eq 'INSTALLFOLDER' -and
+            $shortcuts[0][4] -eq 'Peggy.exe' -and
+            [int]$shortcuts[0][5] -eq 0) `
         'The current-user Start menu shortcut is incorrect.'
 
     $upgradeRows = @(Get-MsiRows `
@@ -466,6 +521,19 @@ try {
             "Administrative image changed '$relativePath'."
     }
 
+    $publishedIcon = Join-Path $publishRoot 'Assets\Peggy.ico'
+    $publishedTray = Join-Path $publishRoot 'peggy-tray.exe'
+    $trayIcon = Get-IconFingerprint `
+        -Path $publishedTray `
+        -Associated
+    $expectedTrayIcon = Get-IconFingerprint `
+        -Path $publishedIcon `
+        -Width $trayIcon.Width `
+        -Height $trayIcon.Height
+    Assert-Installer `
+        ($trayIcon.Hash -eq $expectedTrayIcon.Hash) `
+        'The published Peggy executable does not contain Peggy''s icon.'
+
     $nugetRoot = if (
         [string]::IsNullOrWhiteSpace($env:NUGET_PACKAGES)
     ) {
@@ -511,6 +579,16 @@ try {
             $bundleVersion.CompanyName -eq 'Didier Gbenou' -and
             $bundleVersion.ProductVersion -eq $versionInfo.BundleVersion) `
         'Burn version or publisher metadata is incorrect.'
+    $bundleIcon = Get-IconFingerprint `
+        -Path $bundlePath `
+        -Associated
+    $expectedBundleIcon = Get-IconFingerprint `
+        -Path $publishedIcon `
+        -Width $bundleIcon.Width `
+        -Height $bundleIcon.Height
+    Assert-Installer `
+        ($bundleIcon.Hash -eq $expectedBundleIcon.Hash) `
+        'The Burn bootstrapper does not contain Peggy''s icon.'
 
     if (-not $SkipPrerequisiteExecution) {
         Assert-Installer `

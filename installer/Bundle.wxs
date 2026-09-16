@@ -8,6 +8,7 @@
       UpgradeCode="{30D151DF-BE3F-5276-931A-FC933C8824A7}"
       AboutUrl="https://github.com/didiergbenou-ms/peggy"
       HelpUrl="https://github.com/didiergbenou-ms/peggy#troubleshooting"
+      IconSourceFile="$(var.IconPath)"
       DisableModify="yes"
       Compressed="yes">
     <BootstrapperApplication>

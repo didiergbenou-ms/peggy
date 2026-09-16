@@ -21,6 +21,11 @@ $ProgressPreference = 'SilentlyContinue'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'PeggyInstallerVersion.ps1')
 $versionInfo = ConvertTo-PeggyInstallerVersion -Version $Version
+$iconPath = (
+    Resolve-Path -LiteralPath (
+        Join-Path $repoRoot 'src\Peggy.Tray\Assets\Peggy.ico'
+    )
+).Path
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 foreach ($artifactName in @(
@@ -117,6 +122,7 @@ $msiArguments = @(
     "-p:ProductCode=$($versionInfo.ProductCode)",
     "-p:PayloadDirectory=$publishDirectory",
     "-p:GeneratedPayloadSource=$payloadSource",
+    "-p:IconPath=$iconPath",
     "-p:BaseIntermediateOutputPath=$msiIntermediate\",
     '-o', $msiOutput
 )
@@ -141,6 +147,7 @@ if (-not $SkipBundle) {
     & (Join-Path $PSScriptRoot 'Build-PeggyBundle.ps1') `
         -Version $versionInfo.SemanticVersion `
         -MsiPath $finalMsi `
+        -IconPath $iconPath `
         -OutputDirectory $outputRoot `
         -Configuration $Configuration `
         -SkipChecksum

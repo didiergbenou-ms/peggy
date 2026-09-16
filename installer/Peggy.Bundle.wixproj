@@ -10,7 +10,8 @@
       BundleVersion=$(BundleVersion);
       SemanticVersion=$(SemanticVersion);
       MsiPath=$(MsiPath);
-      PrerequisiteCheckerPath=$(PrerequisiteCheckerPath)
+      PrerequisiteCheckerPath=$(PrerequisiteCheckerPath);
+      IconPath=$(IconPath)
     </DefineConstants>
   </PropertyGroup>
 

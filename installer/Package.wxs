@@ -19,12 +19,14 @@
         IgnoreRemoveFailure="no" />
 
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <Icon Id="Peggy.exe" SourceFile="$(var.IconPath)" />
 
     <Property
         Id="ARPCOMMENTS"
         Value="Peggy $(var.SemanticVersion), a local-first Microsoft 365 desktop assistant" />
     <Property Id="ARPCONTACT" Value="Peggy maintainers" />
     <Property Id="ARPHELPLINK" Value="https://github.com/didiergbenou-ms/peggy#troubleshooting" />
+    <Property Id="ARPPRODUCTICON" Value="Peggy.exe" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/didiergbenou-ms/peggy" />
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="ARPNOREPAIR" Value="1" />
@@ -64,6 +66,8 @@
           Name="Peggy"
           Description="Peggy Microsoft 365 assistant"
           Target="[INSTALLFOLDER]peggy-tray.exe"
+          Icon="Peggy.exe"
+          IconIndex="0"
           WorkingDirectory="INSTALLFOLDER" />
       <RegistryValue
           Root="HKCU"

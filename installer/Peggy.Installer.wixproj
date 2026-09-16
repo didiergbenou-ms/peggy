@@ -12,7 +12,8 @@
       $(DefineConstants);
       ProductVersion=$(ProductVersion);
       SemanticVersion=$(SemanticVersion);
-      ProductCode=$(ProductCode)
+      ProductCode=$(ProductCode);
+      IconPath=$(IconPath)
     </DefineConstants>
   </PropertyGroup>
 

@@ -9,6 +9,12 @@ param(
     [Parameter(Mandatory)]
     [string]$OutputDirectory,
 
+    [string]$IconPath = (
+        Join-Path (
+            Split-Path -Parent $PSScriptRoot
+        ) 'src\Peggy.Tray\Assets\Peggy.ico'
+    ),
+
     [string]$Configuration = 'Release',
 
     [switch]$SkipChecksum
@@ -21,6 +27,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'PeggyInstallerVersion.ps1')
 $versionInfo = ConvertTo-PeggyInstallerVersion -Version $Version
 $resolvedMsi = (Resolve-Path -LiteralPath $MsiPath).Path
+$resolvedIcon = (Resolve-Path -LiteralPath $IconPath).Path
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 foreach ($artifactName in @(
@@ -72,6 +79,7 @@ $bundleArguments = @(
     "-p:SemanticVersion=$($versionInfo.SemanticVersion)",
     "-p:MsiPath=$resolvedMsi",
     "-p:PrerequisiteCheckerPath=$checkerPath",
+    "-p:IconPath=$resolvedIcon",
     "-p:BaseIntermediateOutputPath=$bundleIntermediate\",
     '-o', $bundleOutput
 )
