@@ -36,6 +36,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         @"^/teams/(?<team>[^/]+)/channels/(?<channel>[^/]+)/messages/" +
         @"(?<root>[^/?]+)(?:/replies/(?<message>[^/?]+))?",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex OutlookFolderEntityPathRegex = new(
+        @"^/me/mailFolders\('(?<id>(?:[^']|'')+)'\)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private readonly WorkIqClient _client;
     private readonly string _account;
@@ -77,7 +80,17 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         int limit,
         CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         limit = Math.Clamp(limit, 1, 100);
+        if ((source == MessageSource.Email &&
+             _settings.OutlookScope == OutlookMonitoringScope.Off) ||
+            (source == MessageSource.Teams &&
+              !MonitoringScopes.IncludesChats(_settings.TeamsScope)) ||
+            (_settings.OutlookScope == OutlookMonitoringScope.Off &&
+              !MonitoringScopes.IncludesChats(_settings.TeamsScope)))
+        {
+            return [];
+        }
         await GetCurrentUserIdAsync(ct);
 
         if (source == MessageSource.Email)
@@ -108,6 +121,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(cursor);
+        ct.ThrowIfCancellationRequested();
         limit = Math.Clamp(limit, 1, 500);
         var updated = CloneCursor(cursor);
         updated.InitialScanStartedUtc ??=
@@ -115,7 +129,10 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         updated.OutlookScanStartedUtc ??= updated.InitialScanStartedUtc;
         updated.TeamsScanStartedUtc ??= updated.InitialScanStartedUtc;
 
-        var currentUserId = await GetCurrentUserIdAsync(ct);
+        var currentUserId = _settings.OutlookScope == OutlookMonitoringScope.Off &&
+            _settings.TeamsScope == TeamsMonitoringScope.Off
+            ? string.Empty
+            : await GetCurrentUserIdAsync(ct);
         var messages = new List<Message>();
         string? warning = null;
         bool hasMore;
@@ -123,7 +140,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         {
             ClearTeamsMonitoringCursor(updated);
         }
-        if (_settings.TeamsScope != TeamsMonitoringScope.Off &&
+        if (MonitoringScopes.IncludesSelectedChannels(_settings.TeamsScope) &&
             !string.IsNullOrWhiteSpace(updated.ChannelScanResumeKey))
         {
             hasMore = await CollectChannelChangesAsync(
@@ -170,10 +187,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
             if (!hasMore && messages.Count < limit)
             {
-                hasMore = _settings.TeamsScope ==
-                    TeamsMonitoringScope.Off
-                    ? false
-                    : await CollectChannelChangesAsync(
+                hasMore = await CollectChannelChangesAsync(
                         updated,
                         messages,
                         currentUserId,
@@ -212,8 +226,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         => _settings.TeamsScope switch
         {
             TeamsMonitoringScope.AllActivity => true,
+            TeamsMonitoringScope.ChatsOnly => true,
+            TeamsMonitoringScope.ChatsAndSelectedChannels => true,
             TeamsMonitoringScope.SelectedTeamsAndChannels =>
-                _settings.MonitorTeamsChatsInSelectedScope ||
                 _settings.TeamsTeamWatchlist.Count > 0 ||
                 _settings.TeamsChannelWatchlist.Count > 0,
             _ => false
@@ -241,9 +256,8 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         }
 
         ClearStructuredTeamsCursor(cursor);
-        if (_settings.TeamsScope ==
-                TeamsMonitoringScope.SelectedTeamsAndChannels &&
-            _settings.MonitorTeamsChatsInSelectedScope)
+        if (_settings.TeamsScope is TeamsMonitoringScope.ChatsOnly or
+            TeamsMonitoringScope.ChatsAndSelectedChannels)
         {
             return await CollectDirectChatChangesAsync(
                 cursor,
@@ -1433,6 +1447,14 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     private async Task<IReadOnlyList<MailFolder>> GetMonitoredMailFoldersAsync(
         CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        if (_settings.OutlookScope == OutlookMonitoringScope.Off ||
+            (_settings.OutlookScope == OutlookMonitoringScope.SelectedFoldersOnly &&
+             !_settings.IncludeActiveCasesFolder &&
+             _settings.AdditionalOutlookFolders.Count == 0))
+        {
+            return [];
+        }
         if (_monitoredMailFolders is not null &&
             IsCatalogFresh(_monitoredMailFoldersLoadedUtc))
         {
@@ -1457,9 +1479,19 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             var childCache = new Dictionary<string, IReadOnlyList<MailFolder>>(
                 StringComparer.Ordinal);
             var monitored = new Dictionary<string, MailFolder>(StringComparer.Ordinal);
-            monitored[inbox.Id!] = inbox;
+            if (_settings.OutlookScope != OutlookMonitoringScope.SelectedFoldersOnly)
+            {
+                monitored[inbox.Id!] = inbox;
+            }
+            if (_settings.OutlookScope == OutlookMonitoringScope.InboxAndAllSubfolders)
+            {
+                await AddFolderTreeAsync(inbox, monitored, childCache, ct);
+            }
 
-            if (_settings.IncludeActiveCasesFolder)
+            var includesSelections = _settings.OutlookScope is
+                OutlookMonitoringScope.InboxAndSelectedFolders or
+                OutlookMonitoringScope.SelectedFoldersOnly;
+            if (includesSelections && _settings.IncludeActiveCasesFolder)
             {
                 var active = await ResolveFolderPathAsync(
                     inbox,
@@ -1470,7 +1502,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 await AddFolderTreeAsync(active, monitored, childCache, ct);
             }
 
-            foreach (var configuredPath in GetAdditionalFolderPaths())
+            foreach (var configuredPath in includesSelections
+                         ? GetAdditionalFolderPaths()
+                         : Array.Empty<string>())
             {
                 var segments = ParseFolderPath(configuredPath);
                 IReadOnlyList<string> relativeSegments =
@@ -1481,14 +1515,16 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                         StringComparison.OrdinalIgnoreCase)
                     ? segments.Skip(1).ToArray()
                     : segments;
-                var folder = relativeSegments.Count == 0
-                    ? inbox
-                    : await ResolveFolderPathAsync(
-                        inbox,
-                        relativeSegments,
-                        configuredPath,
-                        childCache,
-                        ct);
+                if (relativeSegments.Count == 0)
+                {
+                    continue;
+                }
+                var folder = await ResolveFolderPathAsync(
+                    inbox,
+                    relativeSegments,
+                    configuredPath,
+                    childCache,
+                    ct);
                 await AddFolderTreeAsync(folder, monitored, childCache, ct);
             }
 
@@ -1689,7 +1725,32 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             }
         }
 
-        var scope = Environment.GetEnvironmentVariable("PEGGY_TEAMS_SCOPE");
+        var outlookScope = Environment.GetEnvironmentVariable(
+            PeggyDefaults.OutlookScopeEnvironmentVariable);
+        if (!string.IsNullOrWhiteSpace(outlookScope))
+        {
+            if (!Enum.TryParse<OutlookMonitoringScope>(
+                    outlookScope, ignoreCase: true, out var parsedOutlookScope) ||
+                !Enum.IsDefined(parsedOutlookScope))
+            {
+                throw new InvalidOperationException(
+                    "PEGGY_OUTLOOK_SCOPE must be InboxOnly, InboxAndSelectedFolders, " +
+                    "SelectedFoldersOnly, InboxAndAllSubfolders, or Off.");
+            }
+            settings.OutlookScope = parsedOutlookScope;
+        }
+        else
+        {
+            settings.OutlookScope =
+                MonitoringScopes.InferLegacyOutlookScope(settings);
+        }
+
+        var mode = Environment.GetEnvironmentVariable(
+            PeggyDefaults.TeamsModeEnvironmentVariable);
+        var hasExplicitMode = !string.IsNullOrWhiteSpace(mode);
+        var scope = hasExplicitMode
+            ? mode
+            : Environment.GetEnvironmentVariable("PEGGY_TEAMS_SCOPE");
         if (!string.IsNullOrWhiteSpace(scope))
         {
             if (!Enum.TryParse<TeamsMonitoringScope>(
@@ -1699,14 +1760,22 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 !Enum.IsDefined(parsedScope))
             {
                 throw new InvalidOperationException(
-                    "PEGGY_TEAMS_SCOPE must be AllActivity, " +
-                    "SelectedTeamsAndChannels, or Off.");
+                    "PEGGY_TEAMS_MODE/PEGGY_TEAMS_SCOPE must be AllActivity, " +
+                    "SelectedTeamsAndChannels, ChatsOnly, " +
+                    "ChatsAndSelectedChannels, or Off.");
             }
             settings.TeamsScope = parsedScope;
         }
 
         var monitorChats = Environment.GetEnvironmentVariable(
             "PEGGY_TEAMS_MONITOR_CHATS");
+        if (!hasExplicitMode && string.IsNullOrWhiteSpace(scope) &&
+            (!string.IsNullOrWhiteSpace(watchlist) ||
+             !string.IsNullOrWhiteSpace(teamWatchlist) ||
+             !string.IsNullOrWhiteSpace(monitorChats)))
+        {
+            settings.TeamsScope = TeamsMonitoringScope.AllActivity;
+        }
         if (!string.IsNullOrWhiteSpace(monitorChats))
         {
             if (!bool.TryParse(monitorChats, out var parsedMonitorChats))
@@ -1714,7 +1783,12 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 throw new InvalidOperationException(
                     "PEGGY_TEAMS_MONITOR_CHATS must be true or false.");
             }
-            settings.MonitorTeamsChatsInSelectedScope = parsedMonitorChats;
+            if (!hasExplicitMode &&
+                settings.TeamsScope == TeamsMonitoringScope.SelectedTeamsAndChannels &&
+                parsedMonitorChats)
+            {
+                settings.TeamsScope = TeamsMonitoringScope.ChatsAndSelectedChannels;
+            }
         }
 
         return settings;
@@ -1724,6 +1798,10 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         int limit,
         CancellationToken ct)
     {
+        if (!MonitoringScopes.IncludesChats(_settings.TeamsScope))
+        {
+            return [];
+        }
         var chatsTask = FetchUnreadChatsAsync(limit, ct);
         var userIdTask = GetCurrentUserIdAsync(ct);
         await Task.WhenAll(chatsTask, userIdTask);
@@ -1830,7 +1908,16 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 throw new InvalidDataException(
                     "WorkIQ returned unread Teams chats without cursor fields.");
             }
-            foreach (var chat in valid.Where(HasUnreadActivity))
+            if (_settings.TeamsScope != TeamsMonitoringScope.AllActivity &&
+                valid.Any(chat => string.IsNullOrWhiteSpace(chat.ChatType)))
+            {
+                throw new InvalidDataException(
+                    "WorkIQ returned unread Teams chats without their type.");
+            }
+            foreach (var chat in valid.Where(chat =>
+                         HasUnreadActivity(chat) &&
+                         (_settings.TeamsScope == TeamsMonitoringScope.AllActivity ||
+                          IsDirectChatType(chat.ChatType ?? string.Empty))))
             {
                 chats[chat.Id!] = chat;
             }
@@ -3613,6 +3700,10 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     private async Task<IReadOnlyList<TeamsChannel>>
         GetDirectlyMonitoredChannelsAsync(CancellationToken ct)
     {
+        if (!MonitoringScopes.IncludesSelectedChannels(_settings.TeamsScope))
+        {
+            return [];
+        }
         var selectedTeamIds = _settings.TeamsTeamWatchlist
             .Where(watched => !string.IsNullOrWhiteSpace(watched.TeamId))
             .Select(watched => watched.TeamId)
@@ -3968,7 +4059,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             : results.Take(maximumItems.Value).ToList();
     }
 
-    private static string? NormalizeGraphUrl(string? url)
+    internal static string? NormalizeGraphUrl(string? url)
     {
         if (string.IsNullOrWhiteSpace(url))
         {
@@ -3983,6 +4074,21 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 StringComparison.OrdinalIgnoreCase))
         {
             relative = relative["/v1.0".Length..];
+        }
+
+        // Graph emits OData key syntax that WorkIQ rejects even though the
+        // equivalent slash-style entity path is allowed.
+        var outlookFolder = OutlookFolderEntityPathRegex.Match(relative);
+        if (outlookFolder.Success)
+        {
+            var folderId = Uri.UnescapeDataString(
+                outlookFolder.Groups["id"].Value.Replace(
+                    "''",
+                    "'",
+                    StringComparison.Ordinal));
+            relative =
+                $"/me/mailFolders/{Uri.EscapeDataString(folderId)}" +
+                relative[outlookFolder.Length..];
         }
 
         // WorkIQ validates "$skip" before distinguishing Graph's opaque

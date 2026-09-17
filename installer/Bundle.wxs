@@ -1,6 +1,7 @@
 <Wix
     xmlns="http://wixtoolset.org/schemas/v4/wxs"
-    xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+    xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+    xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Bundle
       Name="Peggy"
       Manufacturer="Didier Gbenou"
@@ -17,15 +18,21 @@
           LicenseUrl="" />
     </BootstrapperApplication>
 
+    <util:ProductSearch
+        Id="FindCurrentPeggyMsi"
+        Variable="PeggyCurrentMsiState"
+        ProductCode="$(var.ProductCode)"
+        Result="state" />
+
     <Chain>
       <ExePackage
           Id="PeggyPrerequisiteCheck"
           SourceFile="$(var.PrerequisiteCheckerPath)"
           Name="peggy-prerequisite-check.exe"
-          DisplayName="Peggy prerequisite check"
-          Description="Checks PowerShell, Node.js, npm, and GitHub Copilot CLI"
-          InstallArguments="--bundle"
-          RepairArguments="--bundle"
+          DisplayName="Prepare Peggy prerequisites"
+          Description="Review PowerShell, Node.js, npm, and GitHub Copilot CLI before installing Peggy"
+          InstallArguments="--bundle --display [WixBundleUILevel]"
+          RepairArguments="--bundle --display [WixBundleUILevel]"
           DetectCondition="0"
           Permanent="yes"
           PerMachine="no"
@@ -38,7 +45,25 @@
           Name="peggy-win-x64.msi"
           DisplayName="Peggy"
           Visible="no"
-          Vital="yes" />
+          Vital="yes">
+        <MsiProperty Name="PEGGY_BUNDLE" Value="1" />
+      </MsiPackage>
+      <!-- WiX 6: Full display=4, Install action=6. The current ProductCode
+           must be absent so maintenance of an existing MSI never launches.
+           A final per-user EXE avoids elevating Peggy or trusting a public
+           MSI property to opt quiet installs into launching UI. -->
+      <ExePackage
+          Id="LaunchPeggy"
+          CacheId="Peggy.Launch.$(var.BundleVersion)"
+          SourceFile="$(var.PrerequisiteCheckerPath)"
+          Name="launch\peggy-prerequisite-check.exe"
+          DisplayName="Start Peggy"
+          InstallArguments="--launch-bundle --display [WixBundleUILevel] --action [WixBundleAction] --target &quot;[LocalAppDataFolder]Programs\Peggy\peggy-tray.exe&quot;"
+          InstallCondition="WixBundleUILevel = 4 AND WixBundleAction = 6 AND NOT WixBundleInstalled AND PeggyCurrentMsiState &lt;&gt; 5"
+          DetectCondition="0"
+          Permanent="yes"
+          PerMachine="no"
+          Vital="no" />
     </Chain>
   </Bundle>
 </Wix>

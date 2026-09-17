@@ -3,6 +3,8 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Peggy.Core;
+using Peggy.PrerequisiteCheck;
+using Peggy.UninstallCleanup;
 
 namespace Peggy.Core.Tests;
 
@@ -16,6 +18,8 @@ internal static class CoreBehaviorSmokeTests
         await TestStateValidationAsync(directory);
         TestMonitoringSchedule();
         TestMonitoringFailureInspection();
+        TestInstallerCopilotOverride(directory);
+        TestUninstallUserDataCleanup(directory);
         TestOutlookFolderPaths();
         TestOpaqueIdentifiers();
         TestProviderFactory();
@@ -23,14 +27,17 @@ internal static class CoreBehaviorSmokeTests
         await TestStandaloneWorkIqSetupAsync(directory);
         TestConfiguredStatePath(directory);
         TestWorkIqTransportClassification();
+        TestOutlookContinuationNormalization();
         await TestWorkIqRetryPolicyAsync(directory);
         await TestOutlookFolderCatalogAsync(directory);
+        await TestOutlookFolderPaginationAsync(directory);
         await TestOutlookSelfAuthoredFilteringAsync(directory);
         await TestStructuredTeamsMonitoringAsync(directory);
         await TestStructuredSearchTransportRetryAsync(directory);
         await TestStructuredTeamsCrossPathIdentityAsync(directory);
         await TestChannelDeltaContinuationAsync(directory);
         await TestTeamsMonitoringScopesAsync(directory);
+        await MonitoringScopeSmokeTests.RunAsync(directory);
         await TestLiveActionTransportAsync();
         TestActionPolicy();
         await TestMockProviderAsync();
@@ -176,6 +183,99 @@ internal static class CoreBehaviorSmokeTests
             "Scheduled wake did not rebase monitoring to the five-minute window.");
     }
 
+    private static void TestUninstallUserDataCleanup(string directory)
+    {
+        var parent = Path.Combine(directory, "uninstall-cleanup");
+        var dataDirectory = Path.Combine(parent, "Peggy");
+        var sibling = Path.Combine(parent, "keep.txt");
+        var modelDirectory = Path.Combine(dataDirectory, "models", "voice");
+        Directory.CreateDirectory(modelDirectory);
+        File.WriteAllText(Path.Combine(dataDirectory, "state.dat"), "state");
+        var modelPath = Path.Combine(modelDirectory, "model.bin");
+        File.WriteAllText(modelPath, "model");
+        File.SetAttributes(modelPath, FileAttributes.ReadOnly);
+        File.WriteAllText(sibling, "keep");
+        var variable = $"PEGGY_TEST_ACCOUNT_{Guid.NewGuid():N}";
+        Environment.SetEnvironmentVariable(
+            variable,
+            "account@example.com",
+            EnvironmentVariableTarget.Process);
+        try
+        {
+            UserDataCleanup.Run(
+                dataDirectory,
+                variable,
+                EnvironmentVariableTarget.Process);
+            TestAssert.True(
+                !Directory.Exists(dataDirectory) &&
+                File.Exists(sibling) &&
+                Environment.GetEnvironmentVariable(
+                    variable,
+                    EnvironmentVariableTarget.Process) is null,
+                "True uninstall cleanup did not remove state, speech models, " +
+                "and the account preference without touching sibling data.");
+
+            UserDataCleanup.Run(
+                dataDirectory,
+                variable,
+                EnvironmentVariableTarget.Process);
+            TestAssert.Throws<InvalidOperationException>(
+                () => UserDataCleanup.Run(
+                    parent,
+                    variable,
+                    EnvironmentVariableTarget.Process),
+                "Uninstall cleanup accepted a directory broader than Peggy.");
+        }
+
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                variable,
+                null,
+                EnvironmentVariableTarget.Process);
+        }
+    }
+
+    private static void TestInstallerCopilotOverride(string directory)
+    {
+        var previous = Environment.GetEnvironmentVariable(
+            "PEGGY_COPILOT_PATH");
+        var copilotPath = Path.Combine(directory, "override-copilot.exe");
+        File.WriteAllText(copilotPath, "test");
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_COPILOT_PATH",
+                $"\"{copilotPath}\"");
+            var valid = CopilotPrerequisite.ResolveCandidates(directory);
+            TestAssert.True(
+                valid.Error is null &&
+                valid.Candidates.SequenceEqual(
+                    [Path.GetFullPath(copilotPath)],
+                    StringComparer.OrdinalIgnoreCase),
+                "The installer did not prioritize Peggy's configured Copilot " +
+                "executable.");
+
+            Environment.SetEnvironmentVariable(
+                "PEGGY_COPILOT_PATH",
+                Path.Combine(directory, "missing-copilot.exe"));
+            var missing = CopilotPrerequisite.ResolveCandidates(directory);
+            TestAssert.True(
+                missing.Candidates.Count == 0 &&
+                missing.Error?.Contains(
+                    "does not identify",
+                    StringComparison.Ordinal) == true,
+                "The installer silently bypassed an invalid configured " +
+                "Copilot executable.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_COPILOT_PATH",
+                previous);
+        }
+    }
+
     private static async Task TestAtomicSettingsStateAsync(string directory)
     {
         var path = Path.Combine(directory, "settings-state.dat");
@@ -314,9 +414,9 @@ internal static class CoreBehaviorSmokeTests
                 CopilotReasoningEffort = "high",
                 CopilotContextTier = PeggyDefaults.CopilotContextTierLong,
                 IncludeActiveCasesFolder = true,
+                OutlookScope = OutlookMonitoringScope.InboxAndSelectedFolders,
                 AdditionalOutlookFolders = ["Inbox/Private old folder"],
-                TeamsScope = TeamsMonitoringScope.SelectedTeamsAndChannels,
-                MonitorTeamsChatsInSelectedScope = true,
+                TeamsScope = TeamsMonitoringScope.ChatsAndSelectedChannels,
                 TeamsTeamWatchlist =
                 [
                     new TeamsTeamWatch
@@ -433,9 +533,10 @@ internal static class CoreBehaviorSmokeTests
                     PeggyDefaults.CopilotContextTierLong &&
                 !manager.State.Settings.IncludeActiveCasesFolder &&
                 manager.State.Settings.AdditionalOutlookFolders.Count == 0 &&
+                manager.State.Settings.OutlookScope ==
+                    OutlookMonitoringScope.InboxAndSelectedFolders &&
                 manager.State.Settings.TeamsScope ==
-                    TeamsMonitoringScope.SelectedTeamsAndChannels &&
-                manager.State.Settings.MonitorTeamsChatsInSelectedScope &&
+                    TeamsMonitoringScope.ChatsAndSelectedChannels &&
                 manager.State.Settings.TeamsTeamWatchlist.Count == 0 &&
                 manager.State.Settings.TeamsChannelWatchlist.Count == 0 &&
                 !manager.State.Settings.StartAtSignIn &&
@@ -572,7 +673,9 @@ internal static class CoreBehaviorSmokeTests
             normalizedSettings.SpeechSpeed == 1.15F &&
             normalizedSettings.SpeechTuningVersion == 3 &&
             normalizedSettings.TeamsScope ==
-                TeamsMonitoringScope.AllActivity &&
+                TeamsMonitoringScope.ChatsOnly &&
+            normalizedSettings.OutlookScope ==
+                OutlookMonitoringScope.InboxOnly &&
             normalizedSettings.TeamsTeamWatchlist is not null &&
             normalizedSettings.TeamsChannelWatchlist is not null &&
             normalizedSettings.MonitoringScheduleEnabled &&
@@ -1292,6 +1395,7 @@ internal static class CoreBehaviorSmokeTests
                 settings: new PeggySettings
                 {
                     IncludeActiveCasesFolder = true,
+                    OutlookScope = OutlookMonitoringScope.InboxAndSelectedFolders,
                     TeamsScope = TeamsMonitoringScope.Off
                 });
             var cursor = new MonitoringCursorState
@@ -1450,6 +1554,7 @@ internal static class CoreBehaviorSmokeTests
                 {
                     IncludeActiveCasesFolder = false,
                     AdditionalOutlookFolders = [OutlookFolderPath.Inbox],
+                    OutlookScope = OutlookMonitoringScope.InboxAndAllSubfolders,
                     TeamsScope = TeamsMonitoringScope.Off
                 });
             _ = await allFoldersProvider.ListUnreadAsync(
@@ -1495,6 +1600,100 @@ internal static class CoreBehaviorSmokeTests
             Environment.SetEnvironmentVariable(
                 PeggyDefaults.IncludeActiveCasesFolderEnvironmentVariable,
                 previousIncludeActive);
+        }
+    }
+
+    private static void TestOutlookContinuationNormalization()
+    {
+        const string folderId = "AQMkAD-test_folder/id==";
+        const string continuation =
+            "https://graph.microsoft.com/v1.0/me/" +
+            "mailFolders('AQMkAD-test_folder/id==')/childFolders" +
+            "?%24select=id%2cdisplayName%2cparentFolderId%2c" +
+            "childFolderCount&%24top=50&%24skip=50";
+        const string expected =
+            "/me/mailFolders/AQMkAD-test_folder%2Fid%3D%3D/childFolders" +
+            "?%24select=id%2cdisplayName%2cparentFolderId%2c" +
+            "childFolderCount&%24top=50&%24skip=50";
+
+        var normalized = WorkIqMessageProvider.NormalizeGraphUrl(continuation);
+
+        TestAssert.Equal(
+            expected,
+            normalized,
+            $"The Graph continuation for Outlook folder '{folderId}' was " +
+            "not converted to the WorkIQ-approved slash path.");
+    }
+
+    private static async Task TestOutlookFolderPaginationAsync(
+        string directory)
+    {
+        var executable = Environment.ProcessPath
+            ?? throw new InvalidOperationException(
+                "The test executable path is unavailable.");
+        var logPath = Path.Combine(
+            directory,
+            "outlook-folder-pagination.log");
+        var previousScenario = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_SCENARIO");
+        var previousLog = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_WORKIQ_LOG");
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                "outlook-folder-pagination");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                logPath);
+            var provider = new WorkIqMessageProvider(
+                executablePath: executable,
+                settings: new PeggySettings
+                {
+                    IncludeActiveCasesFolder = true,
+                    OutlookScope = OutlookMonitoringScope.InboxAndSelectedFolders,
+                    TeamsScope = TeamsMonitoringScope.Off
+                });
+
+            var unread = await provider.ListUnreadAsync(
+                MessageSource.Email,
+                10);
+            var requests = File.ReadAllLines(logPath);
+            TestAssert.True(
+                unread.Select(message => message.From).ToHashSet(
+                    StringComparer.Ordinal).SetEquals(
+                    ["First sender", "Second sender"]),
+                "Outlook message pagination did not return both pages.");
+            TestAssert.True(
+                requests.Any(request =>
+                    request.StartsWith(
+                        "fetch /me/mailFolders/opaque-inbox%2Fid%3D%3D/" +
+                        "childFolders?",
+                        StringComparison.Ordinal) &&
+                    request.Contains(
+                        "%24skip=50",
+                        StringComparison.OrdinalIgnoreCase)) &&
+                requests.Any(request =>
+                    request.StartsWith(
+                        "fetch /me/mailFolders/active/messages?",
+                        StringComparison.Ordinal) &&
+                    request.Contains(
+                        "%24skip=50",
+                        StringComparison.OrdinalIgnoreCase)) &&
+                requests.All(request => !request.Contains(
+                    "mailFolders('",
+                    StringComparison.OrdinalIgnoreCase)),
+                "Graph Outlook continuations were not normalized to " +
+                "WorkIQ-approved paths.");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_SCENARIO",
+                previousScenario);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_WORKIQ_LOG",
+                previousLog);
         }
     }
 
@@ -1851,8 +2050,7 @@ internal static class CoreBehaviorSmokeTests
                 settings: new PeggySettings
                 {
                     TeamsScope =
-                        TeamsMonitoringScope.SelectedTeamsAndChannels,
-                    MonitorTeamsChatsInSelectedScope = true
+                        TeamsMonitoringScope.ChatsAndSelectedChannels
                 });
             var directFirst = await directChatProvider.GetChangesAsync(
                 new MonitoringCursorState
@@ -2116,7 +2314,7 @@ internal static class CoreBehaviorSmokeTests
                 "primary@example.invalid");
             var provider = new WorkIqMessageProvider(
                 executablePath: executable,
-                settings: new PeggySettings());
+                settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity });
             var firstBatch = await provider.GetChangesAsync(
                 new MonitoringCursorState(),
                 100,
@@ -2192,7 +2390,7 @@ internal static class CoreBehaviorSmokeTests
             File.WriteAllText(logPath, string.Empty);
             var promptOnlyProvider = new WorkIqMessageProvider(
                 executablePath: executable,
-                settings: new PeggySettings());
+                settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity });
             TestAssert.Equal(
                 "Configured semantic answer.",
                 await promptOnlyProvider.AskWorkAsync(
@@ -2217,7 +2415,7 @@ internal static class CoreBehaviorSmokeTests
             File.WriteAllText(logPath, string.Empty);
             var contextProvider = new WorkIqMessageProvider(
                 executablePath: executable,
-                settings: new PeggySettings());
+                settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity });
             var resolution = await contextProvider.ResolveContextAsync(
                 MessageSource.Teams,
                 "A decision is requested.",
@@ -2345,7 +2543,7 @@ internal static class CoreBehaviorSmokeTests
                 unlinkedResponse);
             var withheld = await new WorkIqMessageProvider(
                         executablePath: executable,
-                        settings: new PeggySettings())
+                        settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity })
                 .GetChangesAsync(
                         new MonitoringCursorState(),
                         100,
@@ -2363,7 +2561,7 @@ internal static class CoreBehaviorSmokeTests
                 """{"value":[]}""");
             var degraded = await new WorkIqMessageProvider(
                     executablePath: executable,
-                    settings: new PeggySettings())
+                    settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity })
                 .GetChangesAsync(
                     new MonitoringCursorState(),
                     100,
@@ -2472,7 +2670,7 @@ internal static class CoreBehaviorSmokeTests
             var now = DateTimeOffset.UtcNow;
             var batch = await new WorkIqMessageProvider(
                     executablePath: executable,
-                    settings: new PeggySettings())
+                    settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity })
                 .GetChangesAsync(
                     new MonitoringCursorState(),
                     100,
@@ -2620,6 +2818,7 @@ internal static class CoreBehaviorSmokeTests
                 executablePath: executable,
                 settings: new PeggySettings
                 {
+                    TeamsScope = TeamsMonitoringScope.AllActivity,
                     TeamsChannelWatchlist =
                     [
                         new TeamsChannelWatch
@@ -2707,7 +2906,7 @@ internal static class CoreBehaviorSmokeTests
                 "chat-metadata");
             var metadataOnly = await new WorkIqMessageProvider(
                     executablePath: executable,
-                    settings: new PeggySettings())
+                    settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity })
                 .GetChangesAsync(
                     new MonitoringCursorState(),
                     100,
@@ -2733,7 +2932,7 @@ internal static class CoreBehaviorSmokeTests
                 "chat-edit");
             var actualEdit = await new WorkIqMessageProvider(
                     executablePath: executable,
-                    settings: new PeggySettings())
+                    settings: new PeggySettings { TeamsScope = TeamsMonitoringScope.AllActivity })
                 .GetChangesAsync(
                     new MonitoringCursorState(),
                     100,

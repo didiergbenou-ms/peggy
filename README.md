@@ -115,13 +115,19 @@ whose owning process has exited.
 
 ### Outlook
 
-Peggy monitors:
+Outlook has five monitoring modes:
 
-- Inbox.
-- Folder roots selected in Settings and every descendant of those folders.
+| Mode | Included sources |
+| --- | --- |
+| **Inbox only** (fresh-install default) | Inbox itself, without subfolders |
+| **Inbox + selected folders** | Inbox plus selected subfolder trees |
+| **Selected folders only** | Selected subfolder trees, excluding Inbox itself |
+| **Inbox + all subfolders** | Inbox and all current and future descendants |
+| **Off** | No Outlook monitoring |
 
-Fresh installs select no additional folder roots. Existing saved selections
-remain unchanged during upgrades.
+Folder selection is limited to the Inbox hierarchy, not other top-level
+mailbox folders. Selecting a folder includes its descendants. Existing saved
+selections and effective scope are migrated without change during upgrades.
 
 Outlook cursors use message activity boundaries and delta links where
 available. Source references are verified before they are attached to alerts.
@@ -149,10 +155,20 @@ WorkIQ exposes `/search/query` through its generic `do_action` POST transport,
 but the operation is read-only. Peggy does not send or modify a Teams item
 during monitoring.
 
-The **Selected teams and channels only** scope does not run broad Teams
-search. Direct and group chats can be included separately; when enabled,
-Peggy reads only their recent bounded message windows. Meeting chats remain
-excluded from this option. The **Off** scope performs no Teams message reads.
+Teams has five monitoring modes:
+
+| Mode | Included sources |
+| --- | --- |
+| **Chats only** (fresh-install default) | Direct and group chats |
+| **Chats + selected channels** | Chats plus selected channels or entire teams |
+| **Selected channels only** | Selected channels or entire teams, without chats |
+| **All Teams activity** | Broad discovery plus full monitoring of selected channels |
+| **Off** | No Teams monitoring |
+
+The chat-specific modes use recent bounded direct and group chat windows and
+exclude meeting chats. Only **All Teams activity** runs broad structured search.
+Saved selections remain available when changing modes but do not broaden the
+current mode. Existing installations retain their effective monitoring scope.
 
 Explicit unread views remain bounded structured WorkIQ reads and compare chat
 activity with the caller's `lastMessageReadDateTime`. Teams links must identify
@@ -184,6 +200,11 @@ material-change hash. Alerts can be:
 
 Feedback such as **Less like this** and **Always alert** is retained locally and
 included in later classification runs.
+
+New or reactivated Critical/Attention alerts appear in Peggy's bubble without
+opening or focusing the Alert Center. Its contents still refresh if it is
+already open. Open it explicitly from the tray; existing startup and monitoring
+failure notices remain separate.
 
 ## Privacy
 
@@ -344,13 +365,15 @@ The
 [latest GitHub Release](https://github.com/didiergbenou-ms/peggy/releases/latest)
 offers three current-user installation paths:
 
-1. **`peggy-win-x64-setup.exe` (recommended)** checks for PowerShell 7,
-   Node.js 18 with npm, and GitHub Copilot CLI 1.0.81 or later, then installs
-   the embedded MSI. It never installs prerequisites or credentials silently.
-   If a check fails, install the named prerequisite or use `install.ps1
-   -InstallPrerequisites` explicitly.
-2. **`peggy-win-x64.msi`** installs Peggy directly when prerequisites are
-   already available.
+1. **`peggy-win-x64-setup.exe` (recommended)** opens a prerequisite checklist
+   for PowerShell 7, Node.js 18 with npm, and GitHub Copilot CLI 1.0.81 or later
+   before installing the embedded MSI. Each requirement shows its status,
+   version and technical details, with a per-step running indicator, **Retry** and explicit WinGet
+   **Install/Update/Repair** actions. Vendor consent and elevation remain
+   visible; dependencies are never installed silently. If WinGet is unavailable,
+   use the offered official download links or `install.ps1 -InstallPrerequisites`.
+2. **`peggy-win-x64.msi`** runs the same prerequisite check and installs
+   Peggy directly when all requirements are available.
 3. **`install.ps1`** retains the existing checksum-verified ZIP path, optional
    WinGet prerequisite installation, and optional speech-model download.
 
@@ -360,6 +383,12 @@ Peggy Start menu shortcut. WorkIQ installation, EULA acceptance, and Microsoft
 365 sign-in remain explicit first-run actions. The MSI and bootstrapper do not
 download the optional speech models; run the packaged
 `scripts\Install-SpeechModels.ps1` if voice is wanted.
+
+Successful full-UI installation or upgrade starts Peggy automatically in the
+signed-in user's desktop session. Quiet/passive installs, maintenance,
+uninstalls and administrative extraction do not launch Peggy. Direct MSI and
+unattended setup check prerequisites but never install them; use the interactive
+setup executable for guided prerequisite installation.
 
 Interactive installation:
 
@@ -427,10 +456,11 @@ msiexec.exe /x .\peggy-win-x64.msi /qn /norestart
 ```
 
 Normal MSI/bootstrapper uninstall removes application files, the Start menu
-shortcut, ARP registration, and the Peggy startup Run entry only when it points
-to this canonical installation. It preserves `%LOCALAPPDATA%\Peggy\state.dat`
-and `%LOCALAPPDATA%\Peggy\models`. It never removes shared PowerShell, Node.js,
-GitHub Copilot CLI, or WorkIQ installations.
+shortcut, ARP registration, the Peggy startup Run entry only when it points to
+this canonical installation, `%LOCALAPPDATA%\Peggy` (including encrypted state
+and speech models), and the current-user `PEGGY_WORKIQ_ACCOUNT` preference.
+Major upgrades preserve that data. Uninstall never removes shared PowerShell,
+Node.js, GitHub Copilot CLI, or WorkIQ installations.
 
 For the script-installed path, exit Peggy and run the uninstaller from its
 installation directory:
@@ -450,10 +480,6 @@ temporary runtime data and synchronized account preference too, add
 powershell.exe -ExecutionPolicy Bypass -File `
     "$env:LOCALAPPDATA\Programs\Peggy\uninstall.ps1" -PurgeData
 ```
-
-After an MSI/bootstrapper uninstall, download the standalone `uninstall.ps1`
-release asset and run `.\uninstall.ps1 -PurgeData` to perform the same full data
-purge. Do not purge data by deleting broad LocalAppData directories.
 
 Use `-WhatIf` to preview the cleanup. Shared prerequisites such as PowerShell 7,
 Node.js, GitHub Copilot CLI, and WorkIQ are not removed. An uninstaller run from
@@ -505,24 +531,46 @@ host beside the tray executable.
 
 On first launch, Peggy opens **Peggy setup**:
 
-1. Install standalone WorkIQ if it is not already available.
-2. Enter the Microsoft 365 email address Peggy should use.
+1. Review local prerequisite readiness and install standalone WorkIQ if needed.
+   Check GitHub Copilot access, or use **Sign in to GitHub Copilot** when authentication
+   is needed. Peggy uses the official CLI's **device-code flow**: select
+   **Copy code** and **Open GitHub**, authorize the one-time code in GitHub,
+   then wait for the model-access check. The CLI manages credentials; Peggy
+   never asks for a GitHub password or stores the sign-in code in its state.
+   Network sign-in and permission consent require explicit actions.
+2. Enter the work email address Peggy should use. Only a previously verified
+   identity is prefilled; unverified environment hints are not used.
 3. Review and accept the WorkIQ EULA. Peggy records the exact accepted WorkIQ
    build in its encrypted state.
 4. Optionally select **Install voice models** to download and SHA-256 verify
    about 803 MiB of local English speech models.
-5. Select **Sign in** and complete any Microsoft sign-in or permission-consent
-   prompt WorkIQ opens.
-6. Peggy reads `/me`, verifies the selected identity, and pins the canonical
-   account in DPAPI-encrypted state.
+5. Select **Sign in with Microsoft** and complete any Microsoft sign-in or
+   permission-consent prompt WorkIQ opens. Peggy never asks for a password.
+6. Under **Microsoft 365 connection**, review **Account verified** and
+   **Mail access ready**. Peggy checks the authenticated profile and Inbox
+   access separately without enumerating Inbox subfolders.
+7. Review the connected-account card and complete setup. **Change account**
+   returns to the editable email field. Mismatched identities are rejected;
+   cancellation preserves Peggy's previously pinned connection.
 
 If the tenant has not granted the required WorkIQ permissions, an administrator
 must complete tenant consent before verification can succeed.
 
+Each setup step shows its actual progress independently: a spinner while work
+is running, a distinct waiting-for-user state during authorization, a green
+check after success, and a warning with retry guidance on failure. Completion,
+cancellation and window closure stop the animation. Windows reduced-animation
+preferences retain the status text and static icon without continuous movement.
+GitHub codes are cleared when sign-in ends or is cancelled; expired or rejected
+authorization requires a new attempt. If the installed CLI does not expose
+`login --device-code`, update it rather than silently changing sign-in flows.
+Microsoft 365 sign-in remains WorkIQ-managed and uses the verified work email.
+
 Voice setup can be skipped. Open **Settings → Local voice (English only)** and
 select **Install voice models** later; the same verified downloader is used.
-Fresh installs monitor Inbox only. Additional Inbox folders, including
-`Inbox/Cases/Active`, are opt-in through Settings.
+Fresh installs monitor **Inbox only** and **Chats only**. Additional Inbox
+folders and Teams channels are opt-in through Settings. Optional voice does
+not block setup completion.
 
 Use **Microsoft 365 account** from the tray or **Change or reconnect** in
 Settings to refresh authentication or enter another account. After Peggy
@@ -622,7 +670,8 @@ not leave a partially applied identity, model, or source scope.
 | Pinned Copilot model | Loaded live from the authenticated GitHub Copilot CLI; **Refresh** uses a new catalog connection so newly available models appear without restarting Peggy; changing it starts a fresh Copilot session |
 | Reasoning effort | Shows only the effort levels supported by the selected model; **Model default** lets Copilot choose |
 | Context tier | Offers **Default** for every model and **Long context** only when the live catalog reports support |
-| Outlook folders | Monitors Inbox only by default; loads its hierarchy lazily so optional folder roots and all their descendants can be selected, while saved unavailable paths remain visible |
+| Outlook monitoring scope | Inbox only, Inbox + selected folders, Selected folders only, Inbox + all subfolders, or Off |
+| Outlook folder picker | Shown for selected-folder modes; includes descendants and preserves unavailable saved selections |
 | Enable local speech | Enables or disables the isolated English speech host |
 | Speech model directory | Defaults to `%LOCALAPPDATA%\Peggy\models` |
 | Install voice models | Downloads or repairs the SHA-256-verified English model bundle; about 803 MiB |
@@ -632,9 +681,15 @@ not leave a partially applied identity, model, or source scope.
 | Monitoring schedule | Local 24-hour wake and sleep times |
 | Start at Windows sign-in | Manages the current user's `Run` registry entry |
 | Pause monitoring | Persists a manual pause independently of scheduled sleep |
-| Teams monitoring scope | All Teams activity, selected teams and channels only, or Off |
-| Direct and group chats | Optional in selected-only mode; meeting chats stay excluded |
-| Teams source picker | Loads joined teams first, then loads channels only when a team is expanded |
+| Teams monitoring scope | Chats only, Chats + selected channels, Selected channels only, All Teams activity, or Off |
+| Teams source picker | Shown where channel selection applies; children are loaded only when expanded |
+
+Source catalogs use account-specific in-memory caches across Settings windows.
+Cached metadata appears immediately and stale lists refresh in the background.
+**Refresh** requests current metadata; **Retry** recovers failures without
+reopening Settings. Refresh does not erase selections, and unavailable saved
+sources remain visible. Cached entries are not used as proof of live access.
+There is no separate "Selected only" display filter.
 
 Selected sources are always listed at the top of Settings and can be removed
 without loading their team. Selecting an individual channel enables full
@@ -821,12 +876,16 @@ creates a disposable `msiexec /a` administrative image, hashes every extracted
 payload file, and extracts the Burn container with the pinned WiX command.
 
 The MSI relies on Windows Installer Restart Manager for files in use, so only
-processes holding this installation's files are asked to stop. A single checked,
+processes holding this installation's files are asked to stop. A checked,
 current-user deferred custom action is used on a real uninstall (not a major
 upgrade) to remove the startup Run value only when it resolves exactly to the
 canonical Peggy executable. A paired rollback action restores that exact value
-if MSI rolls the uninstall back. Both validate the path, preserve mismatched
-values, return errors to MSI, and make no elevated or broad filesystem changes.
+if MSI rolls the uninstall back. After `InstallFinalize` successfully commits a
+true uninstall, a separate current-user action removes Peggy's user-data root
+and synchronized account preference. The cleanup action does not run during
+upgrades or failed uninstalls and does not remove shared prerequisites or
+broader LocalAppData. Any post-commit cleanup error is recorded by Windows
+Installer without reversing the already-completed application uninstall.
 
 Release packages are currently checksum-verified but not Authenticode-signed.
 Windows SmartScreen can therefore show an unknown-publisher warning. The
@@ -913,6 +972,8 @@ external writes.
 | `PEGGY_COPILOT_PATH` | Explicit `copilot.exe` path | `PATH`, then the current user's WinGet links |
 | `PEGGY_COPILOT_MODEL` | Process-level Copilot model override | Saved setting, initially `gpt-5.4` |
 | `PEGGY_STATE_PATH` | Alternate DPAPI-encrypted state path | `%LOCALAPPDATA%\Peggy\state.dat` |
+| `PEGGY_OUTLOOK_SCOPE` | Authoritative Outlook mode for standalone providers | `InboxOnly` |
+| `PEGGY_TEAMS_MODE` | Authoritative Teams mode for standalone providers | `ChatsOnly` |
 | `PEGGY_SPEECH_MODELS` | Alternate local speech-model directory | `%LOCALAPPDATA%\Peggy\models` |
 | `PEGGY_SPEECH_HOST_PATH` | Explicit packaged speech-host executable | Auto-detected |
 | `PEGGY_LOG_PATH` | Diagnostic log path | `%TEMP%\peggy.log` |

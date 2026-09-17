@@ -567,6 +567,7 @@ public sealed class PeggyStateManager
             CopilotReasoningEffort = settings.CopilotReasoningEffort,
             CopilotContextTier = settings.CopilotContextTier,
             IncludeActiveCasesFolder = false,
+            OutlookScope = settings.OutlookScope,
             TeamsScope = settings.TeamsScope,
             MonitorTeamsChatsInSelectedScope =
                 settings.MonitorTeamsChatsInSelectedScope,

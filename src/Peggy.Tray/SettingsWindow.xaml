@@ -149,21 +149,33 @@
 
         <GroupBox Header="Outlook monitoring" Margin="0,0,0,16">
           <StackPanel>
-            <TextBlock
-                Text="Inbox messages are always monitored. Additional folders are optional, and selecting one includes all its descendants."
+            <TextBlock Text="Monitoring scope"
+                       Style="{StaticResource SettingsLabelStyle}"/>
+            <ComboBox x:Name="OutlookScopeCombo"
+                      AutomationProperties.Name="Outlook monitoring scope"
+                      Margin="0,6,0,7"
+                      SelectionChanged="OutlookScope_Changed">
+              <ComboBoxItem Content="Inbox only" Tag="InboxOnly"/>
+              <ComboBoxItem Content="Inbox + selected folders" Tag="InboxAndSelectedFolders"/>
+              <ComboBoxItem Content="Selected folders only" Tag="SelectedFoldersOnly"/>
+              <ComboBoxItem Content="Inbox + all subfolders" Tag="InboxAndAllSubfolders"/>
+              <ComboBoxItem Content="Off" Tag="Off"/>
+            </ComboBox>
+            <TextBlock x:Name="OutlookScopeDescription"
                 Style="{StaticResource SettingsHintStyle}"
                 Margin="0,0,0,10"/>
-            <CheckBox x:Name="AllInboxFoldersCheck"
-                      Content="Include every Inbox subfolder"
-                      AutomationProperties.Name="Include every Inbox subfolder"
-                      FontWeight="SemiBold"
-                      Margin="0,0,0,10"
-                      Checked="AllInboxFoldersCheck_Changed"
-                      Unchecked="AllInboxFoldersCheck_Changed"/>
+            <StackPanel x:Name="OutlookSelectionPanel">
+            <DockPanel Margin="0,0,0,12">
+              <Button x:Name="RefreshOutlookFoldersButton"
+                      DockPanel.Dock="Right" Content="Refresh"
+                      AutomationProperties.Name="Refresh Outlook folders"
+                      Style="{StaticResource PeggySecondaryButtonStyle}"
+                      Margin="10,0,0,0" Click="RefreshOutlookFolders_Click"/>
             <TextBlock x:Name="OutlookFolderStatus"
-                       Text="Loading Outlook folders..."
+                       Text="Outlook folders have not been loaded."
                        Style="{StaticResource SettingsHintStyle}"
-                       Margin="0,0,0,12"/>
+                       AutomationProperties.LiveSetting="Polite"/>
+            </DockPanel>
             <TextBlock x:Name="SelectedOutlookFolderStatus"
                        Text="Selected additional folders"
                        Style="{StaticResource SettingsLabelStyle}"
@@ -183,6 +195,7 @@
                 <StackPanel x:Name="OutlookFoldersPanel"/>
               </ScrollViewer>
             </Border>
+            </StackPanel>
           </StackPanel>
         </GroupBox>
 
@@ -336,21 +349,20 @@
                       Margin="0,6,0,7"
                       AutomationProperties.Name="Teams monitoring scope"
                       SelectionChanged="TeamsScope_Changed">
+              <ComboBoxItem Content="Chats only"
+                            Tag="ChatsOnly"/>
+              <ComboBoxItem Content="Chats + selected channels"
+                            Tag="ChatsAndSelectedChannels"/>
+              <ComboBoxItem Content="Selected channels only"
+                            Tag="SelectedTeamsAndChannels"/>
               <ComboBoxItem Content="All Teams activity"
                             Tag="AllActivity"/>
-              <ComboBoxItem Content="Selected teams and channels only"
-                            Tag="SelectedTeamsAndChannels"/>
               <ComboBoxItem Content="Off"
                             Tag="Off"/>
             </ComboBox>
             <TextBlock x:Name="TeamsScopeDescription"
                        Style="{StaticResource SettingsHintStyle}"
                        Margin="0,0,0,10"/>
-            <CheckBox x:Name="MonitorTeamsChatsCheck"
-                      Content="Also monitor direct and group chats in selected-only mode"
-                      Checked="TeamsScope_Changed"
-                      Unchecked="TeamsScope_Changed"
-                      Margin="0,0,0,10"/>
             <Border x:Name="TeamsScopeWarning"
                     Background="{StaticResource PeggyWarningSurfaceBrush}"
                     BorderBrush="#E7CE79"
@@ -364,12 +376,18 @@
                          Foreground="{StaticResource PeggyWarningBrush}"
                          FontSize="11"/>
             </Border>
-            <Separator Margin="0,0,0,12"/>
             <StackPanel x:Name="TeamsSelectionPanel">
+              <DockPanel Margin="0,0,0,12">
+                <Button x:Name="RefreshTeamsButton"
+                        DockPanel.Dock="Right" Content="Refresh"
+                        AutomationProperties.Name="Refresh joined teams"
+                        Style="{StaticResource PeggySecondaryButtonStyle}"
+                        Margin="10,0,0,0" Click="RefreshTeams_Click"/>
               <TextBlock x:Name="ChannelStatus"
-                         Text="Loading joined Teams..."
+                         Text="Joined teams have not been loaded."
                          Style="{StaticResource SettingsHintStyle}"
-                         Margin="0,0,0,12"/>
+                         AutomationProperties.LiveSetting="Polite"/>
+              </DockPanel>
               <TextBlock x:Name="SelectedChannelStatus"
                          Text="Selected Teams sources"
                          Style="{StaticResource SettingsLabelStyle}"

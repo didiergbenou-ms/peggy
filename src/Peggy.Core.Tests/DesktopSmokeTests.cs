@@ -42,12 +42,13 @@ internal static class DesktopSmokeTests
         SynchronizationContext.SetSynchronizationContext(
             new DispatcherSynchronizationContext(
                 Dispatcher.CurrentDispatcher));
-        var application = new Application
+        var application = new App
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown
         };
         try
         {
+            AlertNotificationSmokeTests.Run(application);
             TestAlertCenter();
             TestAlertContextWindow();
             TestConversationWindow();
@@ -58,6 +59,9 @@ internal static class DesktopSmokeTests
             TestDeferredConversationApproval();
             TestSpeechModelSetupService();
             TestWorkIqSignInWindow();
+            SetupStepIndicatorTests.RunDesktop();
+            SetupExperienceSmokeTests.RunDesktop();
+            InstallerStepAnimationSmokeTests.RunDesktop();
             TestSettingsWindow();
             TestSettingsPreserveUnavailableWatchlist();
             TestApplicationIcon();
@@ -1168,6 +1172,7 @@ internal static class DesktopSmokeTests
             MonitoringWakeMinute = 7 * 60,
             MonitoringSleepMinute = 19 * 60,
             AdditionalOutlookFolders = ["Inbox/Unavailable"],
+            OutlookScope = OutlookMonitoringScope.InboxAndSelectedFolders,
             TeamsScope = TeamsMonitoringScope.SelectedTeamsAndChannels,
             TeamsChannelWatchlist =
             [
@@ -1267,7 +1272,8 @@ internal static class DesktopSmokeTests
         TestAssert.True(
             provider.ListOutlookRootFolderCallCount == 1 &&
             provider.ListOutlookChildFolderCallCount == 0 &&
-            Descendants<Expander>(outlookPanel).Count() == 2 &&
+            Descendants<Expander>(outlookPanel).Count(expander =>
+                expander.Tag is OutlookFolderInfo { HasChildren: true }) == 2 &&
             !InvokeInstancePrivate<bool>(
                 window,
                 "IsOutlookFolderIncluded",
@@ -1348,8 +1354,8 @@ internal static class DesktopSmokeTests
             "One or more Settings inputs do not have accessible names.");
         TestAssert.True(
             !string.IsNullOrWhiteSpace(AutomationProperties.GetName(
-                Find<CheckBox>(window, "AllInboxFoldersCheck"))),
-            "The Outlook all-folders control has no accessible name.");
+                Find<ComboBox>(window, "OutlookScopeCombo"))),
+            "The Outlook scope control has no accessible name.");
         TestAssert.Equal(
             "Change or reconnect",
             Find<Button>(
@@ -1394,9 +1400,11 @@ internal static class DesktopSmokeTests
                         "SleepTimeText").Text = "20:45";
                     Find<CheckBox>(window, "StartupCheck").IsChecked = false;
                     Find<CheckBox>(window, "PausedCheck").IsChecked = true;
-                    Find<CheckBox>(
+                    Find<ComboBox>(
                         window,
-                        "MonitorTeamsChatsCheck").IsChecked = true;
+                        "TeamsScopeCombo").SelectedItem = Find<ComboBox>(
+                            window, "TeamsScopeCombo").Items.OfType<ComboBoxItem>()
+                            .Single(item => item.Tag?.ToString() == "ChatsAndSelectedChannels");
                     Find<CheckBox>(
                         window,
                         "SpeechEnabledCheck").IsChecked = false;
@@ -1584,8 +1592,10 @@ internal static class DesktopSmokeTests
             !window.SavedSettings.StartAtSignIn &&
             window.SavedSettings.MonitoringPaused &&
             window.SavedSettings.TeamsScope ==
-                TeamsMonitoringScope.SelectedTeamsAndChannels &&
-            window.SavedSettings.MonitorTeamsChatsInSelectedScope &&
+                TeamsMonitoringScope.ChatsAndSelectedChannels &&
+            window.SavedSettings.OutlookScope ==
+                OutlookMonitoringScope.InboxAndSelectedFolders &&
+            !window.SavedSettings.MonitorTeamsChatsInSelectedScope &&
             window.SavedSettings.MonitoringScheduleEnabled &&
             window.SavedSettings.MonitoringWakeMinute == 390 &&
             window.SavedSettings.MonitoringSleepMinute == 1245 &&
@@ -1630,10 +1640,10 @@ internal static class DesktopSmokeTests
                 pinned.Title == "Peggy setup" &&
                 accountText.Text == "person@example.com" &&
                 AutomationProperties.GetName(accountText) ==
-                    "Microsoft 365 account" &&
+                    "Work email" &&
                 !accountText.IsReadOnly &&
                 Find<Button>(pinned, "SignInButton").Content?.ToString() ==
-                    "Sign in again" &&
+                    "Sign in with Microsoft" &&
                 Find<GroupBox>(
                     pinned,
                     "VoiceSetupGroup").Visibility == Visibility.Collapsed &&
@@ -1643,13 +1653,13 @@ internal static class DesktopSmokeTests
             TestAssert.True(
                 Descendants<TextBlock>(pinned).Any(text =>
                     text.Text.Contains(
-                        "A browser opens only when interaction is required",
+                        "Complete sign-in if prompted",
                         StringComparison.Ordinal)),
                 "The account window incorrectly promised a browser prompt.");
             accountText.Text = "other@example.com";
             TestAssert.True(
                 Find<Button>(pinned, "SignInButton").Content?.ToString() ==
-                    "Switch account" &&
+                    "Sign in with Microsoft" &&
                 Find<TextBlock>(
                     pinned,
                     "AccountChangeNotice").Visibility == Visibility.Visible,
@@ -1874,6 +1884,7 @@ internal static class DesktopSmokeTests
             "Settings erased a whole-team selection before channel loading " +
             "completed.");
         window.Close();
+        SettingsWindowCatalogSmokeTests.RunOnStaThread();
     }
 
     private static void TestApplicationIcon()

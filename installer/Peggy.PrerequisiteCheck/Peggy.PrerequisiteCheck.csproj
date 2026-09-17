@@ -1,12 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
-    <PublishTrimmed>true</PublishTrimmed>
-    <TrimMode>full</TrimMode>
+    <PublishTrimmed>false</PublishTrimmed>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <DebugType>none</DebugType>
     <InvariantGlobalization>true</InvariantGlobalization>
@@ -14,5 +14,10 @@
     <RootNamespace>Peggy.PrerequisiteCheck</RootNamespace>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <DefineConstants>$(DefineConstants);PEGGY_INSTALLER</DefineConstants>
   </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="..\..\src\Peggy.Tray\PeggyTheme.xaml" Link="PeggyTheme.xaml" />
+    <Compile Include="..\..\src\Peggy.Tray\SetupStepIndicator.cs" Link="SetupStepIndicator.cs" />
+  </ItemGroup>
 </Project>

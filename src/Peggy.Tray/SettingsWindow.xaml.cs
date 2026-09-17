@@ -18,18 +18,25 @@ public partial class SettingsWindow : Window
         bool IsAvailable = true);
 
     private readonly IMessageProvider _provider;
+    private readonly SettingsCatalogCache _catalog;
+    private readonly HashSet<SettingsCatalogKey> _catalogLoads = [];
+    private readonly Dictionary<string, CatalogNode> _teamNodes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CatalogNode> _outlookNodes = new(StringComparer.Ordinal);
+    private static readonly SettingsCatalogKey TeamsCatalog = new("teams");
+    private static readonly SettingsCatalogKey OutlookCatalog = new("outlook");
+    private sealed record CatalogNode(
+        Expander Expander,
+        StackPanel Values,
+        TextBlock Status,
+        Button Refresh);
     private readonly Dictionary<string, TeamsChannelWatch> _selectedChannels;
     private readonly Dictionary<string, TeamsTeamWatch> _selectedTeams;
     private readonly Dictionary<string, CheckBox> _channelChecks =
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, CheckBox> _teamChecks =
         new(StringComparer.Ordinal);
-    private readonly Dictionary<string, StackPanel> _teamPanels =
-        new(StringComparer.Ordinal);
     private readonly Dictionary<string, CheckBox> _outlookFolderChecks =
         new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, StackPanel> _outlookFolderPanels =
-        new(StringComparer.Ordinal);
     private readonly Dictionary<string, IReadOnlyList<TeamsChannelInfo>>
         _loadedChannelsByTeam = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _teamNames =
@@ -39,16 +46,9 @@ public partial class SettingsWindow : Window
         Task<IReadOnlyList<CopilotModelOption>>>? _loadCopilotModels;
     private readonly SpeechModelSetupService _speechModels;
     private readonly bool _speechModelDirectoryOverridden;
-    private readonly HashSet<string> _loadedTeamIds =
-        new(StringComparer.Ordinal);
-    private readonly HashSet<string> _loadingTeamIds =
-        new(StringComparer.Ordinal);
-    private readonly HashSet<string> _loadedOutlookFolderIds =
-        new(StringComparer.Ordinal);
-    private readonly HashSet<string> _loadingOutlookFolderIds =
-        new(StringComparer.Ordinal);
     private readonly HashSet<string> _selectedOutlookFolders =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly bool _retainedLegacyInboxSelection;
     private readonly string _pinnedAccount;
     private readonly string _initialModel;
     private readonly string _initialReasoningEffort;
@@ -57,9 +57,7 @@ public partial class SettingsWindow : Window
     private readonly CancellationTokenSource _loadCancellation = new();
     private bool _modelCatalogLoaded;
     private bool _loadingModels;
-    private bool _loadingOutlookRoot;
     private bool _installingSpeechModels;
-    private bool _outlookRootLoaded;
     private bool _updatingModelControls;
     private bool _updatingOutlookFolderControls;
     private bool _updatingSelectionControls;
@@ -71,10 +69,24 @@ public partial class SettingsWindow : Window
         string? pinnedAccount = null,
         Func<
             CancellationToken,
-            Task<IReadOnlyList<CopilotModelOption>>>? loadCopilotModels = null)
+            Task<IReadOnlyList<CopilotModelOption>>>? loadCopilotModels = null,
+        string? principalId = null)
+        : this(settings, provider, pinnedAccount, loadCopilotModels, principalId,
+            SettingsCatalogCache.ForAccount(pinnedAccount, principalId))
+    {
+    }
+
+    internal SettingsWindow(
+        PeggySettings settings,
+        IMessageProvider provider,
+        string? pinnedAccount,
+        Func<CancellationToken, Task<IReadOnlyList<CopilotModelOption>>>? loadCopilotModels,
+        string? principalId,
+        SettingsCatalogCache catalog)
     {
         InitializeComponent();
         _provider = provider;
+        _catalog = catalog;
         _loadCopilotModels = loadCopilotModels;
         _speechModels = new SpeechModelSetupService();
         _speechModelDirectoryOverridden = !string.IsNullOrWhiteSpace(
@@ -154,6 +166,10 @@ public partial class SettingsWindow : Window
             ModelStatusText.Text =
                 "Loading models from GitHub Copilot...";
         }
+        _retainedLegacyInboxSelection = settings.AdditionalOutlookFolders.Any(path =>
+            !string.IsNullOrWhiteSpace(path) &&
+            string.Equals(NormalizeSavedOutlookFolder(path), OutlookFolderPath.Inbox,
+                StringComparison.OrdinalIgnoreCase));
         if (settings.IncludeActiveCasesFolder)
         {
             AddOutlookFolderSelection(PeggyDefaults.ActiveCasesFolder);
@@ -161,21 +177,15 @@ public partial class SettingsWindow : Window
         foreach (var folder in settings.AdditionalOutlookFolders
                      .Where(path => !string.IsNullOrWhiteSpace(path))
                      .Select(NormalizeSavedOutlookFolder)
+                     .Where(path => !string.Equals(path, OutlookFolderPath.Inbox,
+                         StringComparison.OrdinalIgnoreCase))
                      .OrderBy(
                          path => path.Count(character => character == '/')))
         {
             AddOutlookFolderSelection(folder);
         }
-        _updatingOutlookFolderControls = true;
-        try
-        {
-            AllInboxFoldersCheck.IsChecked =
-                _selectedOutlookFolders.Contains(OutlookFolderPath.Inbox);
-        }
-        finally
-        {
-            _updatingOutlookFolderControls = false;
-        }
+        SelectComboItem(OutlookScopeCombo, settings.OutlookScope.ToString());
+        UpdateOutlookScopeControls();
         RenderSelectedOutlookFolders();
         StartupCheck.IsChecked = settings.StartAtSignIn;
         PausedCheck.IsChecked = settings.MonitoringPaused;
@@ -215,15 +225,15 @@ public partial class SettingsWindow : Window
                 group => CloneTeamWatch(group.First()),
                 StringComparer.Ordinal);
         SelectComboItem(TeamsScopeCombo, settings.TeamsScope.ToString());
-        MonitorTeamsChatsCheck.IsChecked =
-            settings.MonitorTeamsChatsInSelectedScope;
         UpdateTeamsScopeControls();
         RenderSelectedChannels();
+        ShowCachedCatalog<TeamsTeamInfo>(TeamsCatalog, RenderTeams, ChannelStatus, RefreshTeamsButton);
+        ShowCachedCatalog<OutlookFolderInfo>(OutlookCatalog, RenderOutlookFolders, OutlookFolderStatus,
+            RefreshOutlookFoldersButton);
         Loaded += (_, _) =>
             PeggyWindowLayout.ConstrainToWorkArea(this);
-        Loaded += async (_, _) => await LoadTeamsAsync();
+        Loaded += async (_, _) => await LoadVisibleCatalogsAsync();
         Loaded += async (_, _) => await LoadCopilotModelsAsync();
-        Loaded += async (_, _) => await LoadOutlookFoldersAsync();
         Closed += (_, _) =>
         {
             _closed = true;
@@ -235,6 +245,9 @@ public partial class SettingsWindow : Window
     public PeggySettings? SavedSettings { get; private set; }
 
     public bool AccountConnectionRequested { get; private set; }
+
+    public static void InvalidateAccountCatalog(string verifiedAccount)
+        => SettingsCatalogCache.InvalidateAccount(verifiedAccount);
 
     private async void InstallSpeechModels_Click(
         object sender,
@@ -591,82 +604,102 @@ public partial class SettingsWindow : Window
            (ContextTierCombo.SelectedItem as ModelSettingOption)?.Value ??
            PeggyDefaults.CopilotContextTierDefault;
 
-    private void AllInboxFoldersCheck_Changed(
-        object sender,
-        RoutedEventArgs e)
+    private async void OutlookScope_Changed(object sender, RoutedEventArgs e)
     {
-        if (_updatingOutlookFolderControls)
+        UpdateOutlookScopeControls();
+        if (IsLoaded)
+        {
+            await LoadVisibleCatalogsAsync();
+        }
+    }
+
+    private void UpdateOutlookScopeControls()
+    {
+        if (OutlookSelectionPanel is null)
         {
             return;
         }
-        if (AllInboxFoldersCheck.IsChecked == true)
+        var scope = GetSelectedOutlookScope();
+        OutlookSelectionPanel.Visibility = scope is
+            OutlookMonitoringScope.InboxAndSelectedFolders or
+            OutlookMonitoringScope.SelectedFoldersOnly
+            ? Visibility.Visible : Visibility.Collapsed;
+        OutlookScopeDescription.Text = scope switch
         {
-            AddOutlookFolderSelection(OutlookFolderPath.Inbox);
-        }
-        else
-        {
-            RemoveOutlookFolderSelection(OutlookFolderPath.Inbox);
-        }
+            OutlookMonitoringScope.InboxOnly =>
+                "Monitor direct Inbox messages only. Saved folder selections are retained but inactive.",
+            OutlookMonitoringScope.InboxAndSelectedFolders =>
+                "Inbox is always included in this mode. Selected folders include all descendants.",
+            OutlookMonitoringScope.SelectedFoldersOnly =>
+                "Monitor only selected folders and their descendants. Inbox messages are not included.",
+            OutlookMonitoringScope.InboxAndAllSubfolders =>
+                "Monitor Inbox and every Inbox subfolder. Saved folder selections are retained.",
+            _ => "Do not retrieve or classify Outlook messages. Saved folder selections are retained."
+        };
         UpdateOutlookFolderChecks();
         RenderSelectedOutlookFolders();
     }
 
-    private async Task LoadOutlookFoldersAsync()
-    {
-        if (_closed || _outlookRootLoaded || _loadingOutlookRoot)
-        {
-            return;
-        }
-        _loadingOutlookRoot = true;
-        OutlookFolderStatus.Text = "Loading Outlook folders...";
-        try
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
-                _loadCancellation.Token);
-            timeout.CancelAfter(TimeSpan.FromSeconds(60));
-            var folders = await _provider.ListOutlookChildFoldersAsync(
-                null,
-                timeout.Token);
-            if (_closed)
-            {
-                return;
-            }
+    private Task LoadOutlookFoldersAsync()
+        => RefreshOutlookFoldersAsync(force: false);
 
-            OutlookFoldersPanel.Children.Clear();
-            _outlookFolderChecks.Clear();
-            _outlookFolderPanels.Clear();
-            _loadedOutlookFolderIds.Clear();
-            _loadingOutlookFolderIds.Clear();
-            foreach (var folder in folders)
+    private async void RefreshOutlookFolders_Click(object sender, RoutedEventArgs e)
+        => await RefreshOutlookFoldersAsync(force: true);
+
+    private Task RefreshOutlookFoldersAsync(bool force)
+        => LoadCatalogAsync(OutlookCatalog,
+            ct => _provider.ListOutlookChildFoldersAsync(null, ct),
+            RenderOutlookFolders, OutlookFolderStatus, RefreshOutlookFoldersButton, force);
+
+    private void RenderOutlookFolders(IReadOnlyList<OutlookFolderInfo> folders)
+    {
+        ReconcileOutlookFolders(OutlookFoldersPanel, folders);
+        RenderSelectedOutlookFolders();
+    }
+
+    private void ReconcileOutlookFolders(Panel panel, IReadOnlyList<OutlookFolderInfo> folders)
+    {
+        var wanted = folders.Select(folder => folder.FolderId).ToHashSet(StringComparer.Ordinal);
+        foreach (var expander in panel.Children.OfType<Expander>().ToArray())
+        {
+            var old = (OutlookFolderInfo)expander.Tag;
+            var current = folders.FirstOrDefault(folder => folder.FolderId == old.FolderId);
+            if (!wanted.Contains(old.FolderId) || current!.FolderPath != old.FolderPath)
             {
-                AddOutlookFolderNode(OutlookFoldersPanel, folder);
+                RemoveOutlookNode(expander);
+                panel.Children.Remove(expander);
             }
-            _outlookRootLoaded = true;
-            OutlookFolderStatus.Text = folders.Count == 0
-                ? "No Inbox subfolders were returned."
-                : $"{folders.Count} top-level Inbox folders loaded. Expand " +
-                  "only the folders whose children you want to browse.";
-            UpdateOutlookFolderChecks();
-            RenderSelectedOutlookFolders();
         }
-        catch (OperationCanceledException) when (_closed)
+        var index = 0;
+        foreach (var folder in folders)
         {
+            var expander = panel.Children.OfType<Expander>()
+                .FirstOrDefault(item => ((OutlookFolderInfo)item.Tag).FolderId == folder.FolderId);
+            if (expander is null)
+            {
+                AddOutlookFolderNode(panel, folder);
+                expander = _outlookNodes[folder.FolderId].Expander;
+            }
+            expander.Tag = folder;
+            var check = _outlookFolderChecks[folder.FolderPath];
+            check.Tag = folder;
+            check.Content = folder.FolderName;
+            MoveChild(panel, expander, index++);
         }
-        catch (OperationCanceledException)
+        UpdateOutlookFolderChecks();
+    }
+
+    private void RemoveOutlookNode(Expander expander)
+    {
+        var folder = (OutlookFolderInfo)expander.Tag;
+        if (_outlookNodes.Remove(folder.FolderId, out var node))
         {
-            OutlookFolderStatus.Text =
-                "Outlook folders took too long to load. Close and reopen " +
-                "Settings to retry.";
+            foreach (var child in node.Values.Children.OfType<Expander>().ToArray())
+            {
+                RemoveOutlookNode(child);
+            }
         }
-        catch (Exception ex)
-        {
-            OutlookFolderStatus.Text =
-                $"Outlook folders could not be loaded: {ex.Message}";
-        }
-        finally
-        {
-            _loadingOutlookRoot = false;
-        }
+        _outlookFolderChecks.Remove(folder.FolderPath);
     }
 
     private void AddOutlookFolderNode(
@@ -690,103 +723,36 @@ public partial class SettingsWindow : Window
         checkBox.Unchecked += OutlookFolderCheck_Changed;
         _outlookFolderChecks[folder.FolderPath] = checkBox;
 
-        if (!folder.HasChildren)
+        var node = CreateCatalogNode(checkBox, folder, "Expand this folder to load its children.");
+        _outlookNodes[folder.FolderId] = node;
+        node.Expander.Expanded += async (sender, args) =>
         {
-            checkBox.Margin = new Thickness(0, 2, 0, 2);
-            destination.Children.Add(checkBox);
-            return;
-        }
-
-        var childPanel = new StackPanel
-        {
-            Margin = new Thickness(12, 3, 0, 7)
+            if (ReferenceEquals(args.OriginalSource, sender))
+            {
+                await LoadOutlookChildFoldersAsync((OutlookFolderInfo)node.Expander.Tag);
+            }
         };
-        childPanel.Children.Add(new TextBlock
-        {
-            Text = "Expand this folder to load its children.",
-            Foreground = System.Windows.Media.Brushes.DimGray
-        });
-        _outlookFolderPanels[folder.FolderId] = childPanel;
-        var expander = new Expander
-        {
-            Header = checkBox,
-            Tag = folder,
-            Content = childPanel,
-            Margin = new Thickness(0, 1, 0, 1)
-        };
-        expander.Expanded += async (_, _) =>
-            await LoadOutlookChildFoldersAsync(folder);
-        destination.Children.Add(expander);
+        node.Refresh.Click += async (_, _) =>
+            await RefreshOutlookChildrenAsync((OutlookFolderInfo)node.Expander.Tag, true);
+        destination.Children.Add(node.Expander);
+        ShowCachedCatalog<OutlookFolderInfo>(OutlookChildrenKey(folder),
+            children => ReconcileOutlookFolders(node.Values, children), node.Status, node.Refresh);
     }
 
-    private async Task LoadOutlookChildFoldersAsync(
+    private Task LoadOutlookChildFoldersAsync(
         OutlookFolderInfo parent)
-    {
-        if (_closed ||
-            _loadedOutlookFolderIds.Contains(parent.FolderId) ||
-            !_loadingOutlookFolderIds.Add(parent.FolderId) ||
-            !_outlookFolderPanels.TryGetValue(
-                parent.FolderId,
-                out var childPanel))
-        {
-            return;
-        }
+        => RefreshOutlookChildrenAsync(parent, force: false);
 
-        ShowOutlookFolderMessage(
-            childPanel,
-            "Loading folders...",
-            retryParent: null);
-        try
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
-                _loadCancellation.Token);
-            timeout.CancelAfter(TimeSpan.FromSeconds(60));
-            var folders = await _provider.ListOutlookChildFoldersAsync(
-                parent,
-                timeout.Token);
-            if (_closed)
-            {
-                return;
-            }
-
-            childPanel.Children.Clear();
-            if (folders.Count == 0)
-            {
-                childPanel.Children.Add(new TextBlock
-                {
-                    Text = "No child folders were returned.",
-                    Foreground = System.Windows.Media.Brushes.DimGray
-                });
-            }
-            foreach (var folder in folders)
-            {
-                AddOutlookFolderNode(childPanel, folder);
-            }
-            _loadedOutlookFolderIds.Add(parent.FolderId);
-            UpdateOutlookFolderChecks();
-        }
-        catch (OperationCanceledException) when (_closed)
-        {
-        }
-        catch (OperationCanceledException)
-        {
-            ShowOutlookFolderMessage(
-                childPanel,
-                "Child folders took too long to load.",
-                parent);
-        }
-        catch (Exception ex)
-        {
-            ShowOutlookFolderMessage(
-                childPanel,
-                $"Child folders could not be loaded: {ex.Message}",
-                parent);
-        }
-        finally
-        {
-            _loadingOutlookFolderIds.Remove(parent.FolderId);
-        }
-    }
+    private Task RefreshOutlookChildrenAsync(OutlookFolderInfo parent, bool force)
+        => _outlookNodes.TryGetValue(parent.FolderId, out var node)
+            ? LoadCatalogAsync(OutlookChildrenKey(parent),
+                ct => _provider.ListOutlookChildFoldersAsync(
+                    parent with { ChildFolderCount = null }, ct),
+                folders => ReconcileOutlookFolders(node.Values, folders),
+                node.Status, node.Refresh, force,
+                () => _outlookNodes.TryGetValue(parent.FolderId, out var current) &&
+                    ReferenceEquals(current, node))
+            : Task.CompletedTask;
 
     private void OutlookFolderCheck_Changed(
         object sender,
@@ -862,8 +828,6 @@ public partial class SettingsWindow : Window
         _updatingOutlookFolderControls = true;
         try
         {
-            AllInboxFoldersCheck.IsChecked =
-                _selectedOutlookFolders.Contains(OutlookFolderPath.Inbox);
             foreach (var pair in _outlookFolderChecks)
             {
                 var folder = (OutlookFolderInfo)pair.Value.Tag;
@@ -893,8 +857,9 @@ public partial class SettingsWindow : Window
         {
             SelectedOutlookFoldersPanel.Children.Add(new TextBlock
             {
-                Text = "No additional folders selected. Only direct Inbox " +
-                       "messages will be monitored.",
+                Text = GetSelectedOutlookScope() == OutlookMonitoringScope.SelectedFoldersOnly
+                    ? "No folders selected. Outlook monitoring has no sources in this mode."
+                    : "No additional folders selected. Only direct Inbox messages will be monitored.",
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = System.Windows.Media.Brushes.DimGray,
                 FontSize = 11
@@ -944,45 +909,6 @@ public partial class SettingsWindow : Window
         RenderSelectedOutlookFolders();
     }
 
-    private async void RetryOutlookFolder_Click(
-        object sender,
-        RoutedEventArgs e)
-    {
-        if (sender is Button { Tag: OutlookFolderInfo parent })
-        {
-            await LoadOutlookChildFoldersAsync(parent);
-        }
-    }
-
-    private void ShowOutlookFolderMessage(
-        Panel panel,
-        string message,
-        OutlookFolderInfo? retryParent)
-    {
-        panel.Children.Clear();
-        panel.Children.Add(new TextBlock
-        {
-            Text = message,
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = System.Windows.Media.Brushes.DimGray
-        });
-        if (retryParent is null)
-        {
-            return;
-        }
-        var retry = new Button
-        {
-            Content = "Retry",
-            Tag = retryParent,
-            Width = 72,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Padding = new Thickness(8, 4, 8, 4),
-            Margin = new Thickness(0, 6, 0, 0)
-        };
-        retry.Click += RetryOutlookFolder_Click;
-        panel.Children.Add(retry);
-    }
-
     private static string NormalizeSavedOutlookFolder(string path)
     {
         try
@@ -1001,73 +927,86 @@ public partial class SettingsWindow : Window
                 path,
                 PeggyDefaults.ActiveCasesFolder,
                 StringComparison.OrdinalIgnoreCase))
+            .Concat(_retainedLegacyInboxSelection
+                ? [OutlookFolderPath.Inbox] : Array.Empty<string>())
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-    private void TeamsScope_Changed(object sender, RoutedEventArgs e)
-        => UpdateTeamsScopeControls();
+    private async void TeamsScope_Changed(object sender, RoutedEventArgs e)
+    {
+        UpdateTeamsScopeControls();
+        if (IsLoaded)
+        {
+            await LoadVisibleCatalogsAsync();
+        }
+    }
 
     private void UpdateTeamsScopeControls()
     {
         if (TeamsScopeCombo is null ||
-            MonitorTeamsChatsCheck is null ||
-            TeamsSelectionPanel is null)
+            TeamsSelectionPanel is null || _selectedTeams is null)
         {
             return;
         }
 
         var scope = GetSelectedTeamsScope();
-        MonitorTeamsChatsCheck.IsEnabled =
-            scope == TeamsMonitoringScope.SelectedTeamsAndChannels;
-        TeamsSelectionPanel.IsEnabled =
-            scope != TeamsMonitoringScope.Off;
+        TeamsSelectionPanel.Visibility = scope is
+            TeamsMonitoringScope.SelectedTeamsAndChannels or
+            TeamsMonitoringScope.ChatsAndSelectedChannels or
+            TeamsMonitoringScope.AllActivity
+            ? Visibility.Visible : Visibility.Collapsed;
         TeamsScopeDescription.Text = scope switch
         {
             TeamsMonitoringScope.AllActivity =>
                 "Monitor new activity across Teams. Selected sources below " +
                 "also receive full channel delta monitoring.",
+            TeamsMonitoringScope.ChatsOnly =>
+                "Monitor direct and group chats, excluding meeting chats. " +
+                "Saved channel selections are retained but inactive.",
+            TeamsMonitoringScope.ChatsAndSelectedChannels =>
+                "Monitor direct and group chats (not meeting chats), plus the " +
+                "selected channels. Entire teams include new accessible channels.",
             TeamsMonitoringScope.SelectedTeamsAndChannels =>
                 "Monitor only the accessible teams and channels selected " +
                 "below. New channels are included for a fully selected team.",
-            _ => "Do not retrieve or classify Microsoft Teams messages."
+            _ => "Do not retrieve or classify Microsoft Teams messages. " +
+                 "Saved channel selections are retained."
         };
         UpdateTeamsScopeWarning();
     }
 
-    private async System.Threading.Tasks.Task LoadTeamsAsync()
-    {
-        try
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
-                _loadCancellation.Token);
-            timeout.CancelAfter(TimeSpan.FromSeconds(60));
-            var teams = await _provider.ListJoinedTeamsAsync(timeout.Token);
-            if (_closed)
-            {
-                return;
-            }
+    private Task LoadTeamsAsync()
+        => RefreshTeamsAsync(force: false);
 
-            TeamsPanel.Children.Clear();
-            _teamPanels.Clear();
-            _loadedChannelsByTeam.Clear();
-            _teamNames.Clear();
-            _loadedTeamIds.Clear();
-            _loadingTeamIds.Clear();
-            _channelChecks.Clear();
-            _teamChecks.Clear();
-            foreach (var team in teams)
+    private async void RefreshTeams_Click(object sender, RoutedEventArgs e)
+        => await RefreshTeamsAsync(force: true);
+
+    private Task RefreshTeamsAsync(bool force)
+        => LoadCatalogAsync(TeamsCatalog, _provider.ListJoinedTeamsAsync,
+            RenderTeams, ChannelStatus, RefreshTeamsButton, force);
+
+    private void RenderTeams(IReadOnlyList<TeamsTeamInfo> teams)
+    {
+        var wanted = teams.Select(team => team.TeamId).ToHashSet(StringComparer.Ordinal);
+        foreach (var expander in TeamsPanel.Children.OfType<Expander>().ToArray())
+        {
+            var team = (TeamsTeamInfo)expander.Tag;
+            if (!wanted.Contains(team.TeamId))
             {
-                _teamNames[team.TeamId] = team.TeamName;
-                var channelPanel = new StackPanel
-                {
-                    Margin = new Thickness(12, 3, 0, 7)
-                };
-                channelPanel.Children.Add(new TextBlock
-                {
-                    Text = "Expand this team to load its channels.",
-                    Foreground = System.Windows.Media.Brushes.DimGray
-                });
-                _teamPanels[team.TeamId] = channelPanel;
+                TeamsPanel.Children.Remove(expander);
+                _teamNodes.Remove(team.TeamId);
+                _teamChecks.Remove(team.TeamId);
+                _teamNames.Remove(team.TeamId);
+                _loadedChannelsByTeam.Remove(team.TeamId);
+                RemoveChannelChecks(team.TeamId);
+            }
+        }
+        var index = 0;
+        foreach (var team in teams)
+        {
+            _teamNames[team.TeamId] = team.TeamName;
+            if (!_teamNodes.TryGetValue(team.TeamId, out var node))
+            {
                 var teamCheck = new CheckBox
                 {
                     Content = team.TeamName,
@@ -1077,135 +1016,291 @@ public partial class SettingsWindow : Window
                     FontWeight = FontWeights.SemiBold
                 };
                 teamCheck.Checked += (_, _) =>
-                    ApplyTeamCheckSelection(team, teamCheck);
+                    ApplyTeamCheckSelection((TeamsTeamInfo)teamCheck.Tag, teamCheck);
                 teamCheck.Unchecked += (_, _) =>
-                    ApplyTeamCheckSelection(team, teamCheck);
+                    ApplyTeamCheckSelection((TeamsTeamInfo)teamCheck.Tag, teamCheck);
                 teamCheck.Indeterminate += (_, _) =>
-                    ApplyTeamCheckSelection(team, teamCheck);
+                    ApplyTeamCheckSelection((TeamsTeamInfo)teamCheck.Tag, teamCheck);
                 _teamChecks[team.TeamId] = teamCheck;
-                var expander = new Expander
+                node = CreateCatalogNode(teamCheck, team,
+                    "Expand this team to load its channels.");
+                _teamNodes[team.TeamId] = node;
+                node.Expander.Expanded += async (sender, args) =>
                 {
-                    Header = teamCheck,
-                    Tag = team,
-                    Content = channelPanel,
-                    Margin = new Thickness(0, 1, 0, 1)
+                    if (ReferenceEquals(args.OriginalSource, sender))
+                    {
+                        await LoadTeamChannelsAsync((TeamsTeamInfo)node.Expander.Tag);
+                    }
                 };
-                expander.Expanded += async (_, _) =>
-                    await LoadTeamChannelsAsync(team);
-                TeamsPanel.Children.Add(expander);
+                node.Refresh.Click += async (_, _) =>
+                    await RefreshTeamChannelsAsync((TeamsTeamInfo)node.Expander.Tag, true);
+                TeamsPanel.Children.Add(node.Expander);
+                ShowCachedCatalog<TeamsChannelInfo>(TeamChannelsKey(team),
+                    channels => RenderTeamChannels(node.Values, team, channels),
+                    node.Status, node.Refresh);
             }
-            RenderSelectedChannels();
-            ChannelStatus.Text = teams.Count == 0
-                ? "No joined Teams were returned."
-                : $"{teams.Count} joined teams loaded. Expand only the teams " +
-                  "whose channels you want to configure.";
+            node.Expander.Tag = team;
+            _teamChecks[team.TeamId].Tag = team;
+            _teamChecks[team.TeamId].Content = team.TeamName;
+            MoveChild(TeamsPanel, node.Expander, index++);
         }
-        catch (OperationCanceledException) when (_closed)
-        {
-        }
-        catch (OperationCanceledException)
-        {
-            ChannelStatus.Text =
-                "Joined teams took too long to load. Close and reopen Settings " +
-                "to retry.";
-        }
-        catch (Exception ex)
-        {
-            ChannelStatus.Text =
-                $"Joined teams could not be loaded: {ex.Message}";
-        }
+        RenderSelectedChannels();
     }
 
-    private async System.Threading.Tasks.Task LoadTeamChannelsAsync(
+    private Task LoadTeamChannelsAsync(
         TeamsTeamInfo team)
+        => RefreshTeamChannelsAsync(team, force: false);
+
+    private Task RefreshTeamChannelsAsync(TeamsTeamInfo team, bool force)
+        => _teamNodes.TryGetValue(team.TeamId, out var node)
+            ? LoadCatalogAsync(TeamChannelsKey(team),
+                ct => _provider.ListTeamChannelsAsync(team.TeamId, team.TeamName, ct),
+                channels => RenderTeamChannels(node.Values, team, channels),
+                node.Status, node.Refresh, force,
+                () => _teamNodes.TryGetValue(team.TeamId, out var current) &&
+                    ReferenceEquals(current, node))
+            : Task.CompletedTask;
+
+    private void RenderTeamChannels(
+        Panel channelPanel, TeamsTeamInfo team, IReadOnlyList<TeamsChannelInfo> channels)
     {
-        if (_closed ||
-            _loadedTeamIds.Contains(team.TeamId) ||
-            !_loadingTeamIds.Add(team.TeamId) ||
-            !_teamPanels.TryGetValue(team.TeamId, out var channelPanel))
+        if (_loadedChannelsByTeam.TryGetValue(team.TeamId, out var previous) &&
+            previous.SequenceEqual(channels))
         {
             return;
         }
+        channelPanel.Children.Clear();
+        RemoveChannelChecks(team.TeamId);
+        _loadedChannelsByTeam[team.TeamId] = channels;
+        if (channels.Count == 0)
+        {
+            channelPanel.Children.Add(new TextBlock
+            {
+                Text = "No channels were returned for this team.",
+                Foreground = System.Windows.Media.Brushes.DimGray
+            });
+        }
+        if (channels.Count > 0)
+        {
+            AddTeamSelectionControls(channelPanel, team);
+        }
+        foreach (var channel in channels)
+        {
+            AddChannelCheckBox(channelPanel, channel);
+        }
+        var availableKeys = channels
+            .Select(channel => ChannelKey(channel.TeamId, channel.ChannelId))
+            .ToHashSet(StringComparer.Ordinal);
+        if (_selectedChannels.Values.Any(item =>
+                string.Equals(item.TeamId, team.TeamId, StringComparison.Ordinal) &&
+                !availableKeys.Contains(ChannelKey(item.TeamId, item.ChannelId))))
+        {
+            channelPanel.Children.Add(new TextBlock
+            {
+                Text = "A saved channel from this team is not currently " +
+                       "available. It remains selected above until removed.",
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = System.Windows.Media.Brushes.DimGray,
+                FontSize = 11,
+                Margin = new Thickness(0, 6, 0, 0)
+            });
+        }
+    }
 
-        ShowTeamMessage(channelPanel, "Loading channels...", null);
+    private void RemoveChannelChecks(string teamId)
+    {
+        foreach (var key in _channelChecks.Keys.Where(key =>
+            key.StartsWith(teamId + "\n", StringComparison.Ordinal)).ToArray())
+        {
+            _channelChecks.Remove(key);
+        }
+    }
+
+    private async Task LoadVisibleCatalogsAsync()
+    {
+        if (_closed || !_catalog.IsValid)
+        {
+            return;
+        }
+        var loads = new List<Task>();
+        if (TeamsSelectionPanel.Visibility == Visibility.Visible)
+        {
+            loads.Add(LoadTeamsAsync());
+            loads.AddRange(_teamNodes.Values
+                .Where(node => node.Expander.IsExpanded).ToArray()
+                .Select(node => LoadTeamChannelsAsync((TeamsTeamInfo)node.Expander.Tag)));
+        }
+        if (OutlookSelectionPanel.Visibility == Visibility.Visible)
+        {
+            loads.Add(LoadOutlookFoldersAsync());
+            loads.AddRange(_outlookNodes.Values
+                .Where(node => node.Expander.IsExpanded).ToArray()
+                .Select(node => LoadOutlookChildFoldersAsync((OutlookFolderInfo)node.Expander.Tag)));
+        }
+        await Task.WhenAll(loads);
+    }
+
+    private async Task LoadCatalogAsync<T>(
+        SettingsCatalogKey key,
+        Func<CancellationToken, Task<IReadOnlyList<T>>> load,
+        Action<IReadOnlyList<T>> render,
+        TextBlock status,
+        Button refresh,
+        bool force,
+        Func<bool>? isCurrent = null)
+    {
+        if (_closed || !_catalog.IsValid || !_catalogLoads.Add(key))
+        {
+            return;
+        }
         try
         {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
-                _loadCancellation.Token);
-            timeout.CancelAfter(TimeSpan.FromSeconds(60));
-            var channels = await _provider.ListTeamChannelsAsync(
-                team.TeamId,
-                team.TeamName,
-                timeout.Token);
-            if (_closed)
+            var snapshot = _catalog.Read<T>(key);
+            if (snapshot.Values is not null)
+            {
+                render(snapshot.Values);
+                UpdateCatalogStatus(key, snapshot, status, refresh);
+            }
+            if (!force && !snapshot.IsStale)
             {
                 return;
             }
-
-            channelPanel.Children.Clear();
-            _loadedChannelsByTeam[team.TeamId] = channels;
-            if (channels.Count == 0)
+            refresh.IsEnabled = false;
+            refresh.Content = "Refreshing...";
+            status.Text = snapshot.Values is null
+                ? $"Loading {CatalogName(key)}..."
+                : $"Refreshing {CatalogName(key)} in the background. " +
+                  $"Showing cached values. {CatalogTimestamp(snapshot.UpdatedUtc)}";
+            snapshot = await _catalog.RefreshAsync(key, load, force, _loadCancellation.Token);
+            if (_closed || !_catalog.IsValid || isCurrent?.Invoke() == false)
             {
-                channelPanel.Children.Add(new TextBlock
-                {
-                    Text = "No channels were returned for this team.",
-                    Foreground = System.Windows.Media.Brushes.DimGray
-                });
+                return;
             }
-            if (channels.Count > 0)
+            if (snapshot.Values is not null)
             {
-                AddTeamSelectionControls(channelPanel, team);
+                render(snapshot.Values);
             }
-            foreach (var channel in channels)
-            {
-                AddChannelCheckBox(channelPanel, channel);
-            }
-            var availableKeys = channels
-                .Select(channel => ChannelKey(
-                    channel.TeamId,
-                    channel.ChannelId))
-                .ToHashSet(StringComparer.Ordinal);
-            if (_selectedChannels.Values.Any(item =>
-                    string.Equals(
-                        item.TeamId,
-                        team.TeamId,
-                        StringComparison.Ordinal) &&
-                    !availableKeys.Contains(
-                        ChannelKey(item.TeamId, item.ChannelId))))
-            {
-                channelPanel.Children.Add(new TextBlock
-                {
-                    Text = "A saved channel from this team is not currently " +
-                           "available. It remains selected above until removed.",
-                    TextWrapping = TextWrapping.Wrap,
-                    Foreground = System.Windows.Media.Brushes.DimGray,
-                    FontSize = 11,
-                    Margin = new Thickness(0, 6, 0, 0)
-                });
-            }
-            _loadedTeamIds.Add(team.TeamId);
-        }
-        catch (OperationCanceledException) when (_closed)
-        {
+            UpdateCatalogStatus(key, snapshot, status, refresh);
         }
         catch (OperationCanceledException)
         {
-            ShowTeamMessage(
-                channelPanel,
-                "Channels took too long to load.",
-                team);
-        }
-        catch (Exception ex)
-        {
-            ShowTeamMessage(
-                channelPanel,
-                $"Channels could not be loaded: {ex.Message}",
-                team);
+            // Closing Settings or changing identity must not publish late metadata.
         }
         finally
         {
-            _loadingTeamIds.Remove(team.TeamId);
+            _catalogLoads.Remove(key);
+            if (!_closed && _catalog.IsValid && isCurrent?.Invoke() != false)
+            {
+                refresh.IsEnabled = true;
+            }
         }
+    }
+
+    private void ShowCachedCatalog<T>(
+        SettingsCatalogKey key,
+        Action<IReadOnlyList<T>> render,
+        TextBlock status,
+        Button refresh)
+    {
+        var snapshot = _catalog.Read<T>(key);
+        if (snapshot.Values is not null)
+        {
+            render(snapshot.Values);
+        }
+        if (snapshot.Values is not null || snapshot.Error is not null)
+        {
+            UpdateCatalogStatus(key, snapshot, status, refresh);
+        }
+    }
+
+    private static void UpdateCatalogStatus<T>(
+        SettingsCatalogKey key,
+        SettingsCatalogSnapshot<T> snapshot,
+        TextBlock status,
+        Button refresh)
+    {
+        var name = CatalogName(key);
+        var summary = snapshot.Values is null
+            ? $"No {name} have been loaded."
+            : snapshot.Values.Count == 0
+                ? $"No {name} were returned."
+                : $"{snapshot.Values.Count} {name} available.";
+        status.Text = snapshot.Error is null
+            ? $"{summary} {CatalogTimestamp(snapshot.UpdatedUtc)}" +
+              (snapshot.IsStale ? " Cached metadata is out of date." : "")
+            : $"Refresh failed: {snapshot.Error} " +
+              (snapshot.Values is null ? summary : "Showing cached values. " + summary) +
+              $" {CatalogTimestamp(snapshot.UpdatedUtc)} Saved selections are unchanged.";
+        refresh.Content = snapshot.Error is null ? "Refresh" : "Retry";
+    }
+
+    private static string CatalogTimestamp(DateTimeOffset? updatedUtc)
+        => updatedUtc is { } updated
+            ? $"Last refreshed {updated.ToLocalTime():g}."
+            : "Not refreshed yet.";
+
+    private static string CatalogName(SettingsCatalogKey key)
+        => key.Kind switch
+        {
+            "teams" => "joined teams",
+            "channels" => "channels",
+            "outlook" => "Inbox subfolders",
+            _ => "child folders"
+        };
+
+    private static SettingsCatalogKey TeamChannelsKey(TeamsTeamInfo team)
+        => new("channels", team.TeamId);
+
+    private static SettingsCatalogKey OutlookChildrenKey(OutlookFolderInfo folder)
+        => new("folders", folder.FolderId, folder.FolderPath);
+
+    private static CatalogNode CreateCatalogNode(
+        CheckBox check, object item, string initialStatus)
+    {
+        var values = new StackPanel();
+        var status = new TextBlock
+        {
+            Text = initialStatus,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = System.Windows.Media.Brushes.DimGray,
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        System.Windows.Automation.AutomationProperties.SetLiveSetting(
+            status, System.Windows.Automation.AutomationLiveSetting.Polite);
+        var refresh = new Button
+        {
+            Content = "Refresh",
+            Padding = new Thickness(7, 3, 7, 3),
+            Margin = new Thickness(8, 0, 0, 0)
+        };
+        System.Windows.Automation.AutomationProperties.SetName(
+            refresh, $"Refresh {check.Content}");
+        var header = new DockPanel { Margin = new Thickness(0, 0, 0, 5) };
+        DockPanel.SetDock(refresh, Dock.Right);
+        header.Children.Add(refresh);
+        header.Children.Add(status);
+        var content = new StackPanel { Margin = new Thickness(12, 3, 0, 7) };
+        content.Children.Add(header);
+        content.Children.Add(values);
+        var expander = new Expander
+        {
+            Header = check,
+            Tag = item,
+            Content = content,
+            Margin = new Thickness(0, 1, 0, 1)
+        };
+        return new(expander, values, status, refresh);
+    }
+
+    private static void MoveChild(Panel panel, UIElement element, int index)
+    {
+        if (panel.Children.IndexOf(element) == index)
+        {
+            return;
+        }
+        panel.Children.Remove(element);
+        panel.Children.Insert(index, element);
     }
 
     private void AddChannelCheckBox(
@@ -1418,15 +1513,8 @@ public partial class SettingsWindow : Window
         {
             team.ExcludedChannelIds.Add(channel.ChannelId);
         }
-        if (_loadedChannelsByTeam.TryGetValue(
-                channel.TeamId,
-                out var channels) &&
-            channels.All(item => !IsChannelSelected(
-                item.TeamId,
-                item.ChannelId)))
-        {
-            _selectedTeams.Remove(channel.TeamId);
-        }
+        // Excluding every known channel must still preserve unseen and future channels.
+        // Only an explicit team deselection removes the whole-team subscription.
     }
 
     private bool IsChannelSelected(string teamId, string channelId)
@@ -1487,46 +1575,6 @@ public partial class SettingsWindow : Window
         {
             _selectedChannels.Remove(key);
         }
-    }
-
-    private async void RetryTeamChannels_Click(
-        object sender,
-        RoutedEventArgs e)
-    {
-        if (sender is Button { Tag: TeamsTeamInfo team })
-        {
-            await LoadTeamChannelsAsync(team);
-        }
-    }
-
-    private void ShowTeamMessage(
-        Panel panel,
-        string message,
-        TeamsTeamInfo? retryTeam)
-    {
-        panel.Children.Clear();
-        panel.Children.Add(new TextBlock
-        {
-            Text = message,
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = System.Windows.Media.Brushes.DimGray
-        });
-        if (retryTeam is null)
-        {
-            return;
-        }
-
-        var retry = new Button
-        {
-            Content = "Retry",
-            Tag = retryTeam,
-            Width = 72,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Padding = new Thickness(8, 4, 8, 4),
-            Margin = new Thickness(0, 6, 0, 0)
-        };
-        retry.Click += RetryTeamChannels_Click;
-        panel.Children.Add(retry);
     }
 
     private void RenderSelectedChannels()
@@ -1723,7 +1771,8 @@ public partial class SettingsWindow : Window
         }
 
         var scope = GetSelectedTeamsScope();
-        if (scope != TeamsMonitoringScope.SelectedTeamsAndChannels)
+        if (scope is not (TeamsMonitoringScope.SelectedTeamsAndChannels or
+            TeamsMonitoringScope.ChatsAndSelectedChannels))
         {
             TeamsScopeWarning.Visibility = Visibility.Collapsed;
             return;
@@ -1732,7 +1781,7 @@ public partial class SettingsWindow : Window
         var hasSelectedSources =
             _selectedTeams.Count > 0 ||
             _selectedChannels.Count > 0 ||
-            MonitorTeamsChatsCheck.IsChecked == true;
+            scope == TeamsMonitoringScope.ChatsAndSelectedChannels;
         TeamsScopeWarningText.Text = hasSelectedSources
             ? "Only these sources will generate Teams alerts. Unselected " +
               "teams and channels are not retrieved."
@@ -1854,9 +1903,9 @@ public partial class SettingsWindow : Window
             CopilotContextTier = contextTier,
             IncludeActiveCasesFolder = includeActiveCasesFolder,
             AdditionalOutlookFolders = folders,
+            OutlookScope = GetSelectedOutlookScope(),
             TeamsScope = GetSelectedTeamsScope(),
-            MonitorTeamsChatsInSelectedScope =
-                MonitorTeamsChatsCheck.IsChecked == true,
+            MonitorTeamsChatsInSelectedScope = false,
             TeamsTeamWatchlist = teamWatchlist,
             TeamsChannelWatchlist = watchlist,
             StartAtSignIn = StartupCheck.IsChecked == true,
@@ -1973,8 +2022,13 @@ public partial class SettingsWindow : Window
             item?.Tag?.ToString(),
             out var scope)
             ? scope
-            : TeamsMonitoringScope.AllActivity;
+            : TeamsMonitoringScope.ChatsOnly;
     }
+
+    private OutlookMonitoringScope GetSelectedOutlookScope()
+        => Enum.TryParse<OutlookMonitoringScope>(
+            (OutlookScopeCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString(), out var scope)
+            ? scope : OutlookMonitoringScope.InboxOnly;
 
     private static string ChannelKey(string teamId, string channelId)
         => $"{teamId}\n{channelId}";

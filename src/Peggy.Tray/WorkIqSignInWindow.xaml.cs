@@ -1,421 +1,482 @@
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using Peggy.Core;
 
 namespace Peggy.Tray;
 
 public partial class WorkIqSignInWindow : Window
 {
-    private readonly WorkIqSetupService _setup;
+    private readonly IWorkIqSetupService _setup;
+    private readonly ISetupReadinessService _readiness;
     private readonly string _expectedAccount;
     private readonly string _expectedMailbox;
     private readonly string _expectedUserPrincipalName;
     private readonly string _expectedPrincipalId;
+    private readonly bool _firstRun;
+    private readonly bool _requireMailAccess;
     private readonly SpeechModelSetupService _speechModels;
+    private readonly Func<string, bool, CancellationToken, Task> _installVoice;
+    private readonly Func<string, bool> _voiceInstalled;
     private readonly string _voiceModelDirectory;
     private readonly bool _voiceModelDirectoryValid;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private CancellationTokenSource? _activeOperationCancellation;
+    private SetupLocalReadiness? _local;
+    private SetupCheck? _copilotAccess;
+    private WorkIqAccountIdentity? _candidateIdentity;
+    private string _reviewedVersion = string.Empty;
+    private bool _mailReady;
+    private bool _voiceSkipped;
     private bool _busy;
+    private bool _initialized;
+    private bool _closed;
+    private int _operationGeneration;
+    private Uri? _gitHubVerificationUri;
+    private string _cancelledStatus = string.Empty;
 
     public WorkIqSignInWindow(
         string? expectedAccount = null,
         WorkIqSetupService? setup = null,
         string? expectedMailbox = null,
         string? expectedUserPrincipalName = null,
-        string? expectedPrincipalId = null)
-        : this(
-            expectedAccount,
-            expectedMailbox,
-            expectedUserPrincipalName,
-            expectedPrincipalId,
-            setup,
-            speechModels: null,
-            previewMode: false)
+        string? expectedPrincipalId = null,
+        bool requireMailAccess = true)
+        : this(expectedAccount, setup ?? new WorkIqSetupService(), null,
+            previewMode: false, expectedMailbox, expectedUserPrincipalName,
+            expectedPrincipalId, requireMailAccess)
+    {
+    }
+
+    internal WorkIqSignInWindow(
+        string? expectedAccount, WorkIqSetupService? setup, bool previewMode)
+        : this(expectedAccount, setup ?? new WorkIqSetupService(), null, previewMode)
     {
     }
 
     internal WorkIqSignInWindow(
         string? expectedAccount,
-        WorkIqSetupService? setup,
-        bool previewMode)
-        : this(
-            expectedAccount,
-            expectedMailbox: null,
-            expectedUserPrincipalName: null,
-            expectedPrincipalId: null,
-            setup,
-            speechModels: null,
-            previewMode)
+        IWorkIqSetupService setup,
+        ISetupReadinessService? readiness,
+        bool previewMode,
+        string? expectedMailbox = null,
+        string? expectedUserPrincipalName = null,
+        string? expectedPrincipalId = null,
+        bool requireMailAccess = true,
+        Func<string, bool, CancellationToken, Task>? installVoice = null,
+        Func<string, bool>? voiceInstalled = null)
     {
-    }
-
-    private WorkIqSignInWindow(
-        string? expectedAccount,
-        string? expectedMailbox,
-        string? expectedUserPrincipalName,
-        string? expectedPrincipalId,
-        WorkIqSetupService? setup,
-        SpeechModelSetupService? speechModels,
-        bool previewMode)
-    {
-        InitializeComponent();
-        _setup = setup ?? new WorkIqSetupService();
-        _speechModels = speechModels ?? new SpeechModelSetupService();
-        _voiceModelDirectoryValid =
-            PeggyDefaults.TryResolveSpeechModelDirectory(
-                configuredDirectory: null,
-                out _voiceModelDirectory);
+        _setup = setup;
+        _readiness = readiness ?? new SetupReadinessService(setup);
+        _speechModels = new SpeechModelSetupService();
+        _installVoice = installVoice ?? ((directory, repair, ct) =>
+            _speechModels.InstallAsync(directory, force: repair, ct: ct));
+        _voiceInstalled = voiceInstalled ?? _speechModels.AreModelsInstalled;
+        _voiceModelDirectoryValid = PeggyDefaults.TryResolveSpeechModelDirectory(
+            configuredDirectory: null, out _voiceModelDirectory);
         _expectedAccount = expectedAccount?.Trim() ?? string.Empty;
         _expectedMailbox = expectedMailbox?.Trim() ?? string.Empty;
-        _expectedUserPrincipalName =
-            expectedUserPrincipalName?.Trim() ?? string.Empty;
+        _expectedUserPrincipalName = expectedUserPrincipalName?.Trim() ?? string.Empty;
         _expectedPrincipalId = expectedPrincipalId?.Trim() ?? string.Empty;
-        var configuredAccount = PeggyDefaults.ConfiguredWorkIqAccount;
-        AccountText.Text = _expectedAccount.Length > 0
-            ? _expectedAccount
-            : configuredAccount;
-        AccountText.IsReadOnly = false;
-        VoiceSetupGroup.Visibility =
-            _expectedAccount.Length == 0
-                ? Visibility.Visible
-                : Visibility.Collapsed;
+        _firstRun = _expectedAccount.Length == 0 && _expectedMailbox.Length == 0;
+        _requireMailAccess = _firstRun || requireMailAccess;
+        InitializeComponent();
+        _initialized = true;
+        // Environment configuration is only a preference, never verified identity.
+        AccountText.Text = _expectedAccount.Length > 0 ? _expectedAccount : _expectedMailbox;
+        FirstRunRequirements.Visibility = _firstRun ? Visibility.Visible : Visibility.Collapsed;
+        CopilotAccessGroup.Visibility = _firstRun ? Visibility.Visible : Visibility.Collapsed;
+        VoiceSetupGroup.Visibility = _firstRun ? Visibility.Visible : Visibility.Collapsed;
+        if (!_requireMailAccess)
+        {
+            MailAccessStatus.Text = "Optional / skipped — Mail access: Outlook monitoring is Off.";
+            MailAccessIndicator.State = SetupStepState.Skipped;
+        }
+        UpdateMonitoringSummary();
         RefreshVoiceModelsStatus();
-        UpdateAccountMode();
-
-        Loaded += (_, _) =>
-            PeggyWindowLayout.ConstrainToWorkArea(this);
+        UpdateControls();
+        Loaded += (_, _) => PeggyWindowLayout.ConstrainToWorkArea(this);
         if (!previewMode)
         {
-            Loaded += async (_, _) =>
-                await RefreshInstallationStatusAsync();
+            Loaded += async (_, _) => await CheckLocalAsync();
         }
         Closed += (_, _) =>
         {
+            _closed = true;
+            _operationGeneration++;
+            ClearGitHubChallenge();
+            MarkInterruptedChecks(SetupStepState.Idle, "Cancelled — Setup closed.");
             _lifetimeCancellation.Cancel();
             _activeOperationCancellation?.Cancel();
             _lifetimeCancellation.Dispose();
         };
     }
 
-    internal void SetPreviewInstallationState(
-        string installationStatus,
-        string operationStatus)
+    public string? AuthenticatedAccount { get; private set; }
+    public string? AuthenticatedMailbox { get; private set; }
+    public string? AcceptedEulaVersion { get; private set; }
+    public WorkIqAccountIdentity? AuthenticatedIdentity { get; private set; }
+    public bool AuthenticationAttempted { get; private set; }
+    public bool VoiceModelsReady { get; private set; }
+
+    internal bool CanFinish =>
+        !_busy && _candidateIdentity is not null &&
+        (!_requireMailAccess || _mailReady) &&
+        _local?.WorkIq.IsReady == true &&
+        string.Equals(_candidateIdentity.EulaAcceptedVersion,
+            _local.WorkIq.Version, StringComparison.Ordinal) &&
+        (!_firstRun || (_local.IsReady && _copilotAccess?.IsReady == true));
+
+    internal void SetPreviewInstallationState(string installationStatus, string operationStatus)
     {
         InstallationStatus.Text = installationStatus;
         OperationStatus.Text = operationStatus;
         InstallButton.Visibility = Visibility.Collapsed;
-        SignInButton.IsEnabled = true;
     }
 
-    public string? AuthenticatedAccount { get; private set; }
-
-    public string? AuthenticatedMailbox { get; private set; }
-
-    public string? AcceptedEulaVersion { get; private set; }
-
-    public WorkIqAccountIdentity? AuthenticatedIdentity { get; private set; }
-
-    public bool AuthenticationAttempted { get; private set; }
-
-    public bool VoiceModelsReady { get; private set; }
-
-    private async Task RefreshInstallationStatusAsync()
-    {
-        if (!_setup.TryGetExecutablePath(out var executable))
+    internal Task CheckLocalAsync()
+        => RunOperationAsync(async ct =>
         {
-            InstallationStatus.Text =
-                "Standalone WorkIQ is not installed. Install Node.js 18 or " +
-                "later, then select Install WorkIQ.";
-            InstallButton.Visibility = Visibility.Visible;
-            SignInButton.IsEnabled = false;
-            return;
-        }
-
-        InstallButton.Visibility = Visibility.Collapsed;
-        SignInButton.IsEnabled = true;
-        try
-        {
-            var version = await _setup.GetVersionAsync(
-                _lifetimeCancellation.Token);
-            InstallationStatus.Text =
-                $"WorkIQ {version} is ready at {executable}.";
-        }
-        catch (OperationCanceledException) when (
-            _lifetimeCancellation.IsCancellationRequested)
-        {
-        }
-        catch (WorkIqSetupException ex)
-        {
-            InstallationStatus.Text =
-                $"WorkIQ was found at {executable}, but its version could not " +
-                $"be read: {ex.Message}";
-        }
-    }
-
-    private async void Install_Click(object sender, RoutedEventArgs e)
-    {
-        if (_busy)
-        {
-            return;
-        }
-
-        SetBusy(true, "Installing standalone WorkIQ with npm...");
-        using var operation = BeginOperation();
-        try
-        {
-            await _setup.InstallAsync(operation.Token);
-            OperationStatus.Text = "WorkIQ installation completed.";
-            await RefreshInstallationStatusAsync();
-        }
-        catch (OperationCanceledException) when (
-            operation.IsCancellationRequested)
-        {
-            OperationStatus.Text = "WorkIQ installation was cancelled.";
-        }
-        catch (WorkIqSetupException ex)
-        {
-            ShowSetupError(ex);
-        }
-        finally
-        {
-            EndOperation(operation);
-            RefreshVoiceModelsStatus();
-            SetBusy(false);
-        }
-    }
-
-    private async void InstallVoiceModels_Click(
-        object sender,
-        RoutedEventArgs e)
-    {
-        if (_busy)
-        {
-            return;
-        }
-
-        SetBusy(
-            true,
-            $"Downloading and verifying {SpeechModelSetupService
-                .DownloadSizeDescription} of English voice models...");
-        var repair = VoiceModelsReady;
-        using var operation = BeginOperation();
-        try
-        {
-            await _speechModels.InstallAsync(
-                _voiceModelDirectory,
-                force: repair,
-                ct: operation.Token);
-            RefreshVoiceModelsStatus();
-            OperationStatus.Text =
-                "Voice models are installed. You can continue setup.";
-        }
-        catch (OperationCanceledException) when (
-            operation.IsCancellationRequested)
-        {
-            OperationStatus.Text = "Voice model installation was cancelled.";
-        }
-        catch (SpeechModelSetupException ex)
-        {
-            OperationStatus.Text = ex.Message;
-            MessageBox.Show(
-                this,
-                ex.Message,
-                "Peggy setup",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-        }
-        finally
-        {
-            EndOperation(operation);
-            RefreshVoiceModelsStatus();
-            SetBusy(false);
-        }
-    }
-
-    private async void SignIn_Click(object sender, RoutedEventArgs e)
-    {
-        if (_busy)
-        {
-            return;
-        }
-        if (EulaCheck.IsChecked != true)
-        {
-            MessageBox.Show(
-                this,
-                "Review and accept the WorkIQ EULA before signing in.",
-                "Peggy setup",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return;
-        }
-        SetBusy(
-            true,
-            "Checking Microsoft sign-in and permission consent. If WorkIQ " +
-            "opens a browser, complete the steps there.");
-        AuthenticatedAccount = null;
-        AuthenticatedMailbox = null;
-        AcceptedEulaVersion = null;
-        AuthenticatedIdentity = null;
-        using var operation = BeginOperation();
-        try
-        {
-            AuthenticationAttempted = true;
-            var identity = await _setup.SignInAsync(
-                AccountText.Text,
-                operation.Token);
-            if (_expectedAccount.Length > 0 &&
-                !WorkIqSetupService.RepresentsSameAccount(
-                    _expectedAccount,
-                    _expectedMailbox,
-                    _expectedUserPrincipalName,
-                    _expectedPrincipalId,
-                    identity) &&
-                MessageBox.Show(
-                    this,
-                    $"Switch Peggy from {_expectedAccount} to " +
-                    $"{identity.Account}?\n\nPeggy will clear the current " +
-                    "account's local alerts, monitoring history, selected " +
-                    "Outlook folders and Teams, Copilot conversation context, " +
-                    "and action history. General app and speech settings will " +
-                    "be kept.",
-                    "Switch Microsoft 365 account",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Warning,
-                    MessageBoxResult.No) != MessageBoxResult.Yes)
-            {
-                OperationStatus.Text =
-                    $"Account switch cancelled. Peggy remains connected as " +
-                    $"{_expectedAccount}.";
-                return;
-            }
-            AuthenticatedAccount = identity.Account;
-            AuthenticatedMailbox = identity.Mail;
-            AcceptedEulaVersion = identity.EulaAcceptedVersion;
-            AuthenticatedIdentity = identity;
-            OperationStatus.Text =
-                $"Verified Microsoft 365 account: {identity.Account}";
-            DialogResult = true;
-        }
-        catch (OperationCanceledException) when (
-            operation.IsCancellationRequested)
-        {
-            OperationStatus.Text = "Microsoft 365 sign-in was cancelled.";
-        }
-        catch (WorkIqSetupException ex)
-        {
-            if (ex is WorkIqEulaChangedException)
+            var previousVersion = _local?.WorkIq.Version;
+            _local = null;
+            SetStep(NodeIndicator, NodeStatus, SetupStepState.Running, "Checking — Node.js");
+            SetStep(NpmIndicator, NpmStatus, SetupStepState.Running, "Checking — npm");
+            SetStep(PowerShellIndicator, PowerShellStatus, SetupStepState.Running, "Checking — PowerShell");
+            SetStep(CopilotCliIndicator, CopilotCliStatus, SetupStepState.Running, "Checking — Copilot CLI");
+            SetStep(InstallationIndicator, InstallationStatus, SetupStepState.Running, "Checking — standalone WorkIQ");
+            var local = await _readiness.CheckLocalAsync(ct, CreateProgress<SetupLocalCheckUpdate>(ct, ApplyLocalCheck));
+            ct.ThrowIfCancellationRequested();
+            _local = local;
+            ApplyLocalCheck(new(SetupLocalCheck.Node, local.Node));
+            ApplyLocalCheck(new(SetupLocalCheck.Npm, local.Npm));
+            ApplyLocalCheck(new(SetupLocalCheck.PowerShell, local.PowerShell));
+            ApplyLocalCheck(new(SetupLocalCheck.Copilot, local.Copilot));
+            ApplyLocalCheck(new(SetupLocalCheck.WorkIq, local.WorkIq));
+            if (!string.Equals(previousVersion, local.WorkIq.Version, StringComparison.Ordinal))
             {
                 EulaCheck.IsChecked = false;
+                if (_candidateIdentity is not null &&
+                    _candidateIdentity.EulaAcceptedVersion != local.WorkIq.Version)
+                {
+                    ResetCandidate();
+                }
             }
-            ShowSetupError(ex);
-        }
-        finally
+            EulaVersionStatus.Text = local.WorkIq.IsReady
+                ? $"Review the WorkIQ EULA for installed version {local.WorkIq.Version}. Acceptance applies only to this exact version."
+                : "Check the WorkIQ version before reviewing its terms.";
+            ShowDetails(string.Join("\n\n", local.Checks
+                .Where(check => check.Details.Length > 0)
+                .Select(check => $"{check.StatusText}\n{check.Details}")));
+            OperationStatus.Text = local.IsReady
+                ? "Local requirements are ready. Check GitHub Copilot access and connect Microsoft 365."
+                : "Review the local requirements above. Use setup.exe to repair prerequisites, then Retry.";
+        }, "Checking local requirements...", "Local checks cancelled. Retry to continue.");
+
+    private async void RetryLocal_Click(object sender, RoutedEventArgs e) => await CheckLocalAsync();
+
+    private async void Install_Click(object sender, RoutedEventArgs e)
+        => await InstallWorkIqAsync();
+
+    internal async Task InstallWorkIqAsync()
+    {
+        if (_busy || _local?.Node.IsReady != true || _local.Npm.IsReady != true) return;
+        var installed = false;
+        await RunOperationAsync(async ct =>
         {
-            EndOperation(operation);
-            SetBusy(false);
-        }
+            SetStep(InstallationIndicator, InstallationStatus, SetupStepState.Running,
+                "Installing — Standalone WorkIQ with npm.");
+            await _setup.InstallAsync(ct);
+            ct.ThrowIfCancellationRequested();
+            SetStep(InstallationIndicator, InstallationStatus, SetupStepState.Succeeded, "Ready — WorkIQ installed.");
+            installed = true;
+            OperationStatus.Text = "WorkIQ installed. Checking local requirements...";
+        }, "Installing standalone WorkIQ with npm...", "WorkIQ installation cancelled.");
+        if (!_closed && installed) await CheckLocalAsync();
     }
 
-    private void ReviewEula_Click(object sender, RoutedEventArgs e)
+    internal Task CheckCopilotAsync(bool signIn = false)
+        => RunOperationAsync(async ct =>
+        {
+            _copilotAccess = null;
+            ClearGitHubChallenge();
+            SetStep(CopilotAccessIndicator, CopilotAccessStatus, SetupStepState.Running,
+                signIn ? "Starting — GitHub device sign-in." : "Checking — GitHub Copilot model catalog.");
+            if (signIn)
+            {
+                var acceptingChallenges = true;
+                var challengeReceived = false;
+                try
+                {
+                    await _readiness.SignInCopilotAsync(ct,
+                        CreateProgress<CopilotDeviceCodeChallenge>(ct, challenge =>
+                        {
+                            if (acceptingChallenges)
+                                challengeReceived |= ShowGitHubChallenge(challenge);
+                        }));
+                }
+                finally { acceptingChallenges = false; }
+                ct.ThrowIfCancellationRequested();
+                ClearGitHubChallenge();
+                SetStep(CopilotAccessIndicator, CopilotAccessStatus, SetupStepState.Running,
+                    challengeReceived ? "Checking — GitHub Copilot model catalog."
+                        : "Checking — Verifying existing GitHub Copilot access.");
+                OperationStatus.Text = challengeReceived
+                    ? "Checking GitHub Copilot access after sign-in. No model prompt is sent."
+                    : "Verifying existing GitHub Copilot access using the model catalog. No model prompt is sent.";
+            }
+            var result = await _readiness.CheckCopilotAccessAsync(ct);
+            ct.ThrowIfCancellationRequested();
+            _copilotAccess = result;
+            SetStep(CopilotAccessIndicator, CopilotAccessStatus, StateFor(result), result.StatusText);
+            ShowDetails(signIn ? "" : result.Details);
+            OperationStatus.Text = result.IsReady
+                ? "GitHub Copilot is ready. No model prompt was sent."
+                : result.Summary;
+        }, signIn ? "Starting GitHub Copilot device sign-in..." :
+            "Checking the GitHub Copilot model catalog...",
+            "GitHub Copilot check cancelled. Retry when ready.", hideFailureDetails: signIn);
+
+    private async void CheckCopilot_Click(object sender, RoutedEventArgs e)
+        => await CheckCopilotAsync();
+
+    private async void SignInCopilot_Click(object sender, RoutedEventArgs e)
+        => await CheckCopilotAsync(signIn: true);
+
+    internal Task ConnectMicrosoftAsync()
     {
+        if (_busy || !SignInButton.IsEnabled) return Task.CompletedTask;
+        var account = AccountText.Text.Trim();
+        var reviewedVersion = _reviewedVersion;
+        ResetCandidate();
+        return RunOperationAsync(async ct =>
+        {
+            SetStep(MicrosoftSignInIndicator, MicrosoftSignInStatus, SetupStepState.Running,
+                "Checking — The accepted WorkIQ EULA version.");
+            AuthenticationAttempted = true;
+            try
+            {
+                var acceptingStages = true;
+                WorkIqAccountIdentity identity;
+                try
+                {
+                    identity = await _setup.SignInAsync(account, reviewedVersion, ct,
+                        CreateProgress<WorkIqSignInStage>(ct, stage =>
+                        {
+                            if (acceptingStages) ApplyMicrosoftStage(stage);
+                        }));
+                }
+                finally { acceptingStages = false; }
+                ct.ThrowIfCancellationRequested();
+                SetStep(AccountVerifiedIndicator, AccountVerifiedStatus, SetupStepState.Running,
+                    "Checking — Account verified: confirming the returned identity.");
+                if (!MatchesTypedAccount(account, identity) ||
+                    string.IsNullOrWhiteSpace(identity.PrincipalId) ||
+                    !string.Equals(identity.EulaAcceptedVersion, reviewedVersion, StringComparison.Ordinal))
+                {
+                    throw new WorkIqSetupException(
+                        "The returned identity or accepted WorkIQ version did not match. Sign in again.");
+                }
+                _candidateIdentity = identity;
+                ConnectedName.Text = string.IsNullOrWhiteSpace(identity.DisplayName)
+                    ? identity.Mail ?? identity.Account : identity.DisplayName;
+                ConnectedEmail.Text = identity.Mail ?? identity.UserPrincipalName ?? identity.Account;
+                SetStep(MicrosoftSignInIndicator, MicrosoftSignInStatus, SetupStepState.Succeeded,
+                    "Ready — Microsoft sign-in");
+                SetStep(MicrosoftConsentIndicator, MicrosoftConsentStatus, SetupStepState.Succeeded,
+                    "Ready — Permission consent");
+                SetStep(AccountVerifiedIndicator, AccountVerifiedStatus, SetupStepState.Succeeded,
+                    "Ready — Account verified");
+                ConnectedCard.Visibility = Visibility.Visible;
+                AccountEditor.Visibility = Visibility.Collapsed;
+                UpdateMonitoringSummary();
+                if (_requireMailAccess) await ProbeMailAsync(ct);
+                ct.ThrowIfCancellationRequested();
+                OperationStatus.Text = "Review the connected account above. Choose Finish when all required checks are ready.";
+            }
+            catch
+            {
+                if (!_closed && !ct.IsCancellationRequested && _candidateIdentity is null)
+                    SetStep(AccountVerifiedIndicator, AccountVerifiedStatus, SetupStepState.Failed,
+                        "Failed — Account verification did not complete. Retry sign-in.");
+                throw;
+            }
+        }, "Checking the accepted WorkIQ EULA version before Microsoft sign-in.",
+            "Microsoft 365 connection cancelled. Peggy's saved account has not changed.");
+    }
+
+    private static bool MatchesTypedAccount(string account, WorkIqAccountIdentity identity)
+        => new[] { identity.Mail, identity.UserPrincipalName }.Any(alias =>
+            string.Equals(account, alias?.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private async void SignIn_Click(object sender, RoutedEventArgs e) => await ConnectMicrosoftAsync();
+
+    private async Task ProbeMailAsync(CancellationToken ct)
+    {
+        _mailReady = false;
+        SetStep(MailAccessIndicator, MailAccessStatus, SetupStepState.Running,
+            "Checking — Mail access ready: testing Inbox access without reading message bodies.");
         try
         {
-            Process.Start(new ProcessStartInfo
+            await _setup.ProbeInboxAccessAsync(_candidateIdentity!, ct);
+            ct.ThrowIfCancellationRequested();
+            _mailReady = true;
+            SetStep(MailAccessIndicator, MailAccessStatus, SetupStepState.Succeeded,
+                "Ready — Mail access ready (Inbox access verified; no message bodies read)");
+        }
+        catch
+        {
+            if (!_closed && !ct.IsCancellationRequested)
+                SetStep(MailAccessIndicator, MailAccessStatus, SetupStepState.Failed,
+                    "Failed — Mail access is not ready. Check permissions or mailbox availability, then Retry.");
+            throw;
+        }
+    }
+
+    internal Task RetryMailAsync()
+    {
+        if (_candidateIdentity is null || !_requireMailAccess) return Task.CompletedTask;
+        return RunOperationAsync(async ct =>
+        {
+            await ProbeMailAsync(ct);
+            ct.ThrowIfCancellationRequested();
+            OperationStatus.Text = "Mail access is ready. Review your account, then choose Finish.";
+        }, "Checking mail access for the verified account...", "Mail access check cancelled. Retry to continue.");
+    }
+
+    private async void RetryMail_Click(object sender, RoutedEventArgs e) => await RetryMailAsync();
+
+    internal void ChangeAccount()
+    {
+        if (_busy) return;
+        ResetCandidate();
+        AccountText.SelectAll();
+        AccountText.Focus();
+        OperationStatus.Text = "Enter your work email and sign in. Peggy's saved account changes only after Finish.";
+        UpdateControls();
+    }
+
+    private void ChangeAccount_Click(object sender, RoutedEventArgs e) => ChangeAccount();
+
+    private void ResetCandidate()
+    {
+        _candidateIdentity = null;
+        _mailReady = false;
+        ConnectedCard.Visibility = Visibility.Collapsed;
+        AccountEditor.Visibility = Visibility.Visible;
+        SetStep(MicrosoftSignInIndicator, MicrosoftSignInStatus, SetupStepState.Idle, "Not started — Microsoft sign-in");
+        SetStep(MicrosoftConsentIndicator, MicrosoftConsentStatus, SetupStepState.Idle, "Not started — Permission consent");
+        SetStep(AccountVerifiedIndicator, AccountVerifiedStatus, SetupStepState.Idle,
+            "Action required — Account verified: sign in to verify your identity.");
+        SetStep(MailAccessIndicator, MailAccessStatus, _requireMailAccess ? SetupStepState.Idle : SetupStepState.Skipped, _requireMailAccess
+            ? "Action required — Mail access ready: checked after account verification, without a second login."
+            : "Optional / skipped — Mail access: Outlook monitoring is Off.");
+        UpdateMonitoringSummary();
+    }
+
+    private async void Finish_Click(object sender, RoutedEventArgs e)
+    {
+        if (!CanFinish) return;
+        await RunOperationAsync(async ct =>
+        {
+            var candidate = _candidateIdentity!;
+            SetStep(AccountVerifiedIndicator, AccountVerifiedStatus, SetupStepState.Running,
+                "Checking — Confirming the connected account before Finish.");
+            WorkIqAccountIdentity current;
+            try
             {
-                FileName = WorkIqSetupService.EulaUrl,
-                UseShellExecute = true
-            });
-        }
-        catch (Win32Exception ex)
-        {
-            MessageBox.Show(
-                this,
-                $"The WorkIQ EULA could not be opened: {ex.Message}",
-                "Peggy setup",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-        }
+                current = await _setup.VerifyAccountAsync(candidate.Account, ct);
+            }
+            catch
+            {
+                if (!_closed && !ct.IsCancellationRequested)
+                {
+                    ResetCandidate();
+                    SetStep(AccountVerifiedIndicator, AccountVerifiedStatus, SetupStepState.Failed,
+                        "Failed — Account verification did not complete. Retry sign-in.");
+                }
+                throw;
+            }
+            ct.ThrowIfCancellationRequested();
+            if (!WorkIqSetupService.RepresentsSameAccount(candidate.Account, candidate.Mail,
+                    candidate.UserPrincipalName, candidate.PrincipalId, current))
+            {
+                ResetCandidate();
+                SetStep(AccountVerifiedIndicator, AccountVerifiedStatus, SetupStepState.Failed,
+                    "Failed — WorkIQ changed accounts. Retry sign-in.");
+                throw new WorkIqSetupException("WorkIQ changed accounts. Verify your account again before finishing.");
+            }
+            var version = await _setup.GetVersionAsync(ct);
+            ct.ThrowIfCancellationRequested();
+            if (!string.Equals(version, candidate.EulaAcceptedVersion, StringComparison.Ordinal))
+            {
+                ResetCandidate();
+                throw new WorkIqEulaChangedException(
+                    "WorkIQ changed versions. Retry local checks and review the current EULA before signing in.");
+            }
+            SetStep(AccountVerifiedIndicator, AccountVerifiedStatus, SetupStepState.Succeeded, "Ready — Account verified");
+            if (IsDifferentAccount(candidate) &&
+                MessageBox.Show(this,
+                    $"Switch Peggy from {_expectedAccount} to {candidate.Mail ?? candidate.Account}?\n\n" +
+                    "Peggy will clear the current account's local alerts, monitoring history, selected " +
+                    "Outlook folders and Teams, Copilot conversation context, and action history. " +
+                    "General app and speech settings will be kept.",
+                    "Switch Microsoft 365 account", MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+            {
+                OperationStatus.Text = "Account switch cancelled. Peggy's saved account has not changed.";
+                return;
+            }
+            AuthenticatedAccount = candidate.Account;
+            AuthenticatedMailbox = candidate.Mail;
+            AcceptedEulaVersion = candidate.EulaAcceptedVersion;
+            AuthenticatedIdentity = candidate;
+            DialogResult = true;
+        }, "Confirming the verified account before finishing...", "Finish cancelled. Peggy's saved account has not changed.");
     }
 
-    private void Cancel_Click(object sender, RoutedEventArgs e)
-    {
-        if (_busy)
-        {
-            _activeOperationCancellation?.Cancel();
-            return;
-        }
+    private bool IsDifferentAccount(WorkIqAccountIdentity identity)
+        => !_firstRun && !WorkIqSetupService.RepresentsSameAccount(
+            _expectedAccount, _expectedMailbox, _expectedUserPrincipalName, _expectedPrincipalId, identity);
 
-        DialogResult = false;
+    private void UpdateMonitoringSummary()
+        => MonitoringSummary.Text = _firstRun
+            ? "Default monitoring: Inbox only + Chats only. Change this later in Settings."
+            : _candidateIdentity is not null && IsDifferentAccount(_candidateIdentity)
+            ? "Your existing monitoring modes are retained. Account-specific folder and team selections are cleared when you switch accounts."
+            : "Your existing monitoring settings are kept when reconnecting the same account.";
+
+    private async void InstallVoiceModels_Click(object sender, RoutedEventArgs e)
+        => await InstallVoiceModelsAsync();
+
+    internal async Task InstallVoiceModelsAsync()
+    {
+        if (_busy || !_voiceModelDirectoryValid) return;
+        var repair = VoiceModelsReady;
+        _voiceSkipped = false;
+        await RunOperationAsync(async ct =>
+        {
+            SetStep(VoiceModelsIndicator, VoiceModelsStatus, SetupStepState.Running,
+                "Downloading — Verifying optional English voice models.");
+            await _installVoice(_voiceModelDirectory, repair, ct);
+            ct.ThrowIfCancellationRequested();
+            RefreshVoiceModelsStatus();
+            OperationStatus.Text = "Optional English voice is ready.";
+        }, $"Downloading and verifying {SpeechModelSetupService.DownloadSizeDescription} of English voice models...",
+            "Voice installation cancelled. You can skip voice and finish setup.");
     }
 
-    private void SetBusy(bool busy, string? status = null)
+    private void SkipVoice_Click(object sender, RoutedEventArgs e)
     {
-        _busy = busy;
-        AccountText.IsEnabled = !busy;
-        EulaCheck.IsEnabled = !busy;
-        InstallButton.IsEnabled = !busy;
-        InstallVoiceModelsButton.IsEnabled =
-            !busy && _voiceModelDirectoryValid;
-        SignInButton.IsEnabled =
-            !busy && _setup.TryGetExecutablePath(out _);
-        CancelButton.Content = busy ? "Cancel operation" : "Cancel";
-        if (status is not null)
-        {
-            OperationStatus.Text = status;
-        }
-    }
-
-    private bool IsAccountSwitchRequested()
-        => _expectedAccount.Length > 0 &&
-           !string.IsNullOrWhiteSpace(AccountText.Text) &&
-           !string.Equals(
-               _expectedAccount,
-               AccountText.Text.Trim(),
-               StringComparison.OrdinalIgnoreCase);
-
-    private void AccountText_Changed(
-        object sender,
-        System.Windows.Controls.TextChangedEventArgs e)
-        => UpdateAccountMode();
-
-    private void UpdateAccountMode()
-    {
-        if (_expectedAccount.Length == 0)
-        {
-            SignInButton.Content = "Sign in";
-            AccountChangeNotice.Visibility = Visibility.Collapsed;
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(AccountText.Text))
-        {
-            SignInButton.Content = "Switch account";
-            AccountChangeNotice.Text =
-                "Enter the Microsoft 365 email address Peggy should use.";
-            AccountChangeNotice.Visibility = Visibility.Visible;
-            return;
-        }
-
-        if (IsAccountSwitchRequested())
-        {
-            SignInButton.Content = "Switch account";
-            AccountChangeNotice.Text =
-                "Switching accounts clears local data tied to the current " +
-                "account after the new identity is verified.";
-        }
-        else
-        {
-            SignInButton.Content = "Sign in again";
-            AccountChangeNotice.Text =
-                "Edit the address above to switch to another Microsoft 365 " +
-                "account.";
-        }
-        AccountChangeNotice.Visibility = Visibility.Visible;
+        if (_busy) return;
+        _voiceSkipped = true;
+        RefreshVoiceModelsStatus();
+        OperationStatus.Text = "Optional English voice skipped. You can install it later in Settings.";
     }
 
     private void RefreshVoiceModelsStatus()
@@ -423,24 +484,17 @@ public partial class WorkIqSignInWindow : Window
         if (!_voiceModelDirectoryValid)
         {
             VoiceModelsReady = false;
-            VoiceModelsStatus.Text =
-                "PEGGY_SPEECH_MODELS is not a valid path. Correct or remove " +
-                "that environment variable before installing voice.";
-            InstallVoiceModelsButton.Content = "Install voice models";
+            SetStep(VoiceModelsIndicator, VoiceModelsStatus, SetupStepState.Skipped,
+                "Optional / skipped — PEGGY_SPEECH_MODELS is not a valid path. Correct or remove it to install voice.");
             InstallVoiceModelsButton.IsEnabled = false;
             return;
         }
-
-        VoiceModelsReady = _speechModels.AreModelsInstalled(
-            _voiceModelDirectory);
-        VoiceModelsStatus.Text = VoiceModelsReady
-            ? $"English voice models are ready at " +
-              $"{_voiceModelDirectory}."
-            : $"Voice models are not installed. Install them now or later " +
-              "from Settings.";
-        InstallVoiceModelsButton.Content = VoiceModelsReady
-            ? "Repair voice models"
-            : "Install voice models";
+        VoiceModelsReady = _voiceInstalled(_voiceModelDirectory);
+        SetStep(VoiceModelsIndicator, VoiceModelsStatus, VoiceModelsReady ? SetupStepState.Succeeded : SetupStepState.Skipped, VoiceModelsReady
+            ? $"Ready — English voice models at {_voiceModelDirectory}."
+            : _voiceSkipped ? "Optional / skipped — Install voice later in Settings."
+            : "Optional / skipped — English voice is not installed. Install now or skip.");
+        InstallVoiceModelsButton.Content = VoiceModelsReady ? "Repair voice models" : "Install voice models";
     }
 
     internal bool RevalidateVoiceModels()
@@ -449,31 +503,315 @@ public partial class WorkIqSignInWindow : Window
         return VoiceModelsReady;
     }
 
-    private void ShowSetupError(WorkIqSetupException exception)
+    private void AccountText_Changed(object sender, System.Windows.Controls.TextChangedEventArgs e)
     {
-        OperationStatus.Text = exception.Message;
-        MessageBox.Show(
-            this,
-            exception.Message,
-            "Peggy setup",
-            MessageBoxButton.OK,
-            MessageBoxImage.Error);
+        if (!_initialized) return;
+        if (_candidateIdentity is not null) ResetCandidate();
+        UpdateControls();
     }
 
-    private CancellationTokenSource BeginOperation()
+    private void Eula_Changed(object sender, RoutedEventArgs e)
     {
-        var operation =
-            CancellationTokenSource.CreateLinkedTokenSource(
-                _lifetimeCancellation.Token);
+        if (!_initialized) return;
+        _reviewedVersion = EulaCheck.IsChecked == true ? _local?.WorkIq.Version ?? "" : "";
+        UpdateControls();
+    }
+
+    private void UpdateControls()
+    {
+        if (!_initialized || _closed) return;
+        var validEmail = WorkIqSetupService.IsValidAccount(AccountText.Text);
+        EmailValidation.Text = validEmail ? "Your identity will be verified against this email."
+            : string.IsNullOrWhiteSpace(AccountText.Text) ? "Enter your work email address."
+            : "Enter a valid work email, such as name@company.com.";
+        AccountChangeNotice.Visibility = _firstRun ? Visibility.Collapsed : Visibility.Visible;
+        AccountChangeNotice.Text = "Changing accounts clears local account-specific data only after verification and your final confirmation.";
+        var workIqReady = _local?.WorkIq.IsReady == true;
+        AccountText.IsEnabled = !_busy;
+        EulaCheck.IsEnabled = !_busy && workIqReady;
+        ReviewEulaButton.IsEnabled = !_busy;
+        InstallButton.IsEnabled = !_busy && _local?.Node.IsReady == true && _local.Npm.IsReady;
+        InstallButton.Visibility = workIqReady ? Visibility.Collapsed : Visibility.Visible;
+        InstallButton.Content = InstallationIndicator.State == SetupStepState.Failed
+            ? "Install WorkIQ / Retry" : "Install WorkIQ with npm";
+        RetryLocalButton.IsEnabled = !_busy;
+        CheckCopilotButton.IsEnabled = SignInCopilotButton.IsEnabled = !_busy && _local?.Copilot.IsReady == true;
+        SignInButton.IsEnabled = !_busy && workIqReady && (!_firstRun || _local!.IsReady) &&
+            validEmail && EulaCheck.IsChecked == true && _reviewedVersion == _local!.WorkIq.Version;
+        SignInButton.Content = AccountVerifiedIndicator.State == SetupStepState.Failed ||
+            MicrosoftSignInIndicator.State == SetupStepState.Failed || MicrosoftConsentIndicator.State == SetupStepState.Failed
+            ? "Retry Microsoft sign-in" : "Sign in with Microsoft";
+        ChangeAccountButton.IsEnabled = !_busy;
+        RetryMailButton.Visibility = _candidateIdentity is not null && _requireMailAccess && !_mailReady
+            ? Visibility.Visible : Visibility.Collapsed;
+        RetryMailButton.IsEnabled = !_busy;
+        InstallVoiceModelsButton.IsEnabled = !_busy && _voiceModelDirectoryValid;
+        if (VoiceModelsIndicator.State == SetupStepState.Failed)
+            InstallVoiceModelsButton.Content = "Retry voice installation";
+        SkipVoiceButton.IsEnabled = !_busy;
+        FinishButton.IsEnabled = CanFinish;
+        CancelButton.Content = _busy ? "Cancel operation" : "Cancel";
+    }
+
+    private async Task RunOperationAsync(
+        Func<CancellationToken, Task> action, string status, string cancelled, bool hideFailureDetails = false)
+    {
+        if (_busy || _closed) return;
+        _busy = true;
+        _operationGeneration++;
+        _cancelledStatus = cancelled;
+        ShowDetails("");
+        OperationStatus.Text = status;
+        UpdateControls();
+        using var operation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
         _activeOperationCancellation = operation;
-        return operation;
+        try { await action(operation.Token); }
+        catch (OperationCanceledException) when (operation.IsCancellationRequested)
+        {
+            if (!_closed)
+            {
+                MarkInterruptedChecks(SetupStepState.Idle, "Cancelled — Retry when ready.");
+                OperationStatus.Text = cancelled;
+            }
+        }
+        catch (Exception ex) when (SetupReadinessService.IsExpectedFailure(ex))
+        {
+            if (!_closed)
+            {
+                if (ex is WorkIqEulaChangedException)
+                {
+                    EulaCheck.IsChecked = false;
+                    _local = null;
+                }
+                var failure = hideFailureDetails
+                    ? "GitHub sign-in did not complete. Retry with a new code. This setup flow supports GitHub.com only. If device login is unsupported, update GitHub Copilot CLI using setup.exe, then retry."
+                    : ex.Message;
+                MarkInterruptedChecks(SetupStepState.Failed, $"Failed — {failure}");
+                OperationStatus.Text = $"Failed — {failure}";
+                ShowDetails(hideFailureDetails ? "" : ex.ToString());
+            }
+        }
+        finally
+        {
+            _operationGeneration++;
+            ClearGitHubChallenge();
+            MarkInterruptedChecks(SetupStepState.Failed, "Failed — Check did not complete. Retry when ready.");
+            _activeOperationCancellation = null;
+            _busy = false;
+            UpdateControls();
+        }
     }
 
-    private void EndOperation(CancellationTokenSource operation)
+    private void MarkInterruptedChecks(SetupStepState state, string status)
     {
-        if (ReferenceEquals(_activeOperationCancellation, operation))
+        foreach (var (indicator, text) in new[]
         {
-            _activeOperationCancellation = null;
+            (NodeIndicator, NodeStatus), (NpmIndicator, NpmStatus), (PowerShellIndicator, PowerShellStatus),
+            (CopilotCliIndicator, CopilotCliStatus), (InstallationIndicator, InstallationStatus),
+            (CopilotAccessIndicator, CopilotAccessStatus), (MicrosoftSignInIndicator, MicrosoftSignInStatus),
+            (MicrosoftConsentIndicator, MicrosoftConsentStatus), (AccountVerifiedIndicator, AccountVerifiedStatus),
+            (MailAccessIndicator, MailAccessStatus), (VoiceModelsIndicator, VoiceModelsStatus)
+        })
+        {
+            if (indicator.State is SetupStepState.Running or SetupStepState.WaitingForUser)
+                SetStep(indicator, text, state, status);
         }
+    }
+
+    private static void SetStep(SetupStepIndicator indicator, TextBlock text, SetupStepState state, string status)
+    {
+        indicator.State = state;
+        text.Text = status;
+        System.Windows.Automation.AutomationProperties.SetLiveSetting(text,
+            System.Windows.Automation.AutomationLiveSetting.Polite);
+    }
+
+    private static SetupStepState StateFor(SetupCheck check) => check.State switch
+    {
+        SetupCheckState.Checking => SetupStepState.Running,
+        SetupCheckState.Ready => SetupStepState.Succeeded,
+        SetupCheckState.Skipped => SetupStepState.Skipped,
+        _ => SetupStepState.Failed
+    };
+
+    private void ApplyLocalCheck(SetupLocalCheckUpdate update)
+    {
+        var (indicator, text) = update.Check switch
+        {
+            SetupLocalCheck.Node => (NodeIndicator, NodeStatus),
+            SetupLocalCheck.Npm => (NpmIndicator, NpmStatus),
+            SetupLocalCheck.PowerShell => (PowerShellIndicator, PowerShellStatus),
+            SetupLocalCheck.Copilot => (CopilotCliIndicator, CopilotCliStatus),
+            _ => (InstallationIndicator, InstallationStatus)
+        };
+        SetStep(indicator, text, StateFor(update.Result), update.Result.StatusText);
+    }
+
+    private void ApplyMicrosoftStage(WorkIqSignInStage stage)
+    {
+        switch (stage)
+        {
+            case WorkIqSignInStage.AcceptingEula:
+                SetStep(MicrosoftSignInIndicator, MicrosoftSignInStatus, SetupStepState.Running,
+                    "Checking — The accepted WorkIQ EULA version.");
+                break;
+            case WorkIqSignInStage.SigningIn:
+                SetStep(MicrosoftSignInIndicator, MicrosoftSignInStatus, SetupStepState.WaitingForUser,
+                    "Waiting for you — Complete Microsoft sign-in if prompted.");
+                OperationStatus.Text = "Complete Microsoft sign-in if prompted. Peggy is waiting for WorkIQ to finish.";
+                break;
+            case WorkIqSignInStage.Consenting:
+                SetStep(MicrosoftSignInIndicator, MicrosoftSignInStatus, SetupStepState.Succeeded,
+                    "Ready — Microsoft sign-in");
+                SetStep(MicrosoftConsentIndicator, MicrosoftConsentStatus, SetupStepState.WaitingForUser,
+                    "Waiting for you — Review Microsoft 365 permission consent if prompted.");
+                OperationStatus.Text = "Review Microsoft 365 permission consent if prompted.";
+                break;
+            case WorkIqSignInStage.VerifyingAccount:
+                SetStep(MicrosoftConsentIndicator, MicrosoftConsentStatus, SetupStepState.Succeeded,
+                    "Ready — Permission consent");
+                SetStep(AccountVerifiedIndicator, AccountVerifiedStatus, SetupStepState.Running,
+                    "Checking — Account verified: matching your work email to the signed-in profile.");
+                OperationStatus.Text = "Verifying the signed-in Microsoft 365 account.";
+                break;
+        }
+    }
+
+    private IProgress<T> CreateProgress<T>(CancellationToken ct, Action<T> update)
+    {
+        var generation = _operationGeneration;
+        return new CallbackProgress<T>(value =>
+        {
+            void Deliver()
+            {
+                if (!_closed && !ct.IsCancellationRequested && generation == _operationGeneration)
+                    update(value);
+            }
+            if (Dispatcher.CheckAccess()) Deliver();
+            else if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(new Action(Deliver));
+        });
+    }
+
+    private sealed class CallbackProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
+    }
+
+    internal static bool IsAllowedGitHubVerificationUri(Uri? uri)
+        => uri is { IsAbsoluteUri: true } &&
+            string.Equals(uri.OriginalString, "https://github.com/login/device", StringComparison.Ordinal);
+
+    private bool ShowGitHubChallenge(CopilotDeviceCodeChallenge challenge)
+    {
+        if (!IsAllowedGitHubVerificationUri(challenge.VerificationUri) ||
+            !Regex.IsMatch(challenge.UserCode ?? "", @"\A[A-Z0-9]{4}-[A-Z0-9]{4}\z",
+                RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+        _gitHubVerificationUri = challenge.VerificationUri;
+        GitHubDeviceCodeText.Text = challenge.UserCode;
+        GitHubDeviceCodeCard.Visibility = Visibility.Visible;
+        GitHubDeviceCodeText.IsEnabled = CopyGitHubCodeButton.IsEnabled = OpenGitHubButton.IsEnabled = true;
+        SetStep(CopilotAccessIndicator, CopilotAccessStatus, SetupStepState.WaitingForUser,
+            "Waiting for you — Enter the device code on GitHub. Complete sign-in if prompted.");
+        OperationStatus.Text = "Complete GitHub device sign-in, then return here. Access will be checked automatically.";
+        return true;
+    }
+
+    private void ClearGitHubChallenge()
+    {
+        _gitHubVerificationUri = null;
+        GitHubDeviceCodeText.Clear();
+        GitHubDeviceCodeText.IsEnabled = CopyGitHubCodeButton.IsEnabled = OpenGitHubButton.IsEnabled = false;
+        GitHubDeviceCodeCard.Visibility = Visibility.Collapsed;
+    }
+
+    internal void CopyGitHubCode(Action<string> copy)
+    {
+        if (!_closed && _busy && CopyGitHubCodeButton.IsEnabled &&
+            _activeOperationCancellation?.IsCancellationRequested == false &&
+            IsAllowedGitHubVerificationUri(_gitHubVerificationUri))
+            copy(GitHubDeviceCodeText.Text);
+    }
+
+    private void CopyGitHubCode_Click(object sender, RoutedEventArgs e)
+    {
+        try { CopyGitHubCode(Clipboard.SetText); }
+        catch (System.Runtime.InteropServices.ExternalException)
+        {
+            OperationStatus.Text = "Could not copy the code. Select it and copy it manually.";
+        }
+    }
+
+    internal void OpenGitHub(Action<Uri> open)
+    {
+        if (!_closed && _busy && OpenGitHubButton.IsEnabled &&
+            _activeOperationCancellation?.IsCancellationRequested == false &&
+            IsAllowedGitHubVerificationUri(_gitHubVerificationUri))
+            open(_gitHubVerificationUri!);
+    }
+
+    private void OpenGitHub_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            OpenGitHub(uri => Process.Start(new ProcessStartInfo
+            {
+                FileName = uri.AbsoluteUri,
+                UseShellExecute = true
+            }));
+        }
+        catch (Win32Exception)
+        {
+            OperationStatus.Text = "Could not open GitHub. Open https://github.com/login/device and enter the displayed code.";
+        }
+    }
+
+    private void ShowDetails(string details)
+    {
+        DetailsText.Text = details;
+        TechnicalDetails.Visibility = string.IsNullOrWhiteSpace(details) ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void CopyDetails_Click(object sender, RoutedEventArgs e)
+    {
+        try { Clipboard.SetText(DetailsText.Text); }
+        catch (System.Runtime.InteropServices.ExternalException)
+        {
+            OperationStatus.Text = "Could not copy details. Select the text and copy it manually.";
+        }
+    }
+
+    private void ReviewEula_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo { FileName = WorkIqSetupService.EulaUrl, UseShellExecute = true });
+        }
+        catch (Win32Exception ex)
+        {
+            OperationStatus.Text = $"Could not open the WorkIQ EULA: {ex.Message}";
+            ShowDetails(WorkIqSetupService.EulaUrl);
+        }
+    }
+
+    private void Cancel_Click(object sender, RoutedEventArgs e)
+    {
+        if (_busy)
+        {
+            CancelActiveOperation();
+            return;
+        }
+        DialogResult = false;
+    }
+
+    internal void CancelActiveOperation()
+    {
+        _operationGeneration++;
+        _activeOperationCancellation?.Cancel();
+        ClearGitHubChallenge();
+        MarkInterruptedChecks(SetupStepState.Idle, "Cancelled — Retry when ready.");
+        OperationStatus.Text = _cancelledStatus;
     }
 }

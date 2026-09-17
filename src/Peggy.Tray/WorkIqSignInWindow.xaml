@@ -3,199 +3,221 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:Peggy.Tray"
         Title="Peggy setup"
-        Width="680" Height="760"
-        MinWidth="580" MinHeight="620"
+        Width="720" Height="820" MinWidth="580" MinHeight="620"
         WindowStartupLocation="CenterOwner"
         Background="{DynamicResource PeggyPageBrush}"
-        FontFamily="Segoe UI"
-        TextOptions.TextFormattingMode="Display">
+        FontFamily="Segoe UI" TextOptions.TextFormattingMode="Display">
   <Window.Resources>
     <ResourceDictionary>
       <ResourceDictionary.MergedDictionaries>
         <ResourceDictionary Source="PeggyTheme.xaml"/>
       </ResourceDictionary.MergedDictionaries>
+      <Style x:Key="SetupStatusStyle" TargetType="TextBlock">
+        <Setter Property="TextWrapping" Value="Wrap"/>
+        <Setter Property="Foreground" Value="{StaticResource PeggyMutedTextBrush}"/>
+        <Setter Property="Margin" Value="0,4,0,8"/>
+        <Setter Property="FontSize" Value="12"/>
+      </Style>
     </ResourceDictionary>
   </Window.Resources>
-
-  <Grid Background="{StaticResource PeggyPageBrush}">
+  <Grid>
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
-
-    <Border Grid.Row="0" Background="{StaticResource PeggyHeaderBrush}"
-            Padding="24,20">
-      <Grid>
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="*"/>
-        </Grid.ColumnDefinitions>
-        <Border Width="48" Height="48" CornerRadius="24"
-                Background="#F4864F" Margin="0,0,13,0">
-          <local:DecorativeTextBlock
-              Text="P" Foreground="#513B32"
-              FontSize="22" FontWeight="Bold"
-              HorizontalAlignment="Center"
-              VerticalAlignment="Center"/>
+    <Border Background="{StaticResource PeggyHeaderBrush}" Padding="24,20">
+      <StackPanel Orientation="Horizontal">
+        <Border Width="48" Height="48" CornerRadius="24" Background="#F4864F" Margin="0,0,13,0">
+          <local:DecorativeTextBlock Text="P" Foreground="#513B32" FontSize="22"
+                                    FontWeight="Bold" HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"/>
         </Border>
-        <StackPanel Grid.Column="1" VerticalAlignment="Center">
-          <TextBlock Text="Set up Peggy"
-                     FontSize="23" FontWeight="SemiBold"
-                     Foreground="White"/>
-          <TextBlock
-              Text="Configure Microsoft 365 and optionally add local English voice"
-              TextWrapping="Wrap"
-              Foreground="#EADFD8"
-              FontSize="12" Margin="0,3,0,0"/>
+        <StackPanel VerticalAlignment="Center">
+          <TextBlock Text="Set up Peggy" FontSize="23" FontWeight="SemiBold" Foreground="White"/>
+          <TextBlock Text="Check this PC, connect your accounts, then choose Finish."
+                     Foreground="#EADFD8" FontSize="12" Margin="0,3,0,0"/>
         </StackPanel>
-      </Grid>
+      </StackPanel>
     </Border>
-
-    <ScrollViewer Grid.Row="1"
-                  VerticalScrollBarVisibility="Auto"
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
                   HorizontalScrollBarVisibility="Disabled">
       <StackPanel Margin="24,18,24,22">
-        <GroupBox Header="1. Check WorkIQ" Margin="0,0,0,16">
-          <Grid>
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="*"/>
-              <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
-            <StackPanel>
-              <TextBlock Text="Standalone WorkIQ"
-                         FontWeight="SemiBold"
-                         Foreground="{StaticResource PeggyTextBrush}"/>
-              <TextBlock x:Name="InstallationStatus"
-                         Text="Checking installation..."
-                         TextWrapping="Wrap"
-                         Foreground="{StaticResource PeggyMutedTextBrush}"
-                         FontSize="11" Margin="0,4,16,0"/>
+        <GroupBox Header="1. Local requirements" Margin="0,0,0,16">
+          <StackPanel>
+            <TextBlock Text="These version checks run automatically. Nothing is installed or signed in without your action."
+                       Style="{StaticResource SetupStatusStyle}"/>
+            <StackPanel x:Name="FirstRunRequirements">
+              <TextBlock Text="Node.js 18+" FontWeight="SemiBold"/>
+              <DockPanel>
+                <local:SetupStepIndicator x:Name="NodeIndicator"/>
+                <TextBlock x:Name="NodeStatus" Text="Not started — Node.js" Style="{StaticResource SetupStatusStyle}"/>
+              </DockPanel>
+              <TextBlock Text="npm" FontWeight="SemiBold"/>
+              <DockPanel>
+                <local:SetupStepIndicator x:Name="NpmIndicator"/>
+                <TextBlock x:Name="NpmStatus" Text="Not started — npm" Style="{StaticResource SetupStatusStyle}"/>
+              </DockPanel>
+              <TextBlock Text="PowerShell 7" FontWeight="SemiBold"/>
+              <DockPanel>
+                <local:SetupStepIndicator x:Name="PowerShellIndicator"/>
+                <TextBlock x:Name="PowerShellStatus" Text="Not started — PowerShell" Style="{StaticResource SetupStatusStyle}"/>
+              </DockPanel>
+              <TextBlock Text="GitHub Copilot CLI 1.0.81+" FontWeight="SemiBold"/>
+              <DockPanel>
+                <local:SetupStepIndicator x:Name="CopilotCliIndicator"/>
+                <TextBlock x:Name="CopilotCliStatus" Text="Not started — Copilot CLI" Style="{StaticResource SetupStatusStyle}"/>
+              </DockPanel>
             </StackPanel>
-            <Button x:Name="InstallButton" Grid.Column="1"
-                    Content="Install WorkIQ with npm"
-                    HorizontalAlignment="Right"
-                    VerticalAlignment="Center"
-                    Click="Install_Click"/>
-          </Grid>
-        </GroupBox>
-
-        <GroupBox Header="2. Verify account" Margin="0,0,0,16">
-          <StackPanel>
-            <TextBlock Text="Microsoft 365 account"
-                       FontWeight="SemiBold"
-                       Foreground="{StaticResource PeggyTextBrush}"/>
-            <TextBox x:Name="AccountText" Margin="0,6,0,9"
-                     AutomationProperties.Name="Microsoft 365 account"
-                     TextChanged="AccountText_Changed"/>
-            <TextBlock
-                Text="WorkIQ checks sign-in and permission consent. A browser opens only when interaction is required. Peggy verifies the selected identity before saving it."
-                TextWrapping="Wrap"
-                Foreground="{StaticResource PeggyMutedTextBrush}"
-                FontSize="11"/>
-            <TextBlock x:Name="AccountChangeNotice"
-                       Margin="0,8,0,0"
-                       TextWrapping="Wrap"
-                       Foreground="{StaticResource PeggyWarningBrush}"
-                       FontSize="11"
-                       Visibility="Collapsed"/>
-          </StackPanel>
-        </GroupBox>
-
-        <GroupBox Header="3. Review terms" Margin="0,0,0,16">
-          <StackPanel>
-            <TextBlock
-                Text="Review the current WorkIQ terms before connecting. Peggy binds your acceptance to the exact installed WorkIQ build."
-                TextWrapping="Wrap"
-                Foreground="{StaticResource PeggyMutedTextBrush}"
-                FontSize="11" Margin="0,0,0,11"/>
+            <TextBlock Text="Standalone Microsoft WorkIQ" FontWeight="SemiBold"/>
+            <DockPanel>
+              <local:SetupStepIndicator x:Name="InstallationIndicator"/>
+              <TextBlock x:Name="InstallationStatus" Text="Not started — WorkIQ" Style="{StaticResource SetupStatusStyle}"/>
+            </DockPanel>
             <WrapPanel>
-              <Button Content="Review WorkIQ EULA"
-                      Margin="0,0,12,8"
-                      Click="ReviewEula_Click"/>
-              <CheckBox x:Name="EulaCheck"
-                        Content="I reviewed and accept the WorkIQ EULA"
-                        VerticalAlignment="Center"
-                        Margin="0,0,0,8"/>
+              <Button x:Name="RetryLocalButton" Content="Retry local checks" Click="RetryLocal_Click" Margin="0,0,10,0"/>
+              <Button x:Name="InstallButton" Content="Install WorkIQ with npm" Click="Install_Click" IsEnabled="False"/>
             </WrapPanel>
           </StackPanel>
         </GroupBox>
-
-        <GroupBox x:Name="VoiceSetupGroup"
-                  Header="4. Optional voice"
-                  Margin="0,0,0,16">
-          <Grid>
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="*"/>
-              <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
-            <StackPanel>
-              <TextBlock Text="Local English voice"
-                         FontWeight="SemiBold"
-                         Foreground="{StaticResource PeggyTextBrush}"/>
-              <TextBlock x:Name="VoiceModelsStatus"
-                         TextWrapping="Wrap"
-                         Foreground="{StaticResource PeggyMutedTextBrush}"
-                         FontSize="11" Margin="0,4,16,0"/>
-              <TextBlock
-                  Text="The verified download is about 803 MiB. Speech and raw microphone audio stay on this PC."
-                  TextWrapping="Wrap"
-                  Foreground="{StaticResource PeggyMutedTextBrush}"
-                  FontSize="11" Margin="0,5,16,0"/>
-            </StackPanel>
-            <Button x:Name="InstallVoiceModelsButton"
-                    Grid.Column="1"
-                    Content="Install voice models"
-                    HorizontalAlignment="Right"
-                    VerticalAlignment="Center"
-                    Click="InstallVoiceModels_Click"/>
-          </Grid>
-        </GroupBox>
-
-        <Border Background="{StaticResource PeggyWarningSurfaceBrush}"
-                BorderBrush="#E7CE79"
-                BorderThickness="1"
-                CornerRadius="10"
-                Padding="11">
-          <Grid>
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="Auto"/>
-              <ColumnDefinition Width="*"/>
-            </Grid.ColumnDefinitions>
-            <Border Width="30" Height="30" CornerRadius="15"
-                    Background="#F8D76E" Margin="0,0,10,0">
-              <local:DecorativeTextBlock
-                  Text="i" FontWeight="Bold"
-                  Foreground="{StaticResource PeggyWarningBrush}"
-                  HorizontalAlignment="Center"
-                  VerticalAlignment="Center"/>
+        <GroupBox x:Name="CopilotAccessGroup" Header="2. GitHub Copilot access" Margin="0,0,0,16">
+          <StackPanel>
+            <DockPanel>
+              <local:SetupStepIndicator x:Name="CopilotAccessIndicator"/>
+              <TextBlock x:Name="CopilotAccessStatus"
+                         Text="Action required — Check access using the model catalog. No model prompt is sent."
+                         Style="{StaticResource SetupStatusStyle}"/>
+            </DockPanel>
+            <Border x:Name="GitHubDeviceCodeCard" Visibility="Collapsed" Padding="12" Margin="0,0,0,10"
+                    BorderBrush="{StaticResource PeggyBorderBrush}" BorderThickness="1" CornerRadius="8">
+              <StackPanel>
+                <TextBlock Text="Waiting for you — Open GitHub and enter this code. Complete sign-in if prompted, then return here."
+                           TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+                <TextBox x:Name="GitHubDeviceCodeText" IsReadOnly="True" IsUndoEnabled="False" FontSize="22"
+                         FontWeight="SemiBold" Margin="0,8" IsEnabled="False"
+                         AutomationProperties.Name="GitHub device sign-in code"/>
+                <TextBlock Text="https://github.com/login/device" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                <WrapPanel>
+                  <Button x:Name="CopyGitHubCodeButton" Content="Copy code" IsEnabled="False"
+                          Click="CopyGitHubCode_Click" Margin="0,0,10,0"/>
+                  <Button x:Name="OpenGitHubButton" Content="Open GitHub" IsEnabled="False"
+                          Click="OpenGitHub_Click"/>
+                </WrapPanel>
+              </StackPanel>
             </Border>
-            <TextBlock x:Name="OperationStatus" Grid.Column="1"
-                       Text="Ready to set up Peggy."
-                       TextWrapping="Wrap"
-                       Foreground="{StaticResource PeggyWarningBrush}"
-                       VerticalAlignment="Center"/>
-          </Grid>
+            <WrapPanel>
+              <Button x:Name="CheckCopilotButton" Content="Check access / Retry"
+                      Click="CheckCopilot_Click" Margin="0,0,10,0" IsEnabled="False"/>
+              <Button x:Name="SignInCopilotButton" Content="Sign in to GitHub Copilot"
+                      Click="SignInCopilot_Click" IsEnabled="False"/>
+            </WrapPanel>
+          </StackPanel>
+        </GroupBox>
+        <GroupBox Header="3. Microsoft 365 connection" Margin="0,0,0,16">
+          <StackPanel>
+            <StackPanel x:Name="AccountEditor">
+              <Label Content="_Work email" Target="{Binding ElementName=AccountText}" Padding="0"/>
+              <TextBox x:Name="AccountText" Margin="0,6,0,0"
+                       AutomationProperties.Name="Work email" TextChanged="AccountText_Changed"/>
+              <TextBlock x:Name="EmailValidation" Text="Enter your work email address."
+                         Style="{StaticResource SetupStatusStyle}"/>
+              <TextBlock Text="WorkIQ checks sign-in and permission consent. Complete sign-in if prompted. Peggy verifies the actual account against your email before saving."
+                         Style="{StaticResource SetupStatusStyle}"/>
+              <TextBlock x:Name="AccountChangeNotice" Visibility="Collapsed"
+                         Style="{StaticResource SetupStatusStyle}"/>
+              <TextBlock x:Name="EulaVersionStatus"
+                         Text="Check the WorkIQ version before reviewing its terms."
+                         Style="{StaticResource SetupStatusStyle}"/>
+              <WrapPanel>
+                <Button x:Name="ReviewEulaButton" Content="Review WorkIQ EULA"
+                        Margin="0,0,10,8" Click="ReviewEula_Click"/>
+                <CheckBox x:Name="EulaCheck" Content="I reviewed and accept the WorkIQ EULA"
+                          Checked="Eula_Changed" Unchecked="Eula_Changed"
+                          VerticalAlignment="Center" Margin="0,0,0,8" IsEnabled="False"/>
+              </WrapPanel>
+              <Button x:Name="SignInButton" Content="Sign in with Microsoft"
+                      HorizontalAlignment="Left" IsEnabled="False"
+                      Click="SignIn_Click" Style="{StaticResource PeggyPrimaryButtonStyle}"/>
+            </StackPanel>
+            <Border x:Name="ConnectedCard" Visibility="Collapsed" Padding="14"
+                    Background="{StaticResource PeggySurfaceBrush}"
+                    BorderBrush="{StaticResource PeggyBorderBrush}" BorderThickness="1"
+                    CornerRadius="8" Margin="0,0,0,10">
+              <StackPanel>
+                <TextBlock Text="Connected as" FontWeight="SemiBold"/>
+                <TextBlock x:Name="ConnectedName" FontSize="18" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                <TextBlock x:Name="ConnectedEmail" TextWrapping="Wrap" Margin="0,3,0,8"/>
+                <Button x:Name="ChangeAccountButton" Content="Change account"
+                        HorizontalAlignment="Left" Click="ChangeAccount_Click"/>
+              </StackPanel>
+            </Border>
+            <DockPanel>
+              <local:SetupStepIndicator x:Name="MicrosoftSignInIndicator"/>
+              <TextBlock x:Name="MicrosoftSignInStatus" Text="Not started — Microsoft sign-in"
+                         Style="{StaticResource SetupStatusStyle}"/>
+            </DockPanel>
+            <DockPanel>
+              <local:SetupStepIndicator x:Name="MicrosoftConsentIndicator"/>
+              <TextBlock x:Name="MicrosoftConsentStatus" Text="Not started — Permission consent"
+                         Style="{StaticResource SetupStatusStyle}"/>
+            </DockPanel>
+            <DockPanel>
+              <local:SetupStepIndicator x:Name="AccountVerifiedIndicator"/>
+              <TextBlock x:Name="AccountVerifiedStatus"
+                         Text="Action required — Account verified: sign in to verify your identity."
+                         Style="{StaticResource SetupStatusStyle}"/>
+            </DockPanel>
+            <DockPanel>
+              <local:SetupStepIndicator x:Name="MailAccessIndicator"/>
+              <TextBlock x:Name="MailAccessStatus"
+                         Text="Action required — Mail access ready: checked after account verification, without a second login."
+                         Style="{StaticResource SetupStatusStyle}"/>
+            </DockPanel>
+            <Button x:Name="RetryMailButton" Content="Retry mail access" HorizontalAlignment="Left"
+                    Visibility="Collapsed" Click="RetryMail_Click"/>
+          </StackPanel>
+        </GroupBox>
+        <GroupBox x:Name="VoiceSetupGroup" Header="4. Optional English voice" Margin="0,0,0,16">
+          <StackPanel>
+            <DockPanel>
+              <local:SetupStepIndicator x:Name="VoiceModelsIndicator"/>
+              <TextBlock x:Name="VoiceModelsStatus" Style="{StaticResource SetupStatusStyle}"/>
+            </DockPanel>
+            <TextBlock Text="The verified download is about 803 MiB. Speech and raw microphone audio stay on this PC. Voice is optional and never blocks Finish."
+                       Style="{StaticResource SetupStatusStyle}"/>
+            <WrapPanel>
+              <Button x:Name="InstallVoiceModelsButton" Content="Install voice models"
+                      Click="InstallVoiceModels_Click" Margin="0,0,10,0"/>
+              <Button x:Name="SkipVoiceButton" Content="Skip for now" Click="SkipVoice_Click"/>
+            </WrapPanel>
+          </StackPanel>
+        </GroupBox>
+        <Border Padding="12" CornerRadius="8" BorderThickness="1"
+                BorderBrush="{StaticResource PeggyBorderBrush}" Background="{StaticResource PeggySurfaceBrush}">
+          <StackPanel>
+            <TextBlock Text="Before you finish" FontWeight="SemiBold"/>
+            <TextBlock x:Name="MonitoringSummary" Text="Default monitoring: Inbox only + Chats only. Change this later in Settings."
+                       Style="{StaticResource SetupStatusStyle}"/>
+            <TextBlock x:Name="OperationStatus" Text="Checking local requirements..."
+                       TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+            <Expander x:Name="TechnicalDetails" Header="Technical details" Visibility="Collapsed" Margin="0,10,0,0">
+              <StackPanel>
+                <TextBox x:Name="DetailsText" IsReadOnly="True" TextWrapping="Wrap" MaxHeight="180"
+                         VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Setup technical details"/>
+                <Button Content="Copy details" HorizontalAlignment="Left" Click="CopyDetails_Click" Margin="0,8,0,0"/>
+              </StackPanel>
+            </Expander>
+          </StackPanel>
         </Border>
       </StackPanel>
     </ScrollViewer>
-
-    <Border Grid.Row="2"
-            Background="{StaticResource PeggySurfaceBrush}"
-            BorderBrush="{StaticResource PeggyBorderBrush}"
-            BorderThickness="0,1,0,0"
-            Padding="18,13">
-      <StackPanel Orientation="Horizontal"
-                  HorizontalAlignment="Right">
-        <Button x:Name="CancelButton"
-                Content="Cancel" Width="105"
-                Margin="0,0,9,0"
-                Click="Cancel_Click"/>
-        <Button x:Name="SignInButton"
-                Content="Sign in" Width="125"
+    <Border Grid.Row="2" Background="{StaticResource PeggySurfaceBrush}"
+            BorderBrush="{StaticResource PeggyBorderBrush}" BorderThickness="0,1,0,0" Padding="18,13">
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+        <Button x:Name="CancelButton" Content="Cancel" MinWidth="105" Margin="0,0,9,0" Click="Cancel_Click"/>
+        <Button x:Name="FinishButton" Content="Finish" Width="125"
                 Style="{StaticResource PeggyPrimaryButtonStyle}"
-                IsDefault="True"
-                Click="SignIn_Click"/>
+                IsDefault="True" IsEnabled="False" Click="Finish_Click"/>
       </StackPanel>
     </Border>
   </Grid>

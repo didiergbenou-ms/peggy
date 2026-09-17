@@ -15,6 +15,8 @@ internal static class PeggyProviderEnvironment
         var environment = new Dictionary<string, string>(
             StringComparer.OrdinalIgnoreCase)
         {
+            [PeggyDefaults.OutlookScopeEnvironmentVariable] =
+                settings.OutlookScope.ToString(),
             ["PEGGY_OUTLOOK_FOLDERS"] = string.Join(
                 ";",
                 settings.AdditionalOutlookFolders),
@@ -25,6 +27,7 @@ internal static class PeggyProviderEnvironment
             ["PEGGY_TEAMS_TEAM_WATCHLIST"] = JsonSerializer.Serialize(
                 settings.TeamsTeamWatchlist),
             ["PEGGY_TEAMS_SCOPE"] = settings.TeamsScope.ToString(),
+            [PeggyDefaults.TeamsModeEnvironmentVariable] = settings.TeamsScope.ToString(),
             ["PEGGY_TEAMS_MONITOR_CHATS"] =
                 settings.MonitorTeamsChatsInSelectedScope.ToString()
         };
