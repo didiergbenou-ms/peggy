@@ -191,14 +191,27 @@ $versionOrder = @(
     '1.2.3-beta.30',
     '1.2.3-rc.1',
     '1.2.3-rc.39',
-    '1.2.3'
+    '1.2.3',
+    '1.2.4-alpha.1',
+    '1.3.0-alpha.1',
+    '2.0.0-alpha.1'
 ) | ForEach-Object {
-    [Version](ConvertTo-PeggyInstallerVersion -Version $_).ProductVersion
+    ConvertTo-PeggyInstallerVersion -Version $_
 }
 for ($index = 1; $index -lt $versionOrder.Count; $index++) {
     Assert-Installer `
-        ($versionOrder[$index] -gt $versionOrder[$index - 1]) `
+        ([Version]$versionOrder[$index].ProductVersion -gt
+            [Version]$versionOrder[$index - 1].ProductVersion) `
         'Prerelease MSI version mapping is not strictly ordered.'
+    Assert-Installer `
+        ([Version]$versionOrder[$index].FileVersion -gt
+            [Version]$versionOrder[$index - 1].FileVersion) `
+        'Release binary file versions are not strictly ordered.'
+}
+foreach ($orderedVersion in $versionOrder) {
+    Assert-Installer `
+        ($orderedVersion.FileVersion -eq "$($orderedVersion.ProductVersion).0") `
+        'Binary file versions must follow the MSI version mapping.'
 }
 $repeatCode = (ConvertTo-PeggyInstallerVersion `
     -Version $versionInfo.SemanticVersion).ProductCode
@@ -214,6 +227,31 @@ try {
 Assert-Installer `
     $invalidPrereleaseRejected `
     'An unordered prerelease version was accepted.'
+
+$binaryNamePattern = '^(Peggy\..*|peggy-.*)\.(dll|exe)$'
+$peggyBinaries = @(Get-ChildItem -LiteralPath $publishRoot -File -Recurse |
+    Where-Object { $_.Name -match $binaryNamePattern })
+foreach ($requiredBinary in @(
+        'peggy-tray.exe', 'peggy-tray.dll', 'Peggy.Core.dll',
+        'Peggy.Mcp\peggy-mcp.exe', 'Peggy.Mcp\peggy-mcp.dll',
+        'Peggy.Mcp\Peggy.Core.dll',
+        'Peggy.Speech.Host\peggy-speech-host.exe',
+        'Peggy.Speech.Host\peggy-speech-host.dll',
+        'Peggy.Speech.Host\Peggy.Core.dll'
+    )) {
+    Assert-Installer `
+        (Test-Path -LiteralPath (Join-Path $publishRoot $requiredBinary) -PathType Leaf) `
+        "Release binary '$requiredBinary' is missing."
+}
+$helperBinaries = @(
+    Get-Item -LiteralPath $checkerPath
+    Get-Item -LiteralPath (Join-Path $artifactRoot 'build\uninstall-cleanup\peggy-uninstall-cleanup.exe')
+)
+foreach ($binary in @($peggyBinaries) + @($helperBinaries)) {
+    Assert-Installer `
+        ($binary.VersionInfo.FileVersion -eq $versionInfo.FileVersion) `
+        "Release binary '$($binary.FullName)' does not have FileVersion $($versionInfo.FileVersion)."
+}
 
 $installer = New-Object -ComObject WindowsInstaller.Installer
 $summary = $installer.SummaryInformation([string]$msiPath, 0)
@@ -326,10 +364,10 @@ try {
     }
     Assert-Installer `
         ($sequence['RemoveExistingProducts'].Number -gt
-            $sequence['InstallExecute'].Number -and
+            $sequence['InstallInitialize'].Number -and
             $sequence['RemoveExistingProducts'].Number -lt
-                $sequence['InstallFinalize'].Number) `
-        'RemoveExistingProducts is not transactionally scheduled after InstallExecute.'
+                $sequence['ProcessComponents'].Number) `
+        'RemoveExistingProducts must replace the old payload inside the transaction before installing new components.'
     Assert-Installer `
         ($sequence['CheckPeggyPrerequisites'].Condition -eq
             'NOT Installed AND NOT ACTION~="ADMIN"' -and
@@ -455,11 +493,16 @@ try {
     $msiFiles = @()
     foreach ($row in Get-MsiRows `
             -Database $database `
-            -Query 'SELECT `Component_`,`FileName` FROM `File`') {
+            -Query 'SELECT `Component_`,`FileName`,`Version` FROM `File`') {
         $directory = Get-RelativeMsiDirectory `
             -DirectoryId $componentDirectories[$row[0]] `
             -Directories $directories
         $name = Get-MsiLongName -Value $row[1]
+        if ($name -match $binaryNamePattern) {
+            Assert-Installer `
+                ($row[2] -eq $versionInfo.FileVersion) `
+                "MSI binary '$name' does not have FileVersion $($versionInfo.FileVersion)."
+        }
         $msiFiles += if ([string]::IsNullOrWhiteSpace($directory)) {
             $name
         } else {

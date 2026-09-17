@@ -13,9 +13,11 @@
         Description="Peggy local-first Microsoft 365 desktop assistant"
         Manufacturer="Didier Gbenou" />
 
+    <!-- Replace the whole payload, including previously shipped equal-version
+         binaries, while keeping removal inside the rollback transaction. -->
     <MajorUpgrade
         DowngradeErrorMessage="A newer version of Peggy is already installed. Uninstall it before installing this older version."
-        Schedule="afterInstallExecute"
+        Schedule="afterInstallInitialize"
         IgnoreRemoveFailure="no" />
 
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />

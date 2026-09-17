@@ -68,6 +68,7 @@ $trayProject = Join-Path $repoRoot 'src\Peggy.Tray\Peggy.Tray.csproj'
     --self-contained true `
     --nologo `
     -p:Version=$($versionInfo.SemanticVersion) `
+    -p:FileVersion=$($versionInfo.FileVersion) `
     -p:ContinuousIntegrationBuild=true `
     -o $publishDirectory
 if ($LASTEXITCODE -ne 0) {
@@ -111,6 +112,7 @@ $cleanupProject = Join-Path (
     --self-contained true `
     --nologo `
     -p:Version=$($versionInfo.SemanticVersion) `
+    -p:FileVersion=$($versionInfo.FileVersion) `
     -o $cleanupOutput
 if ($LASTEXITCODE -ne 0) {
     throw "Peggy uninstall cleanup publish failed (exit $LASTEXITCODE)."
@@ -129,6 +131,7 @@ $checkerProject = Join-Path (
     --self-contained true `
     --nologo `
     -p:Version=$($versionInfo.SemanticVersion) `
+    -p:FileVersion=$($versionInfo.FileVersion) `
     -o $checkerOutput
 if ($LASTEXITCODE -ne 0) {
     throw "Peggy prerequisite checker publish failed (exit $LASTEXITCODE)."
@@ -208,6 +211,7 @@ if (-not $SkipChecksums) {
 [pscustomobject]@{
     Version = $versionInfo.SemanticVersion
     ProductVersion = $versionInfo.ProductVersion
+    FileVersion = $versionInfo.FileVersion
     ProductCode = $versionInfo.ProductCode
     PublishDirectory = $publishDirectory
     Zip = $zipPath

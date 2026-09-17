@@ -60,6 +60,7 @@ $checkerProject = Join-Path (
     --self-contained true `
     --nologo `
     -p:Version=$($versionInfo.SemanticVersion) `
+    -p:FileVersion=$($versionInfo.FileVersion) `
     -o $checkerOutput
 if ($LASTEXITCODE -ne 0) {
     throw "Peggy prerequisite checker publish failed (exit $LASTEXITCODE)."
