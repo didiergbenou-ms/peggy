@@ -146,10 +146,8 @@ public partial class App : Application
         };
         first.Start();
 
-        _poll = new DispatcherTimer
-        {
-            Interval = TimeSpan.FromMinutes(5)
-        };
+        _poll = new DispatcherTimer();
+        ApplyPollingInterval(_poll, _state.State.Settings);
         _poll.Tick += (_, _) => StartCheck(force: false);
         _poll.Start();
         StartScheduleTimer();
@@ -1105,6 +1103,7 @@ public partial class App : Application
             throw;
         }
 
+        ApplyPollingInterval(_poll, _state.State.Settings);
         _provider = replacementProvider;
         var activationFailures = new List<Exception>();
         try
@@ -2491,6 +2490,7 @@ public partial class App : Application
                 .ToList(),
             StartAtSignIn = settings.StartAtSignIn,
             MonitoringPaused = settings.MonitoringPaused,
+            MonitoringIntervalMinutes = settings.MonitoringIntervalMinutes,
             MonitoringScheduleEnabled =
                 settings.MonitoringScheduleEnabled,
             MonitoringWakeMinute = settings.MonitoringWakeMinute,
@@ -2503,6 +2503,17 @@ public partial class App : Application
             SpeechInputGain = settings.SpeechInputGain,
             SpeechTuningVersion = settings.SpeechTuningVersion
         };
+
+    internal static void ApplyPollingInterval(
+        DispatcherTimer timer,
+        PeggySettings settings)
+    {
+        var interval = MonitoringSchedule.GetPollingInterval(settings);
+        if (timer.Interval != interval)
+        {
+            timer.Interval = interval;
+        }
+    }
 
     private async Task ReplaceCopilotAsync(PeggySettings settings)
         => await ReplaceCopilotAsync(new CopilotRunner(

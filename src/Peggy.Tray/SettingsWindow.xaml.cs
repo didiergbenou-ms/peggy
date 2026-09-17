@@ -101,6 +101,8 @@ public partial class SettingsWindow : Window
             settings.MonitoringWakeMinute);
         SleepTimeText.Text = MonitoringSchedule.FormatMinute(
             settings.MonitoringSleepMinute);
+        MonitoringIntervalText.Text =
+            settings.MonitoringIntervalMinutes.ToString(CultureInfo.InvariantCulture);
         UpdateScheduleControls();
         var configuredModel = Environment.GetEnvironmentVariable(
             "PEGGY_COPILOT_MODEL");
@@ -1790,6 +1792,26 @@ public partial class SettingsWindow : Window
         TeamsScopeWarning.Visibility = Visibility.Visible;
     }
 
+    private void MonitoringInterval_Changed(object sender, TextChangedEventArgs e)
+    {
+        if (MonitoringIntervalError is not null)
+        {
+            ValidateMonitoringInterval(out _);
+        }
+    }
+
+    private bool ValidateMonitoringInterval(out int minutes)
+    {
+        var valid = MonitoringSchedule.TryParseIntervalMinutes(
+            MonitoringIntervalText.Text, out minutes);
+        MonitoringIntervalError.Text = valid
+            ? string.Empty
+            : $"Enter a whole number from {MonitoringSchedule.MinimumIntervalMinutes} " +
+              $"to {MonitoringSchedule.MaximumIntervalMinutes} minutes.";
+        MonitoringIntervalError.Visibility = valid ? Visibility.Collapsed : Visibility.Visible;
+        return valid;
+    }
+
     private void Save_Click(object sender, RoutedEventArgs e)
     {
         if (_installingSpeechModels)
@@ -1801,6 +1823,12 @@ public partial class SettingsWindow : Window
                 "Assistant settings",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!ValidateMonitoringInterval(out var monitoringIntervalMinutes))
+        {
+            MonitoringIntervalText.Focus();
             return;
         }
 
@@ -1910,6 +1938,7 @@ public partial class SettingsWindow : Window
             TeamsChannelWatchlist = watchlist,
             StartAtSignIn = StartupCheck.IsChecked == true,
             MonitoringPaused = PausedCheck.IsChecked == true,
+            MonitoringIntervalMinutes = monitoringIntervalMinutes,
             MonitoringScheduleEnabled =
                 ScheduleEnabledCheck.IsChecked == true,
             MonitoringWakeMinute = wakeMinute,

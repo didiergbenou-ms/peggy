@@ -16,6 +16,33 @@ public readonly record struct MonitoringScheduleStatus(
 
 public static class MonitoringSchedule
 {
+    public const int MinimumIntervalMinutes = 1;
+    public const int MaximumIntervalMinutes = 60;
+
+    public static bool IsValidInterval(int minutes)
+        => minutes is >= MinimumIntervalMinutes and <= MaximumIntervalMinutes;
+
+    public static bool TryParseIntervalMinutes(string? text, out int minutes)
+        => int.TryParse(
+               text?.Trim(),
+               NumberStyles.None,
+               CultureInfo.InvariantCulture,
+               out minutes) &&
+           IsValidInterval(minutes);
+
+    public static TimeSpan GetPollingInterval(PeggySettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        if (!IsValidInterval(settings.MonitoringIntervalMinutes))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(settings.MonitoringIntervalMinutes),
+                $"Monitoring interval must be {MinimumIntervalMinutes} to " +
+                $"{MaximumIntervalMinutes} whole minutes.");
+        }
+        return TimeSpan.FromMinutes(settings.MonitoringIntervalMinutes);
+    }
+
     public static bool CanRunAutomatic(
         PeggySettings settings,
         DateTime localNow)

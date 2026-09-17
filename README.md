@@ -40,7 +40,8 @@ remain in a separate local process.
 
 ## Highlights
 
-- Monitors unread Outlook mail and Teams chat activity every five minutes.
+- Monitors unread Outlook mail and Teams chat activity at a configurable interval
+  (five minutes by default).
 - Starts each process with a fresh five-minute lookback instead of replaying a
   large downtime backlog.
 - Uses strict, source-grounded Copilot classification to create Critical,
@@ -98,7 +99,10 @@ whose owning process has exited.
 
 ### Schedule and polling
 
-- Automatic monitoring runs every five minutes.
+- Automatic monitoring runs every five minutes by default. **Settings →
+  Monitoring behavior → Check Outlook and Teams every (minutes)** accepts
+  1–60 whole minutes, shared by both enabled sources and applied immediately
+  on Save without restarting. Shorter intervals make more WorkIQ requests.
 - The default awake window is **07:00-19:00 local time**.
 - Outside that window Peggy sleeps and automatic checks pause.
 - **Check now** and **Talk to Peggy** remain available while sleeping.
@@ -703,6 +707,7 @@ not leave a partially applied identity, model, or source scope.
 | CPU threads | 1, 2, 4, or 8 |
 | Microphone gain | 4x, 8x, 12x, or 16x |
 | Monitoring schedule | Local 24-hour wake and sleep times |
+| Monitoring interval | 1–60 whole minutes, default 5; applies to Outlook and Teams and is retained across restarts and account changes |
 | Start at Windows sign-in | Manages the current user's `Run` registry entry |
 | Pause monitoring | Persists a manual pause independently of scheduled sleep |
 | Teams monitoring scope | Chats only, Chats + selected channels, Selected channels only, All Teams activity, or Off |

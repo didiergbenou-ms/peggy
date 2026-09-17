@@ -58,6 +58,7 @@ Directory.CreateDirectory(testDirectory);
 try
 {
     await CoreBehaviorSmokeTests.RunAsync(testDirectory);
+    await MonitoringIntervalSmokeTests.RunAsync(testDirectory);
     await AssistantBehaviorSmokeTests.RunAsync(testDirectory);
     await AppIntegrationSmokeTests.RunAsync();
     await SettingsCatalogCacheSmokeTests.RunAsync();

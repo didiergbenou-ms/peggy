@@ -96,6 +96,9 @@ public sealed class PeggySettings
 
     public bool MonitoringPaused { get; set; }
 
+    public int MonitoringIntervalMinutes { get; set; } =
+        PeggyDefaults.DefaultMonitoringIntervalMinutes;
+
     public bool MonitoringScheduleEnabled { get; set; } = true;
 
     public int MonitoringWakeMinute { get; set; } =

@@ -208,6 +208,11 @@ public sealed class EncryptedStateStore
         state.Settings.TeamsTeamWatchlist ??= [];
         state.Settings.TeamsChannelWatchlist ??= [];
         NormalizeTeamsWatchlists(state.Settings);
+        if (!MonitoringSchedule.IsValidInterval(state.Settings.MonitoringIntervalMinutes))
+        {
+            state.Settings.MonitoringIntervalMinutes =
+                PeggyDefaults.DefaultMonitoringIntervalMinutes;
+        }
         if (state.Settings.MonitoringWakeMinute is < 0 or
             >= MonitoringSchedule.MinutesPerDay)
         {

@@ -300,6 +300,25 @@
         <GroupBox Header="Monitoring behavior"
                   Margin="0,0,0,16">
           <StackPanel>
+            <Label Content="Check Outlook and Teams every (minutes)"
+                   Target="{Binding ElementName=MonitoringIntervalText}"
+                   Padding="0" FontWeight="SemiBold"/>
+            <TextBox x:Name="MonitoringIntervalText"
+                     AutomationProperties.Name="Monitoring interval in minutes"
+                     Width="96" HorizontalAlignment="Left"
+                     Margin="0,6,0,7"
+                     TextChanged="MonitoringInterval_Changed"/>
+            <TextBlock
+                Text="1-60 whole minutes; default 5. Shorter intervals make more requests. Applies to both enabled sources without restarting Peggy."
+                Style="{StaticResource SettingsHintStyle}"
+                Margin="0,0,0,7"/>
+            <TextBlock x:Name="MonitoringIntervalError"
+                       TextWrapping="Wrap"
+                       Foreground="{StaticResource PeggyWarningBrush}"
+                       AutomationProperties.LiveSetting="Polite"
+                       Visibility="Collapsed"
+                       Margin="0,0,0,7"/>
+            <Separator Margin="0,0,0,12"/>
             <CheckBox x:Name="ScheduleEnabledCheck"
                       Content="Let Peggy sleep outside monitoring hours"
                       FontWeight="SemiBold"
