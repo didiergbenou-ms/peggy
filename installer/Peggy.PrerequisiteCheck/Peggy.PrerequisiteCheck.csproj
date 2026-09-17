@@ -14,8 +14,10 @@
     <RootNamespace>Peggy.PrerequisiteCheck</RootNamespace>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <DefineConstants>$(DefineConstants);PEGGY_INSTALLER</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="..\..\src\Peggy.Tray\PeggyTheme.xaml" Link="PeggyTheme.xaml" />
+    <Compile Include="..\..\src\Peggy.Tray\SetupStepIndicator.cs" Link="SetupStepIndicator.cs" />
   </ItemGroup>
 </Project>

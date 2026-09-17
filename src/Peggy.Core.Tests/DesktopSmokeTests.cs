@@ -59,7 +59,9 @@ internal static class DesktopSmokeTests
             TestDeferredConversationApproval();
             TestSpeechModelSetupService();
             TestWorkIqSignInWindow();
+            SetupStepIndicatorTests.RunDesktop();
             SetupExperienceSmokeTests.RunDesktop();
+            InstallerStepAnimationSmokeTests.RunDesktop();
             TestSettingsWindow();
             TestSettingsPreserveUnavailableWatchlist();
             TestApplicationIcon();

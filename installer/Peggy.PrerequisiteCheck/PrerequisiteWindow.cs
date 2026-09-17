@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.ComponentModel;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -7,8 +9,11 @@ namespace Peggy.PrerequisiteCheck;
 
 internal sealed class PrerequisiteWindow : Window
 {
-    private readonly Dictionary<string, (TextBlock State, TextBlock Detail, Button Action)> rows = [];
+    private readonly Dictionary<string, (TextBlock State, TextBlock Detail, Button Action, SetupStepIndicator Indicator)> rows = [];
     private readonly Dictionary<string, PrerequisiteResult> results = [];
+    private readonly Func<CancellationToken, Action<PrerequisiteResult>,
+        Task<IReadOnlyList<PrerequisiteResult>>> checkPrerequisites;
+    private readonly bool allowDependencyChanges;
     private readonly CancellationTokenSource checks = new();
     private readonly TextBlock summary = new() { TextWrapping = TextWrapping.Wrap };
     private readonly ProgressBar progress = new() { Height = 5, Margin = new Thickness(0, 12, 0, 12) };
@@ -18,8 +23,22 @@ internal sealed class PrerequisiteWindow : Window
     private bool installing;
     internal bool Accepted { get; private set; }
 
-    internal PrerequisiteWindow()
+    internal PrerequisiteWindow() : this(null)
     {
+    }
+
+    internal PrerequisiteWindow(
+        Func<CancellationToken, Action<PrerequisiteResult>,
+            Task<IReadOnlyList<PrerequisiteResult>>>? checkPrerequisites,
+        bool allowDependencyChanges = true)
+    {
+        this.allowDependencyChanges = allowDependencyChanges;
+        this.checkPrerequisites = checkPrerequisites ?? ((ct, report) =>
+            Task.Run(async () =>
+            {
+                PrerequisiteEngine.RefreshEnvironment();
+                return await PrerequisiteEngine.CheckAllAsync(ct, report);
+            }, ct));
         Title = "Peggy setup · prerequisites";
         Width = 830;
         Height = 770;
@@ -60,13 +79,17 @@ internal sealed class PrerequisiteWindow : Window
             {
                 Text = PrerequisiteEngine.Names[i], FontSize = 16, FontWeight = FontWeights.SemiBold
             });
-            var state = new TextBlock { Text = "Checking", Margin = new Thickness(0, 4, 0, 4) };
+            var state = new TextBlock { Text = "Not checked", Margin = new Thickness(7, 4, 0, 4) };
+            var indicator = new SetupStepIndicator { State = SetupStepState.Idle };
+            var statePanel = new StackPanel { Orientation = Orientation.Horizontal };
+            statePanel.Children.Add(indicator);
+            statePanel.Children.Add(state);
             var detail = new TextBlock
             {
                 Text = "Waiting for check…", TextWrapping = TextWrapping.Wrap, FontSize = 12,
                 Foreground = (Brush)FindResource("PeggyMutedTextBrush")
             };
-            text.Children.Add(state);
+            text.Children.Add(statePanel);
             var details = new Expander { Header = "Details", Content = detail, IsExpanded = true };
             text.Children.Add(details);
             card.Children.Add(text);
@@ -88,7 +111,7 @@ internal sealed class PrerequisiteWindow : Window
                 BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(10),
                 Margin = new Thickness(0, 0, 0, 9), Child = card
             });
-            rows[id] = (state, detail, action);
+            rows[id] = (state, detail, action, indicator);
         }
         panel.Children.Add(new TextBlock
         {
@@ -122,6 +145,13 @@ internal sealed class PrerequisiteWindow : Window
             }
             checks.Cancel();
         };
+        Closed += (_, _) =>
+        {
+            foreach (var row in rows.Values)
+            {
+                row.Indicator.State = SetupStepState.Idle;
+            }
+        };
     }
 
     private Button MakeButton(string text, string style) => new()
@@ -133,16 +163,23 @@ internal sealed class PrerequisiteWindow : Window
     {
         if (busy || checks.IsCancellationRequested) return;
         SetBusy(true);
+        results.Clear();
+        foreach (var row in rows.Values)
+        {
+            row.State.Text = "Not checked";
+            row.Indicator.State = SetupStepState.Idle;
+        }
         summary.Text = "Checking prerequisites for the current Windows user…";
         try
         {
-            await Task.Run(async () =>
-            {
-                PrerequisiteEngine.RefreshEnvironment();
-                await PrerequisiteEngine.CheckAllAsync(checks.Token,
-                    result => Dispatcher.Invoke(() => ShowResult(result)));
-            }, checks.Token);
-            summary.Text = results.Values.All(result => result.State == PrerequisiteState.Ready)
+            await checkPrerequisites(checks.Token,
+                result => Dispatcher.Invoke(() =>
+                {
+                    if (!checks.IsCancellationRequested) ShowResult(result);
+                }));
+            checks.Token.ThrowIfCancellationRequested();
+            summary.Text = results.Count == rows.Count &&
+                results.Values.All(result => result.State == PrerequisiteState.Ready)
                 ? "All prerequisites are ready. Continue to install Peggy."
                 : "Choose an action for missing or outdated tools, then retry. " +
                     "npm is included with Node.js; Repair runs the Node.js repair wizard.";
@@ -152,9 +189,21 @@ internal sealed class PrerequisiteWindow : Window
                     "run it normally from your desktop, not as administrator or a service.";
             }
         }
-        catch (OperationCanceledException) { }
-        catch (Exception ex) { summary.Text = $"Checks failed: {ex.Message}. Retry when ready."; }
-        finally { SetBusy(false); }
+        catch (OperationCanceledException)
+        {
+            summary.Text = "Checks cancelled.";
+            EndRunningSteps(SetupStepState.Idle, "Cancelled");
+        }
+        catch (Exception ex) when (IsExpectedFailure(ex))
+        {
+            summary.Text = $"Checks failed: {ex.Message}. Retry when ready.";
+            EndRunningSteps(SetupStepState.Failed, "Failed - Retry checks");
+        }
+        finally
+        {
+            EndRunningSteps(SetupStepState.Failed, "Check did not complete - Retry");
+            SetBusy(false);
+        }
     }
 
     private void ShowResult(PrerequisiteResult result)
@@ -162,6 +211,12 @@ internal sealed class PrerequisiteWindow : Window
         results[result.Id] = result;
         var row = rows[result.Id];
         row.State.Text = result.State.ToString();
+        row.Indicator.State = result.State switch
+        {
+            PrerequisiteState.Checking => SetupStepState.Running,
+            PrerequisiteState.Ready => SetupStepState.Succeeded,
+            _ => SetupStepState.Failed
+        };
         row.State.Foreground = (Brush)FindResource(result.State == PrerequisiteState.Ready
             ? "PeggyPositiveBrush" : result.State == PrerequisiteState.Checking
             ? "PeggyMutedTextBrush" : "PeggyWarningBrush");
@@ -177,6 +232,25 @@ internal sealed class PrerequisiteWindow : Window
     private static bool HasCopilotOverride =>
         !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PEGGY_COPILOT_PATH"));
 
+    internal SetupStepIndicator GetStepIndicator(string id) => rows[id].Indicator;
+
+    private void EndRunningSteps(SetupStepState state, string text)
+    {
+        foreach (var row in rows.Values)
+        {
+            if (row.Indicator.State == SetupStepState.Running)
+            {
+                row.Indicator.State = state;
+                row.State.Text = text;
+            }
+        }
+    }
+
+    private static bool IsExpectedFailure(Exception error)
+        => error is IOException or UnauthorizedAccessException or Win32Exception or
+            TimeoutException or System.Security.SecurityException or NotSupportedException ||
+            (error is InvalidOperationException && error is not ObjectDisposedException);
+
     private void SetBusy(bool value)
     {
         busy = value;
@@ -186,14 +260,14 @@ internal sealed class PrerequisiteWindow : Window
             results.Values.All(result => result.State == PrerequisiteState.Ready);
         foreach (var (id, row) in rows)
         {
-            row.Action.IsEnabled = !value && results.ContainsKey(id) &&
+            row.Action.IsEnabled = allowDependencyChanges && !value && results.ContainsKey(id) &&
                 InteractiveIdentity.CanInstallDependencies && !(id == "copilot" && HasCopilotOverride);
         }
     }
 
     private async Task InstallAsync(string id)
     {
-        if (busy || !InteractiveIdentity.CanInstallDependencies) return;
+        if (!allowDependencyChanges || busy || !InteractiveIdentity.CanInstallDependencies) return;
         var winget = PrerequisiteEngine.ResolveCommand(["winget.exe"]);
         if (winget is null)
         {
@@ -213,6 +287,8 @@ internal sealed class PrerequisiteWindow : Window
             != MessageBoxResult.OK) return;
         SetBusy(true);
         installing = true;
+        rows[id].Indicator.State = SetupStepState.Running;
+        rows[id].State.Text = $"{PrerequisiteInstall.ActionName(result)} in progress";
         string completion;
         try
         {
@@ -225,8 +301,21 @@ internal sealed class PrerequisiteWindow : Window
                     "use the official installer to modify/repair Node.js (including npm) or the selected tool. ";
             }
         }
-        catch (Exception ex) { completion = $"Dependency action did not complete: {ex.Message}. "; }
-        finally { installing = false; SetBusy(false); }
+        catch (OperationCanceledException)
+        {
+            completion = "Dependency action cancelled. ";
+        }
+        catch (Exception ex) when (IsExpectedFailure(ex))
+        {
+            completion = $"Dependency action did not complete: {ex.Message}. ";
+        }
+        finally
+        {
+            rows[id].Indicator.State = SetupStepState.Idle;
+            rows[id].State.Text = "Checking installation result";
+            installing = false;
+            SetBusy(false);
+        }
         await CheckAsync();
         summary.Text = completion + summary.Text;
     }
