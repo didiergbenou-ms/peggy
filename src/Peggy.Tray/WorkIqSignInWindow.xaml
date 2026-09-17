@@ -49,16 +49,31 @@
                        Style="{StaticResource SetupStatusStyle}"/>
             <StackPanel x:Name="FirstRunRequirements">
               <TextBlock Text="Node.js 18+" FontWeight="SemiBold"/>
-              <TextBlock x:Name="NodeStatus" Text="Checking — Node.js" Style="{StaticResource SetupStatusStyle}"/>
+              <DockPanel>
+                <local:SetupStepIndicator x:Name="NodeIndicator"/>
+                <TextBlock x:Name="NodeStatus" Text="Not started — Node.js" Style="{StaticResource SetupStatusStyle}"/>
+              </DockPanel>
               <TextBlock Text="npm" FontWeight="SemiBold"/>
-              <TextBlock x:Name="NpmStatus" Text="Checking — npm" Style="{StaticResource SetupStatusStyle}"/>
+              <DockPanel>
+                <local:SetupStepIndicator x:Name="NpmIndicator"/>
+                <TextBlock x:Name="NpmStatus" Text="Not started — npm" Style="{StaticResource SetupStatusStyle}"/>
+              </DockPanel>
               <TextBlock Text="PowerShell 7" FontWeight="SemiBold"/>
-              <TextBlock x:Name="PowerShellStatus" Text="Checking — PowerShell" Style="{StaticResource SetupStatusStyle}"/>
+              <DockPanel>
+                <local:SetupStepIndicator x:Name="PowerShellIndicator"/>
+                <TextBlock x:Name="PowerShellStatus" Text="Not started — PowerShell" Style="{StaticResource SetupStatusStyle}"/>
+              </DockPanel>
               <TextBlock Text="GitHub Copilot CLI 1.0.81+" FontWeight="SemiBold"/>
-              <TextBlock x:Name="CopilotCliStatus" Text="Checking — Copilot CLI" Style="{StaticResource SetupStatusStyle}"/>
+              <DockPanel>
+                <local:SetupStepIndicator x:Name="CopilotCliIndicator"/>
+                <TextBlock x:Name="CopilotCliStatus" Text="Not started — Copilot CLI" Style="{StaticResource SetupStatusStyle}"/>
+              </DockPanel>
             </StackPanel>
             <TextBlock Text="Standalone Microsoft WorkIQ" FontWeight="SemiBold"/>
-            <TextBlock x:Name="InstallationStatus" Text="Checking — WorkIQ" Style="{StaticResource SetupStatusStyle}"/>
+            <DockPanel>
+              <local:SetupStepIndicator x:Name="InstallationIndicator"/>
+              <TextBlock x:Name="InstallationStatus" Text="Not started — WorkIQ" Style="{StaticResource SetupStatusStyle}"/>
+            </DockPanel>
             <WrapPanel>
               <Button x:Name="RetryLocalButton" Content="Retry local checks" Click="RetryLocal_Click" Margin="0,0,10,0"/>
               <Button x:Name="InstallButton" Content="Install WorkIQ with npm" Click="Install_Click" IsEnabled="False"/>
@@ -67,9 +82,29 @@
         </GroupBox>
         <GroupBox x:Name="CopilotAccessGroup" Header="2. GitHub Copilot access" Margin="0,0,0,16">
           <StackPanel>
-            <TextBlock x:Name="CopilotAccessStatus"
-                       Text="Action required — Check access using the model catalog. No model prompt is sent."
-                       Style="{StaticResource SetupStatusStyle}"/>
+            <DockPanel>
+              <local:SetupStepIndicator x:Name="CopilotAccessIndicator"/>
+              <TextBlock x:Name="CopilotAccessStatus"
+                         Text="Action required — Check access using the model catalog. No model prompt is sent."
+                         Style="{StaticResource SetupStatusStyle}"/>
+            </DockPanel>
+            <Border x:Name="GitHubDeviceCodeCard" Visibility="Collapsed" Padding="12" Margin="0,0,0,10"
+                    BorderBrush="{StaticResource PeggyBorderBrush}" BorderThickness="1" CornerRadius="8">
+              <StackPanel>
+                <TextBlock Text="Waiting for you — Open GitHub and enter this code. Complete sign-in if prompted, then return here."
+                           TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+                <TextBox x:Name="GitHubDeviceCodeText" IsReadOnly="True" IsUndoEnabled="False" FontSize="22"
+                         FontWeight="SemiBold" Margin="0,8" IsEnabled="False"
+                         AutomationProperties.Name="GitHub device sign-in code"/>
+                <TextBlock Text="https://github.com/login/device" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                <WrapPanel>
+                  <Button x:Name="CopyGitHubCodeButton" Content="Copy code" IsEnabled="False"
+                          Click="CopyGitHubCode_Click" Margin="0,0,10,0"/>
+                  <Button x:Name="OpenGitHubButton" Content="Open GitHub" IsEnabled="False"
+                          Click="OpenGitHub_Click"/>
+                </WrapPanel>
+              </StackPanel>
+            </Border>
             <WrapPanel>
               <Button x:Name="CheckCopilotButton" Content="Check access / Retry"
                       Click="CheckCopilot_Click" Margin="0,0,10,0" IsEnabled="False"/>
@@ -86,7 +121,7 @@
                        AutomationProperties.Name="Work email" TextChanged="AccountText_Changed"/>
               <TextBlock x:Name="EmailValidation" Text="Enter your work email address."
                          Style="{StaticResource SetupStatusStyle}"/>
-              <TextBlock Text="WorkIQ checks sign-in and permission consent. A browser opens only when interaction is required. Peggy verifies the actual account against your email before saving."
+              <TextBlock Text="WorkIQ checks sign-in and permission consent. Complete sign-in if prompted. Peggy verifies the actual account against your email before saving."
                          Style="{StaticResource SetupStatusStyle}"/>
               <TextBlock x:Name="AccountChangeNotice" Visibility="Collapsed"
                          Style="{StaticResource SetupStatusStyle}"/>
@@ -116,19 +151,38 @@
                         HorizontalAlignment="Left" Click="ChangeAccount_Click"/>
               </StackPanel>
             </Border>
-            <TextBlock x:Name="AccountVerifiedStatus"
-                       Text="Action required — Account verified: sign in to verify your identity."
-                       Style="{StaticResource SetupStatusStyle}"/>
-            <TextBlock x:Name="MailAccessStatus"
-                       Text="Action required — Mail access ready: checked after account verification, without a second login."
-                       Style="{StaticResource SetupStatusStyle}"/>
+            <DockPanel>
+              <local:SetupStepIndicator x:Name="MicrosoftSignInIndicator"/>
+              <TextBlock x:Name="MicrosoftSignInStatus" Text="Not started — Microsoft sign-in"
+                         Style="{StaticResource SetupStatusStyle}"/>
+            </DockPanel>
+            <DockPanel>
+              <local:SetupStepIndicator x:Name="MicrosoftConsentIndicator"/>
+              <TextBlock x:Name="MicrosoftConsentStatus" Text="Not started — Permission consent"
+                         Style="{StaticResource SetupStatusStyle}"/>
+            </DockPanel>
+            <DockPanel>
+              <local:SetupStepIndicator x:Name="AccountVerifiedIndicator"/>
+              <TextBlock x:Name="AccountVerifiedStatus"
+                         Text="Action required — Account verified: sign in to verify your identity."
+                         Style="{StaticResource SetupStatusStyle}"/>
+            </DockPanel>
+            <DockPanel>
+              <local:SetupStepIndicator x:Name="MailAccessIndicator"/>
+              <TextBlock x:Name="MailAccessStatus"
+                         Text="Action required — Mail access ready: checked after account verification, without a second login."
+                         Style="{StaticResource SetupStatusStyle}"/>
+            </DockPanel>
             <Button x:Name="RetryMailButton" Content="Retry mail access" HorizontalAlignment="Left"
                     Visibility="Collapsed" Click="RetryMail_Click"/>
           </StackPanel>
         </GroupBox>
         <GroupBox x:Name="VoiceSetupGroup" Header="4. Optional English voice" Margin="0,0,0,16">
           <StackPanel>
-            <TextBlock x:Name="VoiceModelsStatus" Style="{StaticResource SetupStatusStyle}"/>
+            <DockPanel>
+              <local:SetupStepIndicator x:Name="VoiceModelsIndicator"/>
+              <TextBlock x:Name="VoiceModelsStatus" Style="{StaticResource SetupStatusStyle}"/>
+            </DockPanel>
             <TextBlock Text="The verified download is about 803 MiB. Speech and raw microphone audio stay on this PC. Voice is optional and never blocks Finish."
                        Style="{StaticResource SetupStatusStyle}"/>
             <WrapPanel>

@@ -33,6 +33,24 @@ if (TryRenderMascots(args) ||
     return;
 }
 
+if (args.Contains("--preview-installer-feedback", StringComparer.Ordinal))
+{
+    var previewThread = new Thread(InstallerStepAnimationSmokeTests.RunVisualPreview);
+    previewThread.SetApartmentState(ApartmentState.STA);
+    previewThread.Start();
+    previewThread.Join();
+    return;
+}
+
+if (args.Contains("--preview-setup-feedback", StringComparer.Ordinal))
+{
+    var previewThread = new Thread(SetupExperienceSmokeTests.RunVisualPreview);
+    previewThread.SetApartmentState(ApartmentState.STA);
+    previewThread.Start();
+    previewThread.Join();
+    return;
+}
+
 var testDirectory = Path.Combine(
     Path.GetTempPath(),
     "peggy-core-tests-" + Guid.NewGuid().ToString("N"));
@@ -44,6 +62,7 @@ try
     await AppIntegrationSmokeTests.RunAsync();
     await SettingsCatalogCacheSmokeTests.RunAsync();
     await SetupExperienceSmokeTests.RunAsync();
+    await DeviceCodeSignInSmokeTests.RunAsync();
     await DesktopSmokeTests.RunAsync();
     await TestEncryptedStateAsync(testDirectory);
     await TestStartupMonitoringWindowAsync(testDirectory);

@@ -38,6 +38,14 @@ public sealed class WorkIqEulaChangedException : WorkIqSetupException
     }
 }
 
+public enum WorkIqSignInStage
+{
+    AcceptingEula,
+    SigningIn,
+    Consenting,
+    VerifyingAccount
+}
+
 public interface IWorkIqSetupService
 {
     bool TryGetExecutablePath(out string executablePath);
@@ -45,7 +53,7 @@ public interface IWorkIqSetupService
     Task InstallAsync(CancellationToken ct = default);
     Task<WorkIqAccountIdentity> SignInAsync(
         string expectedAccount, string acceptedEulaVersion,
-        CancellationToken ct = default);
+        CancellationToken ct = default, IProgress<WorkIqSignInStage>? progress = null);
     Task<WorkIqAccountIdentity> VerifyAccountAsync(
         string expectedAccount, CancellationToken ct = default);
     Task ProbeInboxAccessAsync(
@@ -264,31 +272,39 @@ public sealed class WorkIqSetupService : IWorkIqSetupService
     public async Task<WorkIqAccountIdentity> SignInAsync(
         string expectedAccount,
         string acceptedEulaVersion,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IProgress<WorkIqSignInStage>? progress = null)
     {
         if (string.IsNullOrWhiteSpace(acceptedEulaVersion))
         {
             throw new WorkIqSetupException(
                 "Check the installed WorkIQ version and explicitly accept its EULA.");
         }
-        return await SignInCoreAsync(expectedAccount, acceptedEulaVersion, ct);
+        return await SignInCoreAsync(expectedAccount, acceptedEulaVersion, ct, progress);
     }
 
     private async Task<WorkIqAccountIdentity> SignInCoreAsync(
         string expectedAccount,
         string? expectedVersion,
-        CancellationToken ct)
+        CancellationToken ct,
+        IProgress<WorkIqSignInStage>? progress = null)
     {
         var normalized = NormalizeAccount(expectedAccount);
         var executable = RequireExecutable();
 
+        ct.ThrowIfCancellationRequested();
+        progress?.Report(WorkIqSignInStage.AcceptingEula);
         var acceptedVersion = await AcceptEulaAsync(expectedVersion, ct);
+        ct.ThrowIfCancellationRequested();
+        progress?.Report(WorkIqSignInStage.SigningIn);
         await RunRequiredCommandAsync(
             executable,
             ["auth", "login", "--account", normalized],
             SetupTimeout,
             "Microsoft 365 sign-in failed",
             ct);
+        ct.ThrowIfCancellationRequested();
+        progress?.Report(WorkIqSignInStage.Consenting);
         await RunRequiredCommandAsync(
             executable,
             ["auth", "consent", "--account", normalized],
@@ -296,6 +312,8 @@ public sealed class WorkIqSetupService : IWorkIqSetupService
             "Microsoft 365 permission consent failed",
             ct);
 
+        ct.ThrowIfCancellationRequested();
+        progress?.Report(WorkIqSignInStage.VerifyingAccount);
         var identity = await VerifyAccountAsync(normalized, ct);
         await AcceptEulaAsync(acceptedVersion, ct);
         return identity with

@@ -1653,7 +1653,7 @@ internal static class DesktopSmokeTests
             TestAssert.True(
                 Descendants<TextBlock>(pinned).Any(text =>
                     text.Text.Contains(
-                        "A browser opens only when interaction is required",
+                        "Complete sign-in if prompted",
                         StringComparison.Ordinal)),
                 "The account window incorrectly promised a browser prompt.");
             accountText.Text = "other@example.com";

@@ -49,11 +49,17 @@ internal sealed record SetupLocalReadiness(
     public IEnumerable<SetupCheck> Checks => [Node, Npm, PowerShell, Copilot, WorkIq];
 }
 
+internal enum SetupLocalCheck { Node, Npm, PowerShell, Copilot, WorkIq }
+
+internal sealed record SetupLocalCheckUpdate(SetupLocalCheck Check, SetupCheck Result);
+
 internal interface ISetupReadinessService
 {
-    Task<SetupLocalReadiness> CheckLocalAsync(CancellationToken ct);
+    Task<SetupLocalReadiness> CheckLocalAsync(
+        CancellationToken ct, IProgress<SetupLocalCheckUpdate>? progress = null);
     Task<SetupCheck> CheckCopilotAccessAsync(CancellationToken ct);
-    Task SignInCopilotAsync(CancellationToken ct);
+    Task SignInCopilotAsync(
+        CancellationToken ct, IProgress<CopilotDeviceCodeChallenge>? progress = null);
 }
 
 internal sealed class SetupReadinessService : ISetupReadinessService
@@ -81,18 +87,32 @@ internal sealed class SetupReadinessService : ISetupReadinessService
         _models = models;
     }
 
-    public async Task<SetupLocalReadiness> CheckLocalAsync(CancellationToken ct)
+    public async Task<SetupLocalReadiness> CheckLocalAsync(
+        CancellationToken ct, IProgress<SetupLocalCheckUpdate>? progress = null)
     {
+        ct.ThrowIfCancellationRequested();
         // Version commands are local only; network access is a separate user action.
-        var node = CheckCommandAsync("node.exe", ["--version"], new Version(18, 0, 0), ct);
-        var npm = CheckCommandAsync("npm.cmd", ["--version"], new Version(1, 0, 0), ct);
-        var powerShell = CheckCommandAsync("pwsh.exe",
+        var node = ReportAsync(SetupLocalCheck.Node,
+            CheckCommandAsync("node.exe", ["--version"], new Version(18, 0, 0), ct));
+        var npm = ReportAsync(SetupLocalCheck.Npm,
+            CheckCommandAsync("npm.cmd", ["--version"], new Version(1, 0, 0), ct));
+        var powerShell = ReportAsync(SetupLocalCheck.PowerShell, CheckCommandAsync("pwsh.exe",
             ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
-             "$PSVersionTable.PSVersion.ToString()"], new Version(7, 0, 0), ct);
-        var copilot = CheckCommandAsync("copilot.exe", ["--version"], new Version(1, 0, 81), ct);
-        var workIq = CheckWorkIqAsync(ct);
+             "$PSVersionTable.PSVersion.ToString()"], new Version(7, 0, 0), ct));
+        var copilot = ReportAsync(SetupLocalCheck.Copilot,
+            CheckCommandAsync("copilot.exe", ["--version"], new Version(1, 0, 81), ct));
+        var workIq = ReportAsync(SetupLocalCheck.WorkIq, CheckWorkIqAsync(ct));
         await Task.WhenAll(node, npm, powerShell, copilot, workIq);
+        ct.ThrowIfCancellationRequested();
         return new(await node, await npm, await powerShell, await copilot, await workIq);
+
+        async Task<SetupCheck> ReportAsync(SetupLocalCheck check, Task<SetupCheck> pending)
+        {
+            var result = await pending;
+            ct.ThrowIfCancellationRequested();
+            progress?.Report(new(check, result));
+            return result;
+        }
     }
 
     private async Task<SetupCheck> CheckCommandAsync(
@@ -160,47 +180,25 @@ internal sealed class SetupReadinessService : ISetupReadinessService
                     "No available models. Sign in with a GitHub account that has Copilot access.");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (OperationCanceledException ex) when (timeout.IsCancellationRequested)
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
         {
             return new(SetupCheckState.ActionRequired,
-                "The model catalog check timed out. Check your network, then retry.", ex.ToString());
+                "The model catalog check timed out. Check your network, then retry.");
         }
         catch (Exception ex) when (IsExpectedFailure(ex))
         {
             return new(SetupCheckState.ActionRequired,
-                "Could not access the model catalog. Sign in or check your Copilot subscription and network, then retry.",
-                ex.ToString());
+                "Could not access the model catalog. Sign in or check your Copilot subscription and network, then retry.");
         }
     }
 
-    public async Task SignInCopilotAsync(CancellationToken ct)
+    public Task SignInCopilotAsync(
+        CancellationToken ct, IProgress<CopilotDeviceCodeChallenge>? progress = null)
     {
         ct.ThrowIfCancellationRequested();
         var executable = _resolve("copilot.exe")
             ?? throw new InvalidOperationException("Install GitHub Copilot CLI using Peggy setup.exe first.");
-        using var process = Process.Start(new ProcessStartInfo
-        {
-            FileName = executable,
-            Arguments = "login",
-            UseShellExecute = true,
-            WorkingDirectory = AppContext.BaseDirectory
-        }) ?? throw new InvalidOperationException("Could not open GitHub Copilot sign-in.");
-        try
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromMinutes(10));
-            await process.WaitForExitAsync(timeout.Token);
-            if (process.ExitCode != 0)
-            {
-                throw new InvalidOperationException(
-                    $"GitHub Copilot sign-in exited with code {process.ExitCode}.");
-            }
-        }
-        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
-        {
-            throw new TimeoutException("GitHub Copilot sign-in timed out. Retry when ready.", ex);
-        }
-        finally { TryKill(process); }
+        return new CopilotDeviceCodeSignIn().SignInAsync(executable, ct, progress);
     }
 
     private static string? ResolveCommand(string name)
