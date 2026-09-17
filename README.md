@@ -368,7 +368,7 @@ offers three current-user installation paths:
 1. **`peggy-win-x64-setup.exe` (recommended)** opens a prerequisite checklist
    for PowerShell 7, Node.js 18 with npm, and GitHub Copilot CLI 1.0.81 or later
    before installing the embedded MSI. Each requirement shows its status,
-   version and technical details, with **Retry** and explicit WinGet
+   version and technical details, with a per-step running indicator, **Retry** and explicit WinGet
    **Install/Update/Repair** actions. Vendor consent and elevation remain
    visible; dependencies are never installed silently. If WinGet is unavailable,
    use the offered official download links or `install.ps1 -InstallPrerequisites`.
@@ -533,7 +533,11 @@ On first launch, Peggy opens **Peggy setup**:
 
 1. Review local prerequisite readiness and install standalone WorkIQ if needed.
    Check GitHub Copilot access, or use **Sign in to GitHub Copilot** when authentication
-   is needed. Network sign-in and permission consent require explicit actions.
+   is needed. Peggy uses the official CLI's **device-code flow**: select
+   **Copy code** and **Open GitHub**, authorize the one-time code in GitHub,
+   then wait for the model-access check. The CLI manages credentials; Peggy
+   never asks for a GitHub password or stores the sign-in code in its state.
+   Network sign-in and permission consent require explicit actions.
 2. Enter the work email address Peggy should use. Only a previously verified
    identity is prefilled; unverified environment hints are not used.
 3. Review and accept the WorkIQ EULA. Peggy records the exact accepted WorkIQ
@@ -551,6 +555,16 @@ On first launch, Peggy opens **Peggy setup**:
 
 If the tenant has not granted the required WorkIQ permissions, an administrator
 must complete tenant consent before verification can succeed.
+
+Each setup step shows its actual progress independently: a spinner while work
+is running, a distinct waiting-for-user state during authorization, a green
+check after success, and a warning with retry guidance on failure. Completion,
+cancellation and window closure stop the animation. Windows reduced-animation
+preferences retain the status text and static icon without continuous movement.
+GitHub codes are cleared when sign-in ends or is cancelled; expired or rejected
+authorization requires a new attempt. If the installed CLI does not expose
+`login --device-code`, update it rather than silently changing sign-in flows.
+Microsoft 365 sign-in remains WorkIQ-managed and uses the verified work email.
 
 Voice setup can be skipped. Open **Settings → Local voice (English only)** and
 select **Install voice models** later; the same verified downloader is used.
