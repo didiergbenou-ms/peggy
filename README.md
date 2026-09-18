@@ -363,18 +363,20 @@ Peggy resolves standalone WorkIQ in this order:
 
 The
 [latest GitHub Release](https://github.com/didiergbenou-ms/peggy/releases/latest)
-offers three current-user installation paths:
+offers three current-user installation paths. All download filenames include
+the release tag; the examples below use `v0.1.11` (substitute your chosen release):
 
-1. **`peggy-win-x64-setup.exe` (recommended)** opens a prerequisite checklist
+1. **`peggy-v0.1.11-win-x64-setup.exe` (recommended)** opens a prerequisite checklist
    for PowerShell 7, Node.js 18 with npm, and GitHub Copilot CLI 1.0.81 or later
    before installing the embedded MSI. Each requirement shows its status,
    version and technical details, with a per-step running indicator, **Retry** and explicit WinGet
    **Install/Update/Repair** actions. Vendor consent and elevation remain
    visible; dependencies are never installed silently. If WinGet is unavailable,
-   use the offered official download links or `install.ps1 -InstallPrerequisites`.
-2. **`peggy-win-x64.msi`** runs the same prerequisite check and installs
+   use the offered official download links or
+   `peggy-v0.1.11-install.ps1 -InstallPrerequisites`.
+2. **`peggy-v0.1.11-win-x64.msi`** runs the same prerequisite check and installs
    Peggy directly when all requirements are available.
-3. **`install.ps1`** retains the existing checksum-verified ZIP path, optional
+3. **`peggy-v0.1.11-install.ps1`** retains the existing checksum-verified ZIP path, optional
    WinGet prerequisite installation, and optional speech-model download.
 
 The bootstrapper and MSI install x64 Peggy per user at
@@ -393,23 +395,23 @@ setup executable for guided prerequisite installation.
 Interactive installation:
 
 ```powershell
-.\peggy-win-x64-setup.exe
+.\peggy-v0.1.11-win-x64-setup.exe
 # Or:
-msiexec.exe /i .\peggy-win-x64.msi
+msiexec.exe /i .\peggy-v0.1.11-win-x64.msi
 ```
 
 Unattended installation:
 
 ```powershell
-.\peggy-win-x64-setup.exe /quiet /norestart
+.\peggy-v0.1.11-win-x64-setup.exe /quiet /norestart
 # Or:
-msiexec.exe /i .\peggy-win-x64.msi /qn /norestart
+msiexec.exe /i .\peggy-v0.1.11-win-x64.msi /qn /norestart
 ```
 
-For the script path, download `install.ps1`, then run:
+For the script path, download `peggy-v0.1.11-install.ps1`, then run:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\install.ps1 `
+powershell.exe -ExecutionPolicy Bypass -File .\peggy-v0.1.11-install.ps1 `
     -InstallPrerequisites
 ```
 
@@ -430,7 +432,12 @@ The installer:
 Add `-SkipSpeechModels` to install without the local voice models, or
 `-NoLaunch` to install without starting Peggy. The former
 `-InstallSpeechModels` switch remains accepted for compatibility. Use
-`-Version <release-tag>` to install a specific published release.
+`-Version <release-tag>` to install a specific published release (for example,
+`-Version v0.1.11`). The script still defaults to the latest stable release,
+regardless of its own filename. It selects the ZIP and checksum together from
+the resolved release, including authenticated GitHub CLI retries. Older tags
+with the legacy `peggy-win-x64.zip` / `peggy-win-x64.sha256` pair remain supported;
+incomplete versioned pairs fail rather than mixing filenames or release tags.
 
 This repository is currently private. Authenticate GitHub CLI with repository
 access (`gh auth login`) or set `GH_TOKEN` before running the installer. If the
@@ -440,19 +447,24 @@ the token.
 The package and checksum can also be downloaded manually:
 
 ```powershell
-.\install.ps1 `
-    -PackagePath .\peggy-win-x64.zip `
-    -ChecksumPath .\peggy-win-x64.sha256
+.\peggy-v0.1.11-install.ps1 `
+    -PackagePath .\peggy-v0.1.11-win-x64.zip `
+    -ChecksumPath .\peggy-v0.1.11-win-x64.sha256
 ```
+
+When `-ChecksumPath` is omitted, the script uses the ZIP's basename with a
+`.sha256` extension. Inside installed/extracted packages, the canonical names
+remain `peggy-tray.exe`, `install.ps1`, and `uninstall.ps1`; installation
+directories are unchanged.
 
 ### Uninstall
 
 Use **Installed Apps**, or use the same package type unattended:
 
 ```powershell
-.\peggy-win-x64-setup.exe /uninstall /quiet /norestart
+.\peggy-v0.1.11-win-x64-setup.exe /uninstall /quiet /norestart
 # Direct MSI installation:
-msiexec.exe /x .\peggy-win-x64.msi /qn /norestart
+msiexec.exe /x .\peggy-v0.1.11-win-x64.msi /qn /norestart
 ```
 
 Normal MSI/bootstrapper uninstall removes application files, the Start menu
@@ -484,7 +496,8 @@ powershell.exe -ExecutionPolicy Bypass -File `
 Use `-WhatIf` to preview the cleanup. Shared prerequisites such as PowerShell 7,
 Node.js, GitHub Copilot CLI, and WorkIQ are not removed. An uninstaller run from
 a custom installation directory detects that directory automatically; a
-standalone copy can target it with `-InstallDirectory`.
+standalone release copy (`peggy-v0.1.11-uninstall.ps1`) can target it with
+`-InstallDirectory`.
 
 ### Build from source
 
@@ -611,6 +624,9 @@ Peggy runs as a single-instance tray application. Right-clicking either the
 tray icon or the desktop mascot opens the same menu. Double-clicking the tray
 icon opens the Alert Center.
 
+The Alerts header shows the semantic release version beside Peggy. **Help →
+About** shows the same version (for example, `v0.1.11`) and lets you copy it.
+
 ### Tray menu
 
 | Command | Behavior |
@@ -626,6 +642,7 @@ icon opens the Alert Center.
 | **Show or hide Peggy** | Toggles the desktop mascot |
 | **Test animations** | Plays individual or all mascot states |
 | **Help → Troubleshooting** | Runs read-only account, Teams, Copilot, and monitoring checks on demand and can create a diagnostic ZIP |
+| **Help → About** | Shows Peggy's semantic release version with a copy action |
 | **Quit Peggy** | Stops monitoring, closes Copilot, unloads speech, and exits |
 
 ### Alert Center
@@ -840,16 +857,21 @@ git push origin v0.1.0
 
 The release workflow runs the regression suite, builds with pinned WiX Toolset
 6.0.2 packages, performs MSI database and administrative-image validation, and
-publishes:
+publishes eight versioned assets (shown for `v0.1.11`):
 
-- `peggy-win-x64.zip`, a self-contained package for Windows x64.
-- `peggy-win-x64.sha256`, the package checksum used by `install.ps1`.
-- `peggy-win-x64.msi` and `peggy-win-x64.msi.sha256`, the per-user MSI and its
+- `peggy-v0.1.11-win-x64.zip`, a self-contained package for Windows x64.
+- `peggy-v0.1.11-win-x64.sha256`, the package checksum used by `install.ps1`.
+- `peggy-v0.1.11-win-x64.msi` and `peggy-v0.1.11-win-x64.msi.sha256`, the per-user MSI and its
   checksum.
-- `peggy-win-x64-setup.exe` and `peggy-win-x64-setup.exe.sha256`, the WiX Burn
+- `peggy-v0.1.11-win-x64-setup.exe` and `peggy-v0.1.11-win-x64-setup.exe.sha256`, the WiX Burn
   prerequisite-checking bootstrapper and its checksum.
-- `install.ps1`, the current-user bootstrap installer.
-- `uninstall.ps1`, the current-user uninstaller.
+- `peggy-v0.1.11-install.ps1`, the current-user bootstrap installer.
+- `peggy-v0.1.11-uninstall.ps1`, the current-user uninstaller.
+
+There are no unversioned release aliases. Prerelease suffixes are retained in
+every asset name (for example, `peggy-v1.2.3-beta.2-win-x64.zip`). Checksum files
+record the exact downloadable asset basename. Internal build/publish filenames
+remain generic and are copied to the versioned release paths.
 
 Build all Windows artifacts locally with:
 
@@ -919,6 +941,17 @@ Successful output ends with:
 ```text
 All Peggy Core smoke tests passed.
 ```
+
+Run the pure PowerShell release-asset regression tests without building or
+installing Peggy, contacting GitHub, or using credentials:
+
+```powershell
+.\scripts\Test-PeggyReleaseAssets.ps1
+```
+
+These cover stable/prerelease names, staged scripts, checksum basenames and
+hashes, local checksum discovery, and matched legacy/versioned downloads.
+The release workflow also runs them before building.
 
 Optional live switches use the configured Microsoft 365 or Copilot account:
 
