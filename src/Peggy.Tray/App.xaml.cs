@@ -54,7 +54,7 @@ public partial class App : Application
     private AlertManager _alertManager = null!;
     private IMessageProvider _provider = null!;
     private CopilotRunner _copilot = null!;
-    private DispatcherTimer _poll = null!;
+    private readonly DispatcherTimer _poll = new();
     private DispatcherTimer _scheduleTimer = null!;
     private DispatcherTimer? _idleTimer;
     private DispatcherTimer? _alertRevealTimer;
@@ -146,7 +146,6 @@ public partial class App : Application
         };
         first.Start();
 
-        _poll = new DispatcherTimer();
         ApplyPollingInterval(_poll, _state.State.Settings);
         _poll.Tick += (_, _) => StartCheck(force: false);
         _poll.Start();

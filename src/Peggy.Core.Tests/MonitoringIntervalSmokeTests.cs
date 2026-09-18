@@ -99,6 +99,12 @@ internal static class MonitoringIntervalSmokeTests
 
     internal static void RunDesktop()
     {
+        var appTimer = typeof(App).GetField(
+            "_poll", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(Application.Current) as DispatcherTimer;
+        TestAssert.True(appTimer is not null && !appTimer.IsEnabled,
+            "The polling timer must exist before Settings can be opened during startup.");
+
         var timer = new DispatcherTimer();
         var settings = new PeggySettings();
         App.ApplyPollingInterval(timer, settings);
