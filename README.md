@@ -1015,8 +1015,9 @@ identities, directories, registry entries, and shortcuts. Executable custom acti
 become inert markers so the regression cannot launch Peggy or use real account
 data. It checks exact installed hashes, product replacement, unchanged test
 settings/model/account sentinels, same-version maintenance, and a forced-failure
-rollback to the previous payload and registration. CI uses three checksum-verified
-pinned baselines: the setup EXEs from `v0.1.10`, `v0.1.11-beta.1`, and `v0.1.11`.
+rollback to the previous payload and registration. CI uses four checksum-verified
+pinned baselines: the setup EXEs from `v0.1.10`, `v0.1.11-beta.1`, `v0.1.11`,
+and the current stable `v0.1.12`.
 The pinned WiX extraction tool reads each checksum-verified EXE without running
 it and supplies its embedded MSI. Every baseline must pass the strict upgrade
 and rollback checks. Restart Manager, real application startup, and interactive authentication
