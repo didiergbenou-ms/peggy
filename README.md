@@ -428,7 +428,8 @@ The same Peggy window stays open through:
 
 Browser sign-in, Windows elevation, and vendor consent can still open their own
 trusted prompts. A missing WinGet installation is reported with the requirement's
-official download address. Nothing accepts vendor terms or signs in silently.
+official download address. New vendor terms and interactive sign-in require
+your action.
 
 Cancellation during MSI work waits for Windows Installer to finish rollback;
 vendor installer cancellation belongs to the vendor's visible prompt. Closing

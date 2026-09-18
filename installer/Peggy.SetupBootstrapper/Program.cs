@@ -65,13 +65,13 @@ internal sealed class PeggyBootstrapperApplication : BootstrapperApplication
                         }
 
                     }
-                    catch (Exception ex) { installer.LogFailure(ex); }
+                    catch (Exception ex) when (IsSetupFailure(ex)) { installer.LogFailure(ex); }
                     finally { application.Shutdown(); }
                 }));
                 application.Run();
             }
         }
-        catch (Exception ex) { installer.LogFailure(ex); }
+        catch (Exception ex) when (IsSetupFailure(ex)) { installer.LogFailure(ex); }
         finally
         {
             host?.Close(launch: false);
@@ -85,4 +85,8 @@ internal sealed class PeggyBootstrapperApplication : BootstrapperApplication
         Width = 0,
         Height = 0
     });
+
+    private static bool IsSetupFailure(Exception exception) =>
+        SetupReadinessService.IsExpectedFailure(exception) ||
+        exception is OperationCanceledException or System.Runtime.InteropServices.COMException;
 }
