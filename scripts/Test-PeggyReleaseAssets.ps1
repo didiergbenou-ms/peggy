@@ -106,7 +106,7 @@ function gh {
 $scratch = Join-Path $repoRoot ('artifacts\release-assets-test-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch -Force | Out-Null
 try {
-    foreach ($version in @('v0.1.11', '0.1.11', 'v1.2.3-beta.2')) {
+    foreach ($version in @('v0.1.11', '0.1.11', 'v0.1.12', 'v1.2.3-beta.2')) {
         $info = ConvertTo-PeggyInstallerVersion -Version $version
         $names = $info.AssetNames
         $tag = if ($version.StartsWith('v')) { $version } else { "v$version" }
@@ -121,7 +121,18 @@ try {
             "peggy-$tag-uninstall.ps1"
         )
         Assert-Asset (($names.PSObject.Properties.Value -join '|') -ceq ($expected -join '|')) `
-            "All eight release filenames retain normalized semantic version $version."
+            "All eight build filenames retain normalized semantic version $version."
+        $published = @(Get-PeggyPublishedAssetNames -Version $version)
+        $expectedPublished = @(
+            $names.Zip, $names.ZipChecksum, $names.Bundle,
+            $names.BundleChecksum, $names.InstallScript, $names.UninstallScript
+        )
+        Assert-Asset ($published.Count -eq 6 -and
+            ($published -join '|') -ceq ($expectedPublished -join '|')) `
+            'Published assets contain exactly the EXE, ZIP, checksums and standalone scripts.'
+        Assert-Asset ($published -notcontains $names.Msi -and
+            $published -notcontains $names.MsiChecksum) `
+            'The standalone MSI and its checksum must never be selected for publication.'
         $output = Join-Path $scratch $version
         New-Item -ItemType Directory -Path $output -Force | Out-Null
         Copy-PeggyReleaseScripts -Version $version -OutputDirectory $output
@@ -151,7 +162,11 @@ try {
             Assert-Asset ($text -ceq "$hash  $($pair.Asset)") 'Checksum records the actual asset hash and basename.'
         }
         Assert-Asset ((Get-ChildItem -LiteralPath $output -File).Count -eq 8) `
-            'Exactly eight versioned release assets are staged.'
+            'Eight build artifacts, including the internal MSI/checksum, are staged.'
+        foreach ($name in $published) {
+            Assert-Asset (Test-Path -LiteralPath (Join-Path $output $name) -PathType Leaf) `
+                "Published asset '$name' is produced by the build."
+        }
         $archive = Join-Path $output $names.Zip
         $checksum = Get-PeggyPackageChecksumPath -Archive $archive
         Assert-Asset ($checksum -eq (Join-Path $output $names.ZipChecksum)) `

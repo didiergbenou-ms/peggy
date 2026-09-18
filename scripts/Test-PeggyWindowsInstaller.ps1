@@ -232,7 +232,7 @@ Assert-Installer `
 foreach ($name in $assetNames.PSObject.Properties.Value) {
     Assert-Installer `
         (Test-Path -LiteralPath (Join-Path $artifactRoot $name) -PathType Leaf) `
-        "Release asset '$name' is missing."
+        "Build artifact '$name' is missing."
 }
 foreach ($script in @(
     @{ Source = 'install.ps1'; Asset = $assetNames.InstallScript },

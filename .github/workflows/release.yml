@@ -86,32 +86,32 @@ jobs:
         run: |
           . .\scripts\PeggyInstallerVersion.ps1
           $names = (ConvertTo-PeggyInstallerVersion -Version $env:TAG).AssetNames
+          .\scripts\Test-PeggyBundleMsi.ps1 `
+            -Version $env:TAG `
+            -BundlePath (Join-Path $env:RUNNER_TEMP $names.Bundle) `
+            -MsiPath (Join-Path $env:RUNNER_TEMP $names.Msi) `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP "peggy-bundle-msi-tests")
           $baselines = @(
-            @{ Tag = "v0.1.10"; Msi = "peggy-win-x64.msi" },
-            @{ Tag = "v0.1.11-beta.1"; Msi = "peggy-win-x64.msi" },
-            @{ Tag = "v0.1.11"; Msi = (ConvertTo-PeggyInstallerVersion -Version "v0.1.11").AssetNames.Msi }
+            @{ Tag = "v0.1.10"; Bundle = "peggy-win-x64-setup.exe" },
+            @{ Tag = "v0.1.11-beta.1"; Bundle = "peggy-win-x64-setup.exe" },
+            @{ Tag = "v0.1.11"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.11").AssetNames.Bundle }
           )
           foreach ($baselineRelease in $baselines) {
             $baselineTag = $baselineRelease.Tag
-            $msiName = $baselineRelease.Msi
-            $checksumName = "$msiName.sha256"
+            $bundleName = $baselineRelease.Bundle
+            $checksumName = "$bundleName.sha256"
             $baseline = Join-Path $env:RUNNER_TEMP "peggy-upgrade-baseline-$baselineTag"
             New-Item -ItemType Directory -Path $baseline -Force | Out-Null
             gh release download $baselineTag --repo "${{ github.repository }}" `
-              --pattern $msiName --pattern $checksumName `
+              --pattern $bundleName --pattern $checksumName `
               --dir $baseline --clobber
             if ($LASTEXITCODE -ne 0) {
               throw "Could not download the pinned $baselineTag upgrade baseline."
             }
-            $checksum = (Get-Content -LiteralPath (Join-Path $baseline $checksumName) -Raw).Trim()
-            if ($checksum -notmatch ('^([a-fA-F0-9]{64})\s+\*?' + [regex]::Escape($msiName) + '$')) {
-              throw "Malformed $baselineTag MSI checksum."
-            }
-            $expectedHash = $Matches[1]
-            $previousMsi = Join-Path $baseline $msiName
-            if ((Get-FileHash -LiteralPath $previousMsi -Algorithm SHA256).Hash -ne $expectedHash) {
-              throw "Pinned $baselineTag MSI checksum does not match."
-            }
+            $previousMsi = .\scripts\Expand-PeggyBundleMsi.ps1 `
+              -Version $baselineTag `
+              -BundlePath (Join-Path $baseline $bundleName) `
+              -OutputDirectory $baseline
             .\scripts\Test-PeggyWindowsUpgrade.ps1 `
               -PreviousMsiPath $previousMsi `
               -MsiPath (Join-Path $env:RUNNER_TEMP $names.Msi) `
@@ -127,8 +127,7 @@ jobs:
         run: |
           $tag = $env:TAG
           . .\scripts\PeggyInstallerVersion.ps1
-          $names = (ConvertTo-PeggyInstallerVersion -Version $tag).AssetNames
-          $assets = @($names.PSObject.Properties.Value | ForEach-Object {
+          $assets = @(Get-PeggyPublishedAssetNames -Version $tag | ForEach-Object {
             Join-Path $env:RUNNER_TEMP $_
           })
 

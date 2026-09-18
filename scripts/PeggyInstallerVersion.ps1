@@ -106,6 +106,22 @@ function ConvertTo-PeggyInstallerVersion {
     }
 }
 
+function Get-PeggyPublishedAssetNames {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Version)
+
+    $names = (ConvertTo-PeggyInstallerVersion -Version $Version).AssetNames
+    # The MSI remains an internal build/validation artifact embedded by setup.exe.
+    return @(
+        $names.Zip,
+        $names.ZipChecksum,
+        $names.Bundle,
+        $names.BundleChecksum,
+        $names.InstallScript,
+        $names.UninstallScript
+    )
+}
+
 function Copy-PeggyReleaseScripts {
     [CmdletBinding()]
     param(
