@@ -22,8 +22,6 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$archiveName = 'peggy-win-x64.zip'
-$checksumName = 'peggy-win-x64.sha256'
 $minimumCopilotVersion = [Version]'1.0.81'
 $temporaryDirectory = Join-Path (
     [IO.Path]::GetTempPath()
@@ -320,49 +318,96 @@ function Get-GitHubHeaders {
     return $headers
 }
 
-function Save-GitHubReleasePackage {
+function Get-PeggyReleasePackageAssets {
     param(
-        [Parameter(Mandatory)][string]$Destination,
-        [Parameter(Mandatory)][string]$Archive,
-        [Parameter(Mandatory)][string]$Checksum
+        [Parameter(Mandatory)]$Release
     )
 
-    $escapedRepository = $Repository.Trim('/')
-    $releaseUrl = if ($Version -eq 'latest') {
-        "https://api.github.com/repos/$escapedRepository/releases/latest"
-    } else {
-        $encodedVersion = [Uri]::EscapeDataString($Version)
-        "https://api.github.com/repos/$escapedRepository/releases/tags/" +
-            $encodedVersion
+    $tag = [string]$Release.tag_name
+    $archiveName = 'peggy-win-x64.zip'
+    $checksumName = 'peggy-win-x64.sha256'
+    $match = [Text.RegularExpressions.Regex]::Match(
+        $tag,
+        '^v?(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$',
+        [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if ($match.Success) {
+        $prefix = "peggy-v$($match.Groups['version'].Value)-win-x64"
+        $versionedNames = @("$prefix.zip", "$prefix.sha256")
+        if (@($Release.assets | Where-Object {
+            $versionedNames -ccontains $_.name
+        }).Count -gt 0) {
+            # Never pair one versioned asset with a legacy or different-tag asset.
+            $archiveName = $versionedNames[0]
+            $checksumName = $versionedNames[1]
+        }
     }
 
+    $archiveAssets = @($Release.assets | Where-Object { $_.name -ceq $archiveName })
+    $checksumAssets = @($Release.assets | Where-Object { $_.name -ceq $checksumName })
+    if ($archiveAssets.Count -ne 1 -or $checksumAssets.Count -ne 1) {
+        throw "Release '$tag' must contain a matching Windows ZIP/checksum pair: " +
+            "'$archiveName' and '$checksumName'."
+    }
+    return [pscustomobject]@{
+        Archive = $archiveAssets[0]
+        Checksum = $checksumAssets[0]
+    }
+}
+
+function Get-PeggyPackageChecksumPath {
+    param([Parameter(Mandatory)][string]$Archive)
+
+    return [IO.Path]::ChangeExtension($Archive, '.sha256')
+}
+
+function Save-GitHubReleasePackage {
+    param([Parameter(Mandatory)][string]$Destination)
+
+    $escapedRepository = $Repository.Trim('/')
+    $releaseEndpoint = if ($Version -eq 'latest') {
+        "repos/$escapedRepository/releases/latest"
+    } else {
+        $encodedVersion = [Uri]::EscapeDataString($Version)
+        "repos/$escapedRepository/releases/tags/$encodedVersion"
+    }
+    $useGitHubCli = $false
+    $headers = Get-GitHubHeaders
     try {
-        $headers = Get-GitHubHeaders
         $release = Invoke-RestMethod `
-            -Uri $releaseUrl `
+            -Uri "https://api.github.com/$releaseEndpoint" `
             -Headers $headers `
             -Method Get
-        $archiveAsset = @($release.assets) |
-            Where-Object { $_.name -eq $archiveName } |
-            Select-Object -First 1
-        $checksumAsset = @($release.assets) |
-            Where-Object { $_.name -eq $checksumName } |
-            Select-Object -First 1
-        if ($null -eq $archiveAsset -or $null -eq $checksumAsset) {
-            throw "Release '$($release.tag_name)' does not contain the " +
-                'expected Windows package and checksum.'
+    } catch {
+        $apiFailure = $_
+        if (-not (Test-CommandAvailable -Name @('gh.exe', 'gh'))) {
+            throw "Could not download $Repository release '$Version'. " +
+                'For a private repository, set GH_TOKEN or install and ' +
+                "authenticate GitHub CLI. GitHub API error: $apiFailure"
         }
+        Write-Step 'Trying authenticated GitHub CLI release lookup'
+        $releaseJson = & gh api $releaseEndpoint
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not resolve release '$Version' from $Repository. " +
+                "Run 'gh auth login' with repository access or set GH_TOKEN."
+        }
+        $release = ($releaseJson -join "`n") | ConvertFrom-Json
+        $useGitHubCli = $true
+    }
 
+    $assets = Get-PeggyReleasePackageAssets -Release $release
+    $archive = Join-Path $Destination $assets.Archive.name
+    $checksum = Join-Path $Destination $assets.Checksum.name
+    if (-not $useGitHubCli) {
         $hasToken = $headers.ContainsKey('Authorization')
         $archiveUrl = if ($hasToken) {
-            $archiveAsset.url
+            $assets.Archive.url
         } else {
-            $archiveAsset.browser_download_url
+            $assets.Archive.browser_download_url
         }
         $checksumUrl = if ($hasToken) {
-            $checksumAsset.url
+            $assets.Checksum.url
         } else {
-            $checksumAsset.browser_download_url
+            $assets.Checksum.browser_download_url
         }
         $downloadHeaders = if ($hasToken) {
             Get-GitHubHeaders -Accept 'application/octet-stream'
@@ -372,45 +417,54 @@ function Save-GitHubReleasePackage {
             }
         }
 
-        Invoke-WebRequest `
-            -Uri $archiveUrl `
-            -Headers $downloadHeaders `
-            -OutFile $Archive `
-            -UseBasicParsing
-        Invoke-WebRequest `
-            -Uri $checksumUrl `
-            -Headers $downloadHeaders `
-            -OutFile $Checksum `
-            -UseBasicParsing
-        return $release.tag_name
-    } catch {
-        $apiFailure = $_
-        if (-not (Test-CommandAvailable -Name @('gh.exe', 'gh'))) {
-            throw "Could not download $Repository release '$Version'. " +
-                'For a private repository, set GH_TOKEN or install and ' +
-                "authenticate GitHub CLI. GitHub API error: $apiFailure"
+        try {
+            Invoke-WebRequest `
+                -Uri $archiveUrl `
+                -Headers $downloadHeaders `
+                -OutFile $archive `
+                -UseBasicParsing
+            Invoke-WebRequest `
+                -Uri $checksumUrl `
+                -Headers $downloadHeaders `
+                -OutFile $checksum `
+                -UseBasicParsing
+        } catch {
+            if (-not (Test-CommandAvailable -Name @('gh.exe', 'gh'))) {
+                throw "Could not download release '$($release.tag_name)': $_"
+            }
+            $useGitHubCli = $true
         }
+    }
 
+    if ($useGitHubCli) {
         Write-Step 'Trying authenticated GitHub CLI release download'
-        $arguments = @('release', 'download')
-        if ($Version -ne 'latest') {
-            $arguments += $Version
+        # Pin both files to the resolved tag, even if latest changes during retry.
+        foreach ($partialPath in @($archive, $checksum)) {
+            if (Test-Path -LiteralPath $partialPath) {
+                Remove-Item -LiteralPath $partialPath -Force
+            }
         }
-        $arguments += @(
+        $arguments = @(
+            'release', 'download', [string]$release.tag_name,
             '--repo', $Repository,
-            '--pattern', 'peggy-win-x64*',
+            '--pattern', [string]$assets.Archive.name,
+            '--pattern', [string]$assets.Checksum.name,
             '--dir', $Destination,
             '--clobber'
         )
         & gh @arguments
         if ($LASTEXITCODE -ne 0 -or
-            -not (Test-Path -LiteralPath $Archive) -or
-            -not (Test-Path -LiteralPath $Checksum)) {
-            throw "Could not download private release '$Version' from " +
+            -not (Test-Path -LiteralPath $archive -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $checksum -PathType Leaf)) {
+            throw "Could not download private release '$($release.tag_name)' from " +
                 "$Repository. Run 'gh auth login' with repository access or " +
                 'set GH_TOKEN, then retry.'
         }
-        return $Version
+    }
+    return [pscustomobject]@{
+        Version = [string]$release.tag_name
+        Archive = $archive
+        Checksum = $checksum
     }
 }
 
@@ -594,21 +648,17 @@ $stagingDirectory = $null
 $backupDirectory = $null
 try {
     if ([string]::IsNullOrWhiteSpace($PackagePath)) {
-        $resolvedArchive = Join-Path $temporaryDirectory $archiveName
-        $resolvedChecksum = Join-Path $temporaryDirectory $checksumName
         Write-Step "Downloading Peggy release $Version"
-        $installedVersion = Save-GitHubReleasePackage `
-            -Destination $temporaryDirectory `
-            -Archive $resolvedArchive `
-            -Checksum $resolvedChecksum
+        $download = Save-GitHubReleasePackage -Destination $temporaryDirectory
+        $installedVersion = $download.Version
+        $resolvedArchive = $download.Archive
+        $resolvedChecksum = $download.Checksum
     } else {
         $resolvedArchive = (
             Resolve-Path -LiteralPath $PackagePath
         ).Path
         if ([string]::IsNullOrWhiteSpace($ChecksumPath)) {
-            $ChecksumPath = Join-Path (
-                Split-Path -Parent $resolvedArchive
-            ) $checksumName
+            $ChecksumPath = Get-PeggyPackageChecksumPath -Archive $resolvedArchive
         }
         $resolvedChecksum = (
             Resolve-Path -LiteralPath $ChecksumPath

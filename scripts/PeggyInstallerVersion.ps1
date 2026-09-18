@@ -92,5 +92,35 @@ function ConvertTo-PeggyInstallerVersion {
         BundleVersion = "$productVersion.0"
         ProductCode = "{$($productCode.ToString().ToUpperInvariant())}"
         IsPrerelease = -not [string]::IsNullOrWhiteSpace($prerelease)
+        AssetNames = [pscustomobject][ordered]@{
+            Zip = "peggy-v$normalized-win-x64.zip"
+            ZipChecksum = "peggy-v$normalized-win-x64.sha256"
+            Msi = "peggy-v$normalized-win-x64.msi"
+            MsiChecksum = "peggy-v$normalized-win-x64.msi.sha256"
+            Bundle = "peggy-v$normalized-win-x64-setup.exe"
+            BundleChecksum = "peggy-v$normalized-win-x64-setup.exe.sha256"
+            InstallScript = "peggy-v$normalized-install.ps1"
+            UninstallScript = "peggy-v$normalized-uninstall.ps1"
+        }
+    }
+}
+
+function Copy-PeggyReleaseScripts {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$OutputDirectory,
+        [string]$SourceDirectory = (Split-Path -Parent $PSScriptRoot)
+    )
+
+    $names = (ConvertTo-PeggyInstallerVersion -Version $Version).AssetNames
+    foreach ($script in @(
+        @{ Source = 'install.ps1'; Destination = $names.InstallScript },
+        @{ Source = 'uninstall.ps1'; Destination = $names.UninstallScript }
+    )) {
+        Copy-Item `
+            -LiteralPath (Join-Path $SourceDirectory $script.Source) `
+            -Destination (Join-Path $OutputDirectory $script.Destination) `
+            -Force
     }
 }

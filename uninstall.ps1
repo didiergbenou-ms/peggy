@@ -399,6 +399,6 @@ if ($WhatIfPreference) {
 if (-not $PurgeData -and
     (Test-Path -LiteralPath $dataDirectory -PathType Container)) {
     Write-Host "Settings and speech models were preserved at '$dataDirectory'."
-    Write-Host 'Run uninstall.ps1 -PurgeData to remove them.'
+    Write-Host "Run $(Split-Path -Leaf $PSCommandPath) -PurgeData to remove them."
 }
 Write-Host 'Shared prerequisites such as Copilot CLI and WorkIQ were not removed.'

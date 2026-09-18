@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
+    [string]$Version,
+
+    [Parameter(Mandatory)]
     [string]$ArtifactDirectory,
 
     [switch]$RequireBootstrapper
@@ -9,21 +12,23 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'PeggyInstallerVersion.ps1')
+$assetNames = (ConvertTo-PeggyInstallerVersion -Version $Version).AssetNames
 $artifactRoot = (Resolve-Path -LiteralPath $ArtifactDirectory).Path
 $artifacts = @(
     [pscustomobject]@{
-        Name = 'peggy-win-x64.zip'
-        ChecksumName = 'peggy-win-x64.sha256'
+        Name = $assetNames.Zip
+        ChecksumName = $assetNames.ZipChecksum
         Required = $true
     },
     [pscustomobject]@{
-        Name = 'peggy-win-x64.msi'
-        ChecksumName = 'peggy-win-x64.msi.sha256'
+        Name = $assetNames.Msi
+        ChecksumName = $assetNames.MsiChecksum
         Required = $true
     },
     [pscustomobject]@{
-        Name = 'peggy-win-x64-setup.exe'
-        ChecksumName = 'peggy-win-x64-setup.exe.sha256'
+        Name = $assetNames.Bundle
+        ChecksumName = $assetNames.BundleChecksum
         Required = [bool]$RequireBootstrapper
     }
 )

@@ -21,6 +21,7 @@ $ProgressPreference = 'SilentlyContinue'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'PeggyInstallerVersion.ps1')
 $versionInfo = ConvertTo-PeggyInstallerVersion -Version $Version
+$assetNames = $versionInfo.AssetNames
 $iconPath = (
     Resolve-Path -LiteralPath (
         Join-Path $repoRoot 'src\Peggy.Tray\Assets\Peggy.ico'
@@ -28,19 +29,15 @@ $iconPath = (
 ).Path
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
-foreach ($artifactName in @(
-        'peggy-win-x64.zip',
-        'peggy-win-x64.sha256',
-        'peggy-win-x64.msi',
-        'peggy-win-x64.msi.sha256',
-        'peggy-win-x64-setup.exe',
-        'peggy-win-x64-setup.exe.sha256'
-    )) {
+foreach ($artifactName in $assetNames.PSObject.Properties.Value) {
     Remove-Item `
         -LiteralPath (Join-Path $outputRoot $artifactName) `
         -Force `
         -ErrorAction SilentlyContinue
 }
+Copy-PeggyReleaseScripts `
+    -Version $versionInfo.SemanticVersion `
+    -OutputDirectory $outputRoot
 
 $publishDirectory = Join-Path $outputRoot 'peggy-win-x64'
 $buildRoot = Join-Path $outputRoot 'build'
@@ -138,7 +135,7 @@ if (-not (Test-Path -LiteralPath $checkerPath -PathType Leaf)) {
     throw 'The Peggy prerequisite checker was not produced.'
 }
 
-$zipPath = Join-Path $outputRoot 'peggy-win-x64.zip'
+$zipPath = Join-Path $outputRoot $assetNames.Zip
 if (Test-Path -LiteralPath $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force
 }
@@ -186,7 +183,7 @@ $builtMsi = Get-ChildItem `
 if ($null -eq $builtMsi) {
     throw 'The Peggy MSI was not produced.'
 }
-$finalMsi = Join-Path $outputRoot 'peggy-win-x64.msi'
+$finalMsi = Join-Path $outputRoot $assetNames.Msi
 Copy-Item -LiteralPath $builtMsi.FullName -Destination $finalMsi -Force
 
 if (-not $SkipBundle) {
@@ -201,6 +198,7 @@ if (-not $SkipBundle) {
 
 if (-not $SkipChecksums) {
     & (Join-Path $PSScriptRoot 'New-PeggyReleaseChecksums.ps1') `
+        -Version $versionInfo.SemanticVersion `
         -ArtifactDirectory $outputRoot `
         -RequireBootstrapper:(-not $SkipBundle)
 }
@@ -215,6 +213,8 @@ if (-not $SkipChecksums) {
     Bundle = if ($SkipBundle) {
         $null
     } else {
-        Join-Path $outputRoot 'peggy-win-x64-setup.exe'
+        Join-Path $outputRoot $assetNames.Bundle
     }
+    InstallScript = Join-Path $outputRoot $assetNames.InstallScript
+    UninstallScript = Join-Path $outputRoot $assetNames.UninstallScript
 }

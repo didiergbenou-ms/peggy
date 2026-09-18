@@ -19,11 +19,12 @@ Add-Type -AssemblyName System.Drawing
 $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'PeggyInstallerVersion.ps1')
 $versionInfo = ConvertTo-PeggyInstallerVersion -Version $Version
+$assetNames = $versionInfo.AssetNames
 $artifactRoot = (Resolve-Path -LiteralPath $ArtifactDirectory).Path
 $publishRoot = Join-Path $artifactRoot 'peggy-win-x64'
-$zipPath = Join-Path $artifactRoot 'peggy-win-x64.zip'
-$msiPath = Join-Path $artifactRoot 'peggy-win-x64.msi'
-$bundlePath = Join-Path $artifactRoot 'peggy-win-x64-setup.exe'
+$zipPath = Join-Path $artifactRoot $assetNames.Zip
+$msiPath = Join-Path $artifactRoot $assetNames.Msi
+$bundlePath = Join-Path $artifactRoot $assetNames.Bundle
 $checkerPath = Join-Path (
     Join-Path $artifactRoot 'build\prerequisite-check'
 ) 'peggy-prerequisite-check.exe'
@@ -214,6 +215,30 @@ try {
 Assert-Installer `
     $invalidPrereleaseRejected `
     'An unordered prerelease version was accepted.'
+
+foreach ($name in $assetNames.PSObject.Properties.Value) {
+    Assert-Installer `
+        (Test-Path -LiteralPath (Join-Path $artifactRoot $name) -PathType Leaf) `
+        "Release asset '$name' is missing."
+}
+foreach ($script in @(
+    @{ Source = 'install.ps1'; Asset = $assetNames.InstallScript },
+    @{ Source = 'uninstall.ps1'; Asset = $assetNames.UninstallScript }
+)) {
+    $sourceHash = (Get-FileHash `
+        -LiteralPath (Join-Path $repoRoot $script.Source) -Algorithm SHA256).Hash
+    foreach ($path in @(
+        (Join-Path $artifactRoot $script.Asset),
+        (Join-Path $publishRoot $script.Source)
+    )) {
+        Assert-Installer `
+            ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -eq $sourceHash) `
+            "Staged script '$path' differs from the canonical source."
+    }
+    Assert-Installer `
+        (-not (Test-Path -LiteralPath (Join-Path $publishRoot $script.Asset))) `
+        'Installed scripts must retain their canonical unversioned names.'
+}
 
 $installer = New-Object -ComObject WindowsInstaller.Installer
 $summary = $installer.SummaryInformation([string]$msiPath, 0)
@@ -715,12 +740,12 @@ try {
     }
 
     foreach ($artifact in @(
-            'peggy-win-x64.zip',
-            'peggy-win-x64.msi',
-            'peggy-win-x64-setup.exe'
+            $assetNames.Zip,
+            $assetNames.Msi,
+            $assetNames.Bundle
         )) {
-        $checksumName = if ($artifact -eq 'peggy-win-x64.zip') {
-            'peggy-win-x64.sha256'
+        $checksumName = if ($artifact -eq $assetNames.Zip) {
+            $assetNames.ZipChecksum
         } else {
             "$artifact.sha256"
         }

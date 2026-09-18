@@ -26,13 +26,14 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'PeggyInstallerVersion.ps1')
 $versionInfo = ConvertTo-PeggyInstallerVersion -Version $Version
+$assetNames = $versionInfo.AssetNames
 $resolvedMsi = (Resolve-Path -LiteralPath $MsiPath).Path
 $resolvedIcon = (Resolve-Path -LiteralPath $IconPath).Path
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 foreach ($artifactName in @(
-        'peggy-win-x64-setup.exe',
-        'peggy-win-x64-setup.exe.sha256'
+        $assetNames.Bundle,
+        $assetNames.BundleChecksum
     )) {
     Remove-Item `
         -LiteralPath (Join-Path $outputRoot $artifactName) `
@@ -98,11 +99,12 @@ $builtBundle = Get-ChildItem `
 if ($null -eq $builtBundle) {
     throw 'The Peggy bootstrapper was not produced.'
 }
-$finalBundle = Join-Path $outputRoot 'peggy-win-x64-setup.exe'
+$finalBundle = Join-Path $outputRoot $assetNames.Bundle
 Copy-Item -LiteralPath $builtBundle.FullName -Destination $finalBundle -Force
 
 if (-not $SkipChecksum) {
     & (Join-Path $PSScriptRoot 'New-PeggyReleaseChecksums.ps1') `
+        -Version $versionInfo.SemanticVersion `
         -ArtifactDirectory $outputRoot `
         -RequireBootstrapper
 }

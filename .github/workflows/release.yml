@@ -34,6 +34,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
+          .\scripts\Test-PeggyReleaseAssets.ps1
           .\scripts\Build-WindowsRelease.ps1 `
             -Version $env:TAG `
             -OutputDirectory $env:RUNNER_TEMP `
@@ -47,9 +48,11 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
+          . .\scripts\PeggyInstallerVersion.ps1
+          $names = (ConvertTo-PeggyInstallerVersion -Version $env:TAG).AssetNames
           .\scripts\Build-PeggyBundle.ps1 `
             -Version $env:TAG `
-            -MsiPath (Join-Path $env:RUNNER_TEMP "peggy-win-x64.msi") `
+            -MsiPath (Join-Path $env:RUNNER_TEMP $names.Msi) `
             -OutputDirectory $env:RUNNER_TEMP `
             -SkipChecksum
 
@@ -57,8 +60,11 @@ jobs:
       # executable here. Checksums must always be generated after signing.
       - name: Generate release checksums
         shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           .\scripts\New-PeggyReleaseChecksums.ps1 `
+            -Version $env:TAG `
             -ArtifactDirectory $env:RUNNER_TEMP `
             -RequireBootstrapper
 
@@ -79,16 +85,11 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           $tag = $env:TAG
-          $assets = @(
-            (Join-Path $env:RUNNER_TEMP "peggy-win-x64.zip"),
-            (Join-Path $env:RUNNER_TEMP "peggy-win-x64.sha256"),
-            (Join-Path $env:RUNNER_TEMP "peggy-win-x64.msi"),
-            (Join-Path $env:RUNNER_TEMP "peggy-win-x64.msi.sha256"),
-            (Join-Path $env:RUNNER_TEMP "peggy-win-x64-setup.exe"),
-            (Join-Path $env:RUNNER_TEMP "peggy-win-x64-setup.exe.sha256"),
-            ".\install.ps1",
-            ".\uninstall.ps1"
-          )
+          . .\scripts\PeggyInstallerVersion.ps1
+          $names = (ConvertTo-PeggyInstallerVersion -Version $tag).AssetNames
+          $assets = @($names.PSObject.Properties.Value | ForEach-Object {
+            Join-Path $env:RUNNER_TEMP $_
+          })
 
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
