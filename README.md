@@ -12,6 +12,8 @@ remain in a separate local process.
 > **Current platform:** Windows x64, .NET 10, standalone Microsoft WorkIQ, and the
 > GitHub Copilot CLI.
 
+![Animated Peggy stands at the right edge above a Windows taskbar while cycling through Idle, Listening, Thinking, New Digest, Sleeping, and Waking](docs/images/peggy-hi.gif)
+
 ## Get started
 
 1. **Check access and prerequisites.** You need Windows x64, GitHub Copilot
@@ -45,8 +47,6 @@ Need another installation method or more detail? See
 [Installation and setup](#installation-and-setup),
 [Prerequisites](#prerequisites), and [Using Peggy](#using-peggy).
 Developers can skip to [Build from source and publish](#build-from-source-and-publish).
-
-![Animated Peggy stands at the right edge above a Windows taskbar while cycling through Idle, Listening, Thinking, New Digest, Sleeping, and Waking](docs/images/peggy-hi.gif)
 
 ## Contents
 
