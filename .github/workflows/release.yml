@@ -78,6 +78,39 @@ jobs:
             -ArtifactDirectory $env:RUNNER_TEMP `
             -SkipPrerequisiteExecution
 
+      - name: Regress real in-place MSI upgrade and rollback
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          . .\scripts\PeggyInstallerVersion.ps1
+          $names = (ConvertTo-PeggyInstallerVersion -Version $env:TAG).AssetNames
+          foreach ($baselineTag in @("v0.1.10", "v0.1.11-beta.1")) {
+            $baseline = Join-Path $env:RUNNER_TEMP "peggy-upgrade-baseline-$baselineTag"
+            New-Item -ItemType Directory -Path $baseline -Force | Out-Null
+            gh release download $baselineTag --repo "${{ github.repository }}" `
+              --pattern peggy-win-x64.msi --pattern peggy-win-x64.msi.sha256 `
+              --dir $baseline --clobber
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not download the pinned $baselineTag upgrade baseline."
+            }
+            $checksum = (Get-Content -LiteralPath (Join-Path $baseline "peggy-win-x64.msi.sha256") -Raw).Trim()
+            if ($checksum -notmatch '^([a-fA-F0-9]{64})\s+\*?peggy-win-x64\.msi$') {
+              throw "Malformed $baselineTag MSI checksum."
+            }
+            $expectedHash = $Matches[1]
+            $previousMsi = Join-Path $baseline "peggy-win-x64.msi"
+            if ((Get-FileHash -LiteralPath $previousMsi -Algorithm SHA256).Hash -ne $expectedHash) {
+              throw "Pinned $baselineTag MSI checksum does not match."
+            }
+            .\scripts\Test-PeggyWindowsUpgrade.ps1 `
+              -PreviousMsiPath $previousMsi `
+              -MsiPath (Join-Path $env:RUNNER_TEMP $names.Msi) `
+              -PayloadDirectory (Join-Path $env:RUNNER_TEMP "peggy-win-x64") `
+              -OutputDirectory (Join-Path $env:RUNNER_TEMP "peggy-upgrade-$baselineTag")
+          }
+
       - name: Create GitHub release
         shell: pwsh
         env:

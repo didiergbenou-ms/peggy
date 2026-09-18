@@ -89,6 +89,7 @@ function ConvertTo-PeggyInstallerVersion {
         SemanticVersion = $normalized
         Tag = "v$normalized"
         ProductVersion = $productVersion
+        FileVersion = "$productVersion.0"
         BundleVersion = "$productVersion.0"
         ProductCode = "{$($productCode.ToString().ToUpperInvariant())}"
         IsPrerelease = -not [string]::IsNullOrWhiteSpace($prerelease)

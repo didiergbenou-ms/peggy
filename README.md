@@ -392,6 +392,13 @@ uninstalls and administrative extraction do not launch Peggy. Direct MSI and
 unattended setup check prerequisites but never install them; use the interactive
 setup executable for guided prerequisite installation.
 
+To upgrade, run the newer installer without uninstalling Peggy first. The
+installer replaces the previous application payload inside the Windows Installer
+rollback transaction, including files from older builds that reused a file
+version. Settings, monitoring selections, saved account preference, and downloaded
+speech models are preserved. Re-running the same release is maintenance, not an
+upgrade, and does not automatically launch Peggy.
+
 Interactive installation:
 
 ```powershell
@@ -857,7 +864,8 @@ git push origin v0.1.0
 
 The release workflow runs the regression suite, builds with pinned WiX Toolset
 6.0.2 packages, performs MSI database and administrative-image validation, and
-publishes eight versioned assets (shown for `v0.1.11`):
+requires isolated in-place upgrade and rollback regressions before publishing
+eight versioned assets (shown for `v0.1.11`):
 
 - `peggy-v0.1.11-win-x64.zip`, a self-contained package for Windows x64.
 - `peggy-v0.1.11-win-x64.sha256`, the package checksum used by `install.ps1`.
@@ -889,6 +897,13 @@ ordered slots: `alpha.1` through `alpha.29`, `beta.1` through `beta.30`, and
 release notes, and artifact context. Unsupported prerelease forms fail the
 build rather than producing an unsafe upgrade.
 
+Every Peggy release binary also receives a four-part `FileVersion` equal to
+the mapped MSI version followed by `.0`. This applies to the tray, Core, MCP,
+speech host, and installer helpers, including nested publish outputs.
+For example, `v0.1.11-beta.1` uses MSI `0.1.1130` and file version
+`0.1.1130.0`; beta.2 uses `0.1.1131.0`, and stable uses `0.1.1199.0`.
+Semantic prerelease labels alone do not change .NET's default file version.
+
 WiX ICE custom actions can be blocked by policy in non-elevated build
 environments (the local validation attempt returned `WIX1105`), so the build
 suppresses that unavailable pass.
@@ -896,6 +911,22 @@ suppresses that unavailable pass.
 stable UpgradeCode and upgrade sequence, compares every File-table entry,
 creates a disposable `msiexec /a` administrative image, hashes every extracted
 payload file, and extracts the Burn container with the pinned WiX command.
+It also checks the mapped file version in the published binaries, installer
+helpers, and MSI File table.
+
+`Test-PeggyWindowsUpgrade.ps1` performs real `msiexec /i` transactions using
+isolated copies of the previous and candidate MSIs. It keeps their payload bytes,
+upgrade ranges, and production action conditions, but namespaces product/component
+identities, directories, registry entries, and shortcuts. Executable custom actions
+become inert markers so the regression cannot launch Peggy or use real account
+data. It checks exact installed hashes, product replacement, unchanged test
+settings/model/account sentinels, same-version maintenance, and a forced-failure
+rollback to the previous payload and registration. CI uses the checksum-verified
+`v0.1.10` and `v0.1.11-beta.1` MSIs as pinned baselines. Restart Manager, real application startup,
+and interactive authentication are outside this isolated regression.
+Restoring files without restoring the previous product's fully installed
+registration is a failure, not a successful rollback; failure logs and fixture
+recovery information are retained for diagnosis.
 
 The MSI relies on Windows Installer Restart Manager for files in use, so only
 processes holding this installation's files are asked to stop. A checked,
