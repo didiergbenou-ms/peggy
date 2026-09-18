@@ -405,7 +405,7 @@ Peggy resolves standalone WorkIQ in this order:
 
 The
 [latest GitHub Release](https://github.com/didiergbenou-ms/peggy/releases/latest)
-offers three current-user installation paths. All download filenames include
+offers two current-user installation paths. All download filenames include
 the release tag; the examples below use `v0.1.12` (substitute your chosen release):
 
 1. **`peggy-v0.1.12-win-x64-setup.exe` (recommended)** opens a prerequisite checklist
@@ -416,15 +416,17 @@ the release tag; the examples below use `v0.1.12` (substitute your chosen releas
    visible; dependencies are never installed silently. If WinGet is unavailable,
    use the offered official download links or
    `peggy-v0.1.12-install.ps1 -InstallPrerequisites`.
-2. **`peggy-v0.1.12-win-x64.msi`** runs the same prerequisite check and installs
-   Peggy directly when all requirements are available.
-3. **`peggy-v0.1.12-install.ps1`** retains the existing checksum-verified ZIP path, optional
+2. **`peggy-v0.1.12-install.ps1`** retains the existing checksum-verified ZIP path, optional
    WinGet prerequisite installation, and optional speech-model download.
 
-The bootstrapper and MSI install x64 Peggy per user at
-`%LOCALAPPDATA%\Programs\Peggy`, register it in Installed Apps, and create the
+The setup EXE is the downloadable Windows installer. The standalone MSI and its
+checksum are no longer published; the same validated MSI remains embedded in the
+EXE, including the existing upgrade fix.
+
+The setup EXE installs x64 Peggy per user at
+`%LOCALAPPDATA%\Programs\Peggy`, registers it in Installed Apps, and creates the
 Peggy Start menu shortcut. WorkIQ installation, EULA acceptance, and Microsoft
-365 sign-in remain explicit first-run actions. The MSI and bootstrapper do not
+365 sign-in remain explicit first-run actions. The setup EXE does not
 download the optional speech models; select **Install voice models** during
 setup or in Settings if voice is wanted.
 
@@ -434,8 +436,8 @@ that warning.
 
 Successful full-UI installation or upgrade starts Peggy automatically in the
 signed-in user's desktop session. Quiet/passive installs, maintenance,
-uninstalls and administrative extraction do not launch Peggy. Direct MSI and
-unattended setup check prerequisites but never install them; use the interactive
+uninstalls and administrative extraction do not launch Peggy. Unattended
+setup checks prerequisites but never installs them; use the interactive
 setup executable for guided prerequisite installation.
 
 To upgrade, run the newer installer without uninstalling Peggy first. The
@@ -454,16 +456,12 @@ Interactive installation:
 
 ```powershell
 .\peggy-v0.1.12-win-x64-setup.exe
-# Or:
-msiexec.exe /i .\peggy-v0.1.12-win-x64.msi
 ```
 
 Unattended installation:
 
 ```powershell
 .\peggy-v0.1.12-win-x64-setup.exe /quiet /norestart
-# Or:
-msiexec.exe /i .\peggy-v0.1.12-win-x64.msi /qn /norestart
 ```
 
 For the script path, download `peggy-v0.1.12-install.ps1`, then run:
@@ -517,13 +515,13 @@ directories are unchanged.
 
 ### Uninstall
 
-Use **Installed Apps**, or use the same package type unattended:
+Use **Installed Apps**, or uninstall a setup-EXE installation unattended:
 
 ```powershell
 .\peggy-v0.1.12-win-x64-setup.exe /uninstall /quiet /norestart
-# Direct MSI installation:
-msiexec.exe /x .\peggy-v0.1.12-win-x64.msi /qn /norestart
 ```
+
+For an existing direct-MSI installation, use **Installed Apps**.
 
 Normal MSI/bootstrapper uninstall removes application files, the Start menu
 shortcut, ARP registration, the Peggy startup Run entry only when it points to
@@ -912,16 +910,19 @@ git push origin v0.1.0
 The release workflow runs the regression suite, builds with pinned WiX Toolset
 6.0.2 packages, performs MSI database and administrative-image validation, and
 requires isolated in-place upgrade and rollback regressions before publishing
-eight versioned assets (shown for `v0.1.12`):
+six versioned assets (shown for `v0.1.12`):
 
 - `peggy-v0.1.12-win-x64.zip`, a self-contained package for Windows x64.
 - `peggy-v0.1.12-win-x64.sha256`, the package checksum used by `install.ps1`.
-- `peggy-v0.1.12-win-x64.msi` and `peggy-v0.1.12-win-x64.msi.sha256`, the per-user MSI and its
-  checksum.
 - `peggy-v0.1.12-win-x64-setup.exe` and `peggy-v0.1.12-win-x64-setup.exe.sha256`, the WiX Burn
   prerequisite-checking bootstrapper and its checksum.
 - `peggy-v0.1.12-install.ps1`, the current-user bootstrap installer.
 - `peggy-v0.1.12-uninstall.ps1`, the current-user uninstaller.
+
+The MSI and its checksum are still generated locally for validation and bundling,
+but are excluded from published assets. The setup EXE embeds the validated MSI.
+Standalone MSI downloads and their checksums have also been withdrawn from
+historical releases. Their setup EXEs remain unchanged.
 
 There are no unversioned release aliases. Prerelease suffixes are retained in
 every asset name (for example, `peggy-v1.2.3-beta.2-win-x64.zip`). Checksum files
@@ -971,9 +972,10 @@ become inert markers so the regression cannot launch Peggy or use real account
 data. It checks exact installed hashes, product replacement, unchanged test
 settings/model/account sentinels, same-version maintenance, and a forced-failure
 rollback to the previous payload and registration. CI uses three checksum-verified
-pinned baselines: the legacy-named `v0.1.10` and `v0.1.11-beta.1` MSIs, and the
-versioned `v0.1.11` MSI. Every baseline must pass the strict upgrade and rollback
-checks. Restart Manager, real application startup, and interactive authentication
+pinned baselines: the setup EXEs from `v0.1.10`, `v0.1.11-beta.1`, and `v0.1.11`.
+The pinned WiX extraction tool reads each checksum-verified EXE without running
+it and supplies its embedded MSI. Every baseline must pass the strict upgrade
+and rollback checks. Restart Manager, real application startup, and interactive authentication
 are outside this isolated regression.
 Restoring files without restoring the previous product's fully installed
 registration is a failure, not a successful rollback; failure logs and fixture
