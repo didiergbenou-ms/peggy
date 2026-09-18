@@ -370,6 +370,12 @@ static bool TryRenderUiSuite(string[] arguments)
             SaveWindowContent(
                 settings,
                 Path.Combine(directory, "settings.png"));
+            ((FrameworkElement)((TextBox)settings.FindName("MonitoringIntervalText")).Parent)
+                .BringIntoView();
+            PumpDispatcher(TimeSpan.FromMilliseconds(100));
+            SaveWindowContent(
+                settings,
+                Path.Combine(directory, "settings-monitoring.png"));
             settings.Close();
 
             var about = new AboutWindow();
