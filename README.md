@@ -16,6 +16,11 @@ remain in a separate local process.
 
 ## Get started
 
+> **Unified setup beta:** `v0.1.13-beta.1` replaces the separate installer and
+> prerequisite pages with one **Peggy setup** window. Choose its versioned setup
+> EXE from [the beta release](https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.13-beta.1).
+> Stable `/releases/latest` remains v0.1.12; the stable examples below are retained.
+
 1. **Check access and prerequisites.** You need Windows x64, GitHub Copilot
    access, and a Microsoft 365 work account with a Work IQ usage-based billing
    plan and tenant administrator consent. The installer checks PowerShell 7,
@@ -403,6 +408,42 @@ Peggy resolves standalone WorkIQ in this order:
 
 ### Install from a GitHub Release
 
+#### One-window setup in v0.1.13-beta.1
+
+Run `peggy-v0.1.13-beta.1-win-x64-setup.exe` normally from your own Windows
+desktop, not **Run as administrator**. Quit a running Peggy instance before
+continuing; the setup window offers Retry instead of stopping Peggy for you.
+
+The same Peggy window stays open through:
+
+1. **Local requirements:** check PowerShell, Node.js/npm, and Copilot CLI. Missing
+   tools have explicit install/repair actions; WinGet and vendor prompts remain visible.
+2. **Install / update Peggy:** install the embedded MSI with progress in Peggy's
+   window. Account setup is disabled until Windows Installer has finished.
+3. **GitHub Copilot and Microsoft 365:** use the existing device-code, WorkIQ EULA,
+   verified-account and mail-readiness steps. Eligible saved accounts are verified
+   and reused rather than requiring a second first-run window.
+4. **Optional English voice:** install or skip the models.
+5. **Finish and launch:** save the verified account and start Peggy once.
+
+Browser sign-in, Windows elevation, and vendor consent can still open their own
+trusted prompts. A missing WinGet installation is reported with the requirement's
+official download address. Nothing accepts vendor terms or signs in silently.
+
+Cancellation during MSI work waits for Windows Installer to finish rollback;
+vendor installer cancellation belongs to the vendor's visible prompt. Closing
+after a successful installation does not uninstall Peggy: unfinished account setup
+can be completed from Peggy later. A restart-required result stops before
+onboarding and does not automatically reboot the machine.
+
+Quiet/passive installs, maintenance, related-bundle upgrade removal, and
+download-only `/layout` do not open account setup or launch Peggy. Existing
+account-specific data, monitoring preferences and voice settings are preserved
+during an upgrade. Direct MSI invocation remains an internal check-only path;
+the unified installation window belongs to the setup EXE.
+
+#### Stable release installation
+
 The
 [latest GitHub Release](https://github.com/didiergbenou-ms/peggy/releases/latest)
 offers two current-user installation paths. All download filenames include
@@ -557,7 +598,9 @@ standalone release copy (`peggy-v0.1.12-uninstall.ps1`) can target it with
 
 ### First-run setup
 
-On first launch, Peggy opens **Peggy setup**:
+The unified setup EXE hosts these steps after installation in the same window.
+For ZIP/script installations, or if account setup was left incomplete, Peggy
+opens **Peggy setup** when launched:
 
 1. Review local prerequisite readiness and install standalone WorkIQ if needed.
    Check GitHub Copilot access, or use **Sign in to GitHub Copilot** when authentication
@@ -980,6 +1023,16 @@ are outside this isolated regression.
 Restoring files without restoring the previous product's fully installed
 registration is a failure, not a successful rollback; failure logs and fixture
 recovery information are retained for diagnosis.
+
+The beta bundle uses a self-contained .NET/WPF bootstrapper and the shared Peggy
+setup view. Only the MSI is in the Burn package chain; the old separate prerequisite
+and application-launch packages are not used. `Test-PeggyBootstrapperPayload.ps1`
+checks the complete runtime/dependency payload, and installer validation compares
+every embedded bootstrapper file with its published bytes.
+`Test-PeggyUnifiedSetupLayout.ps1` runs the actual EXE in quiet download-only mode
+and checks that Peggy's installed files and registration are unchanged. This is
+not a substitute for testing real prerequisite installers or account consent on
+a disposable new Windows machine.
 
 The MSI relies on Windows Installer Restart Manager for files in use, so only
 processes holding this installation's files are asked to stop. A checked,
