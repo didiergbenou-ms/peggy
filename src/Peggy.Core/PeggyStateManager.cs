@@ -15,6 +15,13 @@ public sealed class PeggyStateManager
 
     public PeggyStateDocument State { get; private set; } = new();
 
+    public async Task LoadForSetupAsync(CancellationToken ct = default)
+    {
+        await _stateGate.WaitAsync(ct);
+        try { State = await _store.LoadAsync(ct); }
+        finally { _stateGate.Release(); }
+    }
+
     public async Task InitializeAsync(CancellationToken ct = default)
     {
         await _stateGate.WaitAsync(ct);
