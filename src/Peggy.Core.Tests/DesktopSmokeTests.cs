@@ -54,6 +54,7 @@ internal static class DesktopSmokeTests
             TestConversationWindow();
             TestTroubleshootingWindow();
             TestHelpMenu();
+            TestReleaseVersion(application);
             TestImmediateListeningWithoutGreeting();
             TestConversationStartupDrain();
             TestDeferredConversationApproval();
@@ -89,6 +90,10 @@ internal static class DesktopSmokeTests
             UpdatedUtc = now
         };
         var window = new AlertCenterWindow();
+        TestAssert.Equal(
+            PeggyReleaseVersion.Display,
+            Find<TextBlock>(window, "VersionText").Text,
+            "Alert Center must show the running release version.");
         TestAssert.True(
             window.Width == 620 &&
             window.Height == 780 &&
@@ -858,12 +863,22 @@ internal static class DesktopSmokeTests
     private static void TestHelpMenu()
     {
         var troubleshootingInvoked = false;
+        var aboutInvoked = false;
         using var help = App.CreateHelpMenu(
-            (_, _) => troubleshootingInvoked = true);
+            (_, _) => troubleshootingInvoked = true,
+            (_, _) => aboutInvoked = true);
         var troubleshooting = help.DropDownItems
             .OfType<Forms.ToolStripMenuItem>()
-            .Single();
+            .Single(item => item.Text == "Troubleshooting");
         troubleshooting.PerformClick();
+        TestAssert.True(!aboutInvoked,
+            "Troubleshooting must not open About.");
+        var about = help.DropDownItems
+            .OfType<Forms.ToolStripMenuItem>()
+            .Single(item => item.Text == "About");
+        about.PerformClick();
+        TestAssert.True(aboutInvoked,
+            "Help > About did not invoke the version window.");
         var now = DateTimeOffset.UtcNow;
         var context = App.CreateTroubleshootingContext(null, now);
         TestAssert.True(
@@ -878,6 +893,68 @@ internal static class DesktopSmokeTests
                 "No monitoring failure",
                 StringComparison.Ordinal),
             "The Help menu did not expose safe on-demand troubleshooting.");
+    }
+
+    private static void TestReleaseVersion(App application)
+    {
+        foreach (var (input, expected) in new (string?, string)[]
+        {
+            ("0.1.11", "v0.1.11"),
+            ("0.1.11+abcdef012345", "v0.1.11"),
+            ("0.1.11-beta.1+abcdef012345", "v0.1.11-beta.1"),
+            ("0.1.11-rc.2", "v0.1.11-rc.2"),
+            (null, "Version unavailable"),
+            (" ", "Version unavailable")
+        })
+        {
+            TestAssert.Equal(expected, PeggyReleaseVersion.Format(input),
+                "Release version must retain prerelease labels without build metadata.");
+        }
+        var metadata = typeof(App).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion;
+        TestAssert.Equal(
+            PeggyReleaseVersion.Format(metadata), PeggyReleaseVersion.Display,
+            "Release version must come from Peggy's assembly, not the test host or MSI.");
+
+        string? copied = null;
+        var about = new AboutWindow(value => copied = value);
+        about.Show();
+        var version = Find<TextBox>(about, "VersionText");
+        TestAssert.True(version.IsReadOnly &&
+            version.Text == PeggyReleaseVersion.Display,
+            "About must show the same selectable, read-only version as the header.");
+        Find<Button>(about, "CopyVersionButton")
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        TestAssert.Equal(PeggyReleaseVersion.Display, copied,
+            "About copied a different version.");
+        TestAssert.Equal("Version copied.",
+            Find<TextBlock>(about, "CopyStatusText").Text,
+            "Copy confirmation was not displayed.");
+        about.Close();
+
+        var failedCopy = new AboutWindow(_ =>
+            throw new System.Runtime.InteropServices.ExternalException());
+        Find<Button>(failedCopy, "CopyVersionButton")
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        TestAssert.True(
+            Find<TextBlock>(failedCopy, "CopyStatusText").Text
+                .StartsWith("Could not copy", StringComparison.Ordinal),
+            "Clipboard failure must be visible rather than reported as success.");
+        failedCopy.Close();
+
+        InvokeInstancePrivate(application, "ShowAboutAsync");
+        var first = GetPrivateField<AboutWindow>(application, "_aboutWindow");
+        InvokeInstancePrivate(application, "ShowAboutAsync");
+        TestAssert.True(ReferenceEquals(first,
+            GetPrivateField<AboutWindow>(application, "_aboutWindow")),
+            "Repeated Help > About must reuse the visible window.");
+        first.Close();
+        InvokeInstancePrivate(application, "ShowAboutAsync");
+        var reopened = GetPrivateField<AboutWindow>(application, "_aboutWindow");
+        TestAssert.True(!ReferenceEquals(first, reopened),
+            "About must reopen after it is closed.");
+        reopened.Close();
     }
 
     private static void TestDeferredConversationApproval()

@@ -371,6 +371,12 @@ static bool TryRenderUiSuite(string[] arguments)
                 Path.Combine(directory, "settings.png"));
             settings.Close();
 
+            var about = new AboutWindow();
+            about.Show();
+            PumpDispatcher(TimeSpan.FromMilliseconds(100));
+            SaveWindowContent(about, Path.Combine(directory, "about.png"));
+            about.Close();
+
             var conversation = new ConversationWindow();
             conversation.BeginConversation();
             conversation.AppendAssistant(

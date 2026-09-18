@@ -46,6 +46,7 @@ public partial class App : Application
     private SpeechBubbleWindow _bubble = null!;
     private AlertCenterWindow _alertCenter = null!;
     private TroubleshootingWindow? _troubleshootingWindow;
+    private AboutWindow? _aboutWindow;
     private SettingsWindow? _settingsWindow;
     private WorkIqSignInWindow? _workIqSignInWindow;
     private ConversationWindow _conversationWindow = null!;
@@ -356,7 +357,8 @@ public partial class App : Application
         menu.Items.Add(CreateHelpMenu(
             (_, _) => RunUiAction(
                 ShowTroubleshootingAsync,
-                $"{AssistantName} troubleshooting")));
+                $"{AssistantName} troubleshooting"),
+            (_, _) => RunUiAction(ShowAboutAsync, "About Peggy")));
 
         menu.Items.Add(new Forms.ToolStripSeparator());
         _quitMenu = new Forms.ToolStripMenuItem(
@@ -371,9 +373,11 @@ public partial class App : Application
     }
 
     internal static Forms.ToolStripMenuItem CreateHelpMenu(
-        EventHandler troubleshootingClick)
+        EventHandler troubleshootingClick,
+        EventHandler aboutClick)
     {
         ArgumentNullException.ThrowIfNull(troubleshootingClick);
+        ArgumentNullException.ThrowIfNull(aboutClick);
         var help = new Forms.ToolStripMenuItem("Help");
         var troubleshooting = new Forms.ToolStripMenuItem(
             "Troubleshooting",
@@ -384,6 +388,11 @@ public partial class App : Application
                 "Run read-only checks and create a diagnostic ZIP."
         };
         help.DropDownItems.Add(troubleshooting);
+        help.DropDownItems.Add(new Forms.ToolStripMenuItem(
+            "About", image: null, aboutClick)
+        {
+            ToolTipText = "View and copy Peggy's release version."
+        });
         return help;
     }
 
@@ -1147,6 +1156,27 @@ public partial class App : Application
         {
             _runtimeGate.Release();
         }
+    }
+
+    private Task ShowAboutAsync()
+    {
+        if (_aboutWindow is { IsVisible: true } existing)
+        {
+            existing.Activate();
+            return Task.CompletedTask;
+        }
+
+        var window = new AboutWindow();
+        window.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_aboutWindow, window))
+            {
+                _aboutWindow = null;
+            }
+        };
+        _aboutWindow = window;
+        window.Show();
+        return Task.CompletedTask;
     }
 
     private Task ShowTroubleshootingAsync()
@@ -2726,6 +2756,7 @@ public partial class App : Application
         _tray.Dispose();
         trayIcon?.Dispose();
         _troubleshootingWindow?.Close();
+        _aboutWindow?.Close();
         CloseAlertContextWindows();
         _alertCenter.Close();
         _conversationWindow.Close();

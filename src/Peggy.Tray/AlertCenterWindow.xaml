@@ -199,11 +199,20 @@
               VerticalAlignment="Center"/>
         </Border>
         <StackPanel Grid.Column="1" VerticalAlignment="Center">
-          <TextBlock x:Name="AssistantNameText"
-                     Text="Peggy"
-                     Foreground="White"
-                     FontSize="23"
-                     FontWeight="SemiBold"/>
+          <WrapPanel>
+            <TextBlock x:Name="AssistantNameText"
+                       Text="Peggy"
+                       Foreground="White"
+                       FontSize="23"
+                       FontWeight="SemiBold"
+                       Margin="0,0,10,0"/>
+            <TextBlock x:Name="VersionText"
+                       Foreground="#EADFD8"
+                       FontSize="11"
+                       VerticalAlignment="Center"
+                       ToolTip="Peggy release version"
+                       AutomationProperties.Name="Peggy release version"/>
+          </WrapPanel>
           <TextBlock Text="Your work, sorted by what matters"
                      Foreground="#EADFD8"
                      FontSize="12"

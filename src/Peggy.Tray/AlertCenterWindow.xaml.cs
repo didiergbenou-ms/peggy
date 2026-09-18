@@ -16,6 +16,7 @@ public partial class AlertCenterWindow : Window
     public AlertCenterWindow()
     {
         InitializeComponent();
+        VersionText.Text = PeggyReleaseVersion.Display;
         Closing += (_, args) =>
         {
             args.Cancel = true;
