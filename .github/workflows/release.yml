@@ -35,6 +35,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           .\scripts\Test-PeggyReleaseAssets.ps1
+          .\scripts\Test-PeggyBootstrapperPayload.ps1
           .\scripts\Build-WindowsRelease.ps1 `
             -Version $env:TAG `
             -OutputDirectory $env:RUNNER_TEMP `
@@ -77,6 +78,9 @@ jobs:
             -Version $env:TAG `
             -ArtifactDirectory $env:RUNNER_TEMP `
             -SkipPrerequisiteExecution
+          .\scripts\Test-PeggyUnifiedSetupLayout.ps1 `
+            -Version $env:TAG `
+            -ArtifactDirectory $env:RUNNER_TEMP
 
       - name: Regress real in-place MSI upgrade and rollback
         shell: pwsh

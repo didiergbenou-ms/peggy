@@ -6,8 +6,8 @@ License: Microsoft Reciprocal License (MS-RL)
 Source: https://github.com/wixtoolset/wix
 The build packages also include the Open Source Maintenance Fee EULA:
 https://github.com/wixtoolset/wix/blob/v6.0.2/OSMFEULA.txt
-The WiX Burn engine and standard bootstrapper application are embedded in the
-Peggy setup executable.
+The WiX Burn engine, BootstrapperApplicationApi managed library, and native
+bootstrapper interop library are embedded in the Peggy setup executable.
 
 sherpa-onnx
 Copyright the Next-gen Kaldi development team and contributors.

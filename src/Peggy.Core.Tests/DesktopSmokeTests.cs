@@ -63,6 +63,7 @@ internal static class DesktopSmokeTests
             TestWorkIqSignInWindow();
             SetupStepIndicatorTests.RunDesktop();
             SetupExperienceSmokeTests.RunDesktop();
+            UnifiedSetupSmokeTests.RunDesktop();
             InstallerStepAnimationSmokeTests.RunDesktop();
             TestSettingsWindow();
             TestSettingsPreserveUnavailableWatchlist();

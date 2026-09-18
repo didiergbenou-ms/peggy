@@ -15,6 +15,7 @@
     <ApplicationIcon>Assets\Peggy.ico</ApplicationIcon>
     <CopilotSkipCliDownload>true</CopilotSkipCliDownload>
     <NoWarn>$(NoWarn);GHCP001</NoWarn>
+    <PeggyIncludeRuntimeHelpers Condition="'$(PeggyIncludeRuntimeHelpers)' == ''">true</PeggyIncludeRuntimeHelpers>
   </PropertyGroup>
 
   <ItemGroup>
@@ -29,12 +30,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Peggy.Core\Peggy.Core.csproj" />
-    <ProjectReference Include="..\Peggy.Mcp\Peggy.Mcp.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Peggy.Mcp\Peggy.Mcp.csproj" ReferenceOutputAssembly="false"
+                      Condition="'$(PeggyIncludeRuntimeHelpers)' == 'true'" />
     <ProjectReference Include="..\Peggy.Speech.Host\Peggy.Speech.Host.csproj"
-                      ReferenceOutputAssembly="false" />
+                      ReferenceOutputAssembly="false" Condition="'$(PeggyIncludeRuntimeHelpers)' == 'true'" />
   </ItemGroup>
 
-  <Target Name="CopyPeggyMcpOutput" AfterTargets="Build">
+  <Target Name="CopyPeggyMcpOutput" AfterTargets="Build" Condition="'$(PeggyIncludeRuntimeHelpers)' == 'true'">
     <ItemGroup>
       <PeggyMcpBuildFiles Include="..\Peggy.Mcp\bin\$(Configuration)\net10.0\**\*" />
     </ItemGroup>
@@ -43,7 +45,7 @@
           SkipUnchangedFiles="true" />
   </Target>
 
-  <Target Name="CopyPeggySpeechHostOutput" AfterTargets="Build">
+  <Target Name="CopyPeggySpeechHostOutput" AfterTargets="Build" Condition="'$(PeggyIncludeRuntimeHelpers)' == 'true'">
     <PropertyGroup>
       <PeggySpeechHostBuildDir>..\Peggy.Speech.Host\bin\$(Configuration)\net10.0-windows\</PeggySpeechHostBuildDir>
       <PeggySpeechHostBuildDir Condition="'$(RuntimeIdentifier)' != ''">..\Peggy.Speech.Host\bin\$(Configuration)\net10.0-windows\$(RuntimeIdentifier)\</PeggySpeechHostBuildDir>
@@ -56,7 +58,7 @@
           SkipUnchangedFiles="true" />
   </Target>
 
-  <Target Name="PublishPeggyMcp" AfterTargets="Publish">
+  <Target Name="PublishPeggyMcp" AfterTargets="Publish" Condition="'$(PeggyIncludeRuntimeHelpers)' == 'true'">
     <PropertyGroup>
       <PeggyMcpPublishDir>$([System.IO.Path]::GetFullPath('$(PublishDir)Peggy.Mcp\', '$(MSBuildProjectDirectory)'))</PeggyMcpPublishDir>
     </PropertyGroup>
@@ -65,7 +67,7 @@
              Properties="Configuration=$(Configuration);TargetFramework=net10.0;PublishDir=$(PeggyMcpPublishDir);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained)" />
   </Target>
 
-  <Target Name="PublishPeggySpeechHost" AfterTargets="Publish">
+  <Target Name="PublishPeggySpeechHost" AfterTargets="Publish" Condition="'$(PeggyIncludeRuntimeHelpers)' == 'true'">
     <PropertyGroup>
       <PeggySpeechHostPublishDir>$([System.IO.Path]::GetFullPath('$(PublishDir)Peggy.Speech.Host\', '$(MSBuildProjectDirectory)'))</PeggySpeechHostPublishDir>
     </PropertyGroup>

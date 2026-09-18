@@ -51,6 +51,22 @@ if (args.Contains("--preview-setup-feedback", StringComparer.Ordinal))
     return;
 }
 
+if (args.Contains("--preview-unified-setup", StringComparer.Ordinal))
+{
+    var previewThread = new Thread(UnifiedSetupSmokeTests.RunVisualPreview);
+    previewThread.SetApartmentState(ApartmentState.STA);
+    previewThread.Start();
+    previewThread.Join();
+    return;
+}
+
+if (args.Contains("--unified-setup-smoke", StringComparer.Ordinal))
+{
+    await UnifiedSetupSmokeTests.RunIsolatedAsync();
+    Console.WriteLine("Unified setup smoke tests passed.");
+    return;
+}
+
 var testDirectory = Path.Combine(
     Path.GetTempPath(),
     "peggy-core-tests-" + Guid.NewGuid().ToString("N"));
@@ -63,6 +79,7 @@ try
     await AppIntegrationSmokeTests.RunAsync();
     await SettingsCatalogCacheSmokeTests.RunAsync();
     await SetupExperienceSmokeTests.RunAsync();
+    await UnifiedSetupSmokeTests.RunAsync(testDirectory);
     await DeviceCodeSignInSmokeTests.RunAsync();
     await DesktopSmokeTests.RunAsync();
     await TestEncryptedStateAsync(testDirectory);

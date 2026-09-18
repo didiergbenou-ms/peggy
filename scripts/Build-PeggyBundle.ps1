@@ -42,34 +42,44 @@ foreach ($artifactName in @(
 }
 
 $buildRoot = Join-Path $outputRoot 'build'
-$checkerOutput = Join-Path $buildRoot 'prerequisite-check'
+$setupOutput = Join-Path $buildRoot 'setup-bootstrapper'
 $bundleOutput = Join-Path $buildRoot 'bundle'
 $bundleIntermediate = Join-Path $buildRoot 'obj-bundle'
-foreach ($path in @($checkerOutput, $bundleOutput, $bundleIntermediate)) {
+foreach ($path in @($setupOutput, $bundleOutput, $bundleIntermediate)) {
     if (Test-Path -LiteralPath $path) {
         Remove-Item -LiteralPath $path -Recurse -Force
     }
     New-Item -ItemType Directory -Path $path -Force | Out-Null
 }
 
-$checkerProject = Join-Path (
-    Join-Path $repoRoot 'installer\Peggy.PrerequisiteCheck'
-) 'Peggy.PrerequisiteCheck.csproj'
-& dotnet publish $checkerProject `
+$setupProject = Join-Path (
+    Join-Path $repoRoot 'installer\Peggy.SetupBootstrapper'
+) 'Peggy.SetupBootstrapper.csproj'
+& dotnet publish $setupProject `
     -c $Configuration `
     -r win-x64 `
     --self-contained true `
     --nologo `
     -p:Version=$($versionInfo.SemanticVersion) `
     -p:FileVersion=$($versionInfo.FileVersion) `
-    -o $checkerOutput
+    -p:PeggyIncludeRuntimeHelpers=false `
+    -o $setupOutput
 if ($LASTEXITCODE -ne 0) {
-    throw "Peggy prerequisite checker publish failed (exit $LASTEXITCODE)."
+    throw "Peggy unified setup publish failed (exit $LASTEXITCODE)."
 }
-$checkerPath = Join-Path $checkerOutput 'peggy-prerequisite-check.exe'
-if (-not (Test-Path -LiteralPath $checkerPath -PathType Leaf)) {
-    throw 'The Peggy prerequisite checker was not produced.'
+$setupPath = Join-Path $setupOutput 'peggy-setup.exe'
+if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) {
+    throw 'The Peggy unified setup executable was not produced.'
 }
+$setupScripts = Join-Path $setupOutput 'scripts'
+New-Item -ItemType Directory -Path $setupScripts -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Install-SpeechModels.ps1') `
+    -Destination $setupScripts -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'THIRD-PARTY-NOTICES.txt') `
+    -Destination $setupOutput -Force
+$setupSource = Join-Path $buildRoot 'Peggy.Setup.generated.wxs'
+& (Join-Path $PSScriptRoot 'New-PeggyBootstrapperPayload.ps1') `
+    -PayloadDirectory $setupOutput -OutputPath $setupSource
 
 $bundleProject = Join-Path $repoRoot 'installer\Peggy.Bundle.wixproj'
 $bundleArguments = @(
@@ -81,7 +91,8 @@ $bundleArguments = @(
     "-p:ProductCode=$($versionInfo.ProductCode)",
     "-p:SemanticVersion=$($versionInfo.SemanticVersion)",
     "-p:MsiPath=$resolvedMsi",
-    "-p:PrerequisiteCheckerPath=$checkerPath",
+    "-p:BootstrapperPath=$setupPath",
+    "-p:BootstrapperPayloadsPath=$setupSource",
     "-p:IconPath=$resolvedIcon",
     "-p:BaseIntermediateOutputPath=$bundleIntermediate\",
     '-o', $bundleOutput
