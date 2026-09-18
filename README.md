@@ -12,22 +12,57 @@ remain in a separate local process.
 > **Current platform:** Windows x64, .NET 10, standalone Microsoft WorkIQ, and the
 > GitHub Copilot CLI.
 
+## Get started
+
+1. **Check access and prerequisites.** You need Windows x64, GitHub Copilot
+   access, and a Microsoft 365 work account with a Work IQ usage-based billing
+   plan and tenant administrator consent. The installer checks PowerShell 7,
+   Node.js 18 or later with npm, and GitHub Copilot CLI 1.0.81 or later. Release
+   packages are self-contained: no separate .NET SDK or runtime is needed.
+2. **Download and install Peggy.** Open the
+   [latest release](https://github.com/didiergbenou-ms/peggy/releases/latest)
+   with a GitHub account that can access this private repository. Download
+   `peggy-v0.1.12-win-x64-setup.exe` (or the corresponding filename for your
+   chosen release), then run it. Its prerequisite checklist offers explicit
+   install/update actions. Packages are **not Authenticode-signed**; Windows
+   SmartScreen may warn about an unknown publisher. Follow your organization's
+   policy rather than bypassing a managed block.
+3. **[Complete Peggy setup](#first-run-setup).** Peggy starts after an interactive
+   install. Check GitHub Copilot access, install standalone WorkIQ if needed,
+   review its EULA, and sign in with the Microsoft 365 account Peggy should use.
+   Confirm **Account verified** and **Mail access ready**. Voice models are optional.
+4. **Choose when and what to check.** Fresh installs monitor **Inbox only** and
+   **Chats only**, every **5 minutes**, during **07:00–19:00 local time**.
+   In **Settings → Monitoring behavior → Check Outlook and Teams every
+   (minutes)**, choose **1–60 whole minutes** and select **Save**. The interval
+   applies to both enabled sources without restarting; shorter intervals make
+   more WorkIQ requests. Wake/sleep hours are separate settings.
+5. **Try a check.** Right-click Peggy or the tray icon and select **Check now**;
+   open **Open alerts** to review results. Source links open the relevant
+   Outlook or Teams item. Monitoring does not write to Microsoft 365.
+
+Need another installation method or more detail? See
+[Installation and setup](#installation-and-setup),
+[Prerequisites](#prerequisites), and [Using Peggy](#using-peggy).
+Developers can skip to [Build from source and publish](#build-from-source-and-publish).
+
 ![Animated Peggy stands at the right edge above a Windows taskbar while cycling through Idle, Listening, Thinking, New Digest, Sleeping, and Waking](docs/images/peggy-hi.gif)
 
 ## Contents
 
+- [Get started](#get-started)
 - [Highlights](#highlights)
 - [Architecture](#architecture)
 - [Monitoring behavior](#monitoring-behavior)
 - [Privacy](#privacy)
 - [Safety model](#safety-model)
 - [Prerequisites](#prerequisites)
-- [Quick start](#quick-start)
+- [Installation and setup](#installation-and-setup)
 - [Using Peggy](#using-peggy)
 - [Settings](#settings)
 - [Supported actions](#supported-actions)
 - [Local speech](#local-speech)
-- [Build and publish](#build-and-publish)
+- [Build from source and publish](#build-from-source-and-publish)
 - [Testing](#testing)
 - [Configuration reference](#configuration-reference)
 - [MCP tools](#mcp-tools)
@@ -48,8 +83,8 @@ remain in a separate local process.
   Attention, and Awareness alerts.
 - Opens alerts in the exact Outlook or Teams source when a verified link is
   available.
-- Supports All, Selected only, and Off Teams monitoring scopes, with durable
-  whole-team and individual-channel selections.
+- Offers five Outlook modes and five Teams modes, from Inbox/chats only to
+  selected folders/channels, broader discovery, or Off, with durable selections.
 - Provides a warmed, persistent Copilot conversation with streamed responses.
 - Runs English speech recognition and synthesis locally with sherpa-onnx.
 - Requires an exact action preview and explicit approval before every write.
@@ -106,7 +141,9 @@ whose owning process has exited.
 - The default awake window is **07:00-19:00 local time**.
 - Outside that window Peggy sleeps and automatic checks pause.
 - **Check now** and **Talk to Peggy** remain available while sleeping.
-- Waking or restarting establishes a new five-minute lookback.
+- Waking or restarting establishes a new five-minute lookback, independent of
+  the configured polling interval. Older profiles without an interval use
+  the five-minute default.
 - Normal monitoring uses persisted batches of at most 20 items. Consecutive
   failures reduce retries to 10, 5, and then 1 item so one problematic item can
   be isolated without silently advancing the source cursor.
@@ -181,11 +218,11 @@ a specific `/l/message/` item rather than only a generic chat.
 ### Teams channels
 
 - Broad Teams discovery uses structured WorkIQ search for the current monitoring
-  window and discovers messages by sent time only in the All scope.
+  window and discovers messages by sent time only in **All Teams activity**.
 - Search results must contain a compatible exact Teams message link before
   Peggy creates an alert.
 - Selected channels use structured Graph delta scans and include edits to older
-  messages. Selected-only mode bypasses broad search entirely.
+  messages. **Selected channels only** bypasses broad search entirely.
 - Selecting an entire team includes all accessible current and future channels.
   Individual channels can be excluded, and the team catalog refreshes every
   30 minutes.
@@ -347,9 +384,10 @@ Peggy opens or persists them.
 5. A **Work IQ usage-based billing plan** with the user assigned.
 6. **Administrative consent** for the Work IQ application in the Microsoft
    Entra tenant.
-7. `curl.exe` and `tar.exe` only for the optional speech-model installer.
-8. **Classic Outlook desktop** for Microsoft To Do task reads and actions.
-9. A microphone and audio output device for voice features.
+7. **PowerShell 7** for the release installer prerequisites.
+8. `curl.exe` and `tar.exe` only for the optional speech-model installer.
+9. **Classic Outlook desktop** for Microsoft To Do task reads and actions.
+10. A microphone and audio output device for voice features.
 
 See the official
 [Microsoft Work IQ CLI documentation](https://learn.microsoft.com/microsoft-365/copilot/extensibility/work-iq/cli)
@@ -361,34 +399,38 @@ Peggy resolves standalone WorkIQ in this order:
 2. `workiq.exe` or the global npm wrapper on `PATH`.
 3. `%APPDATA%\npm\node_modules\@microsoft\workiq\bin\win-x64\workiq.exe`.
 
-## Quick start
+## Installation and setup
 
 ### Install from a GitHub Release
 
 The
 [latest GitHub Release](https://github.com/didiergbenou-ms/peggy/releases/latest)
 offers three current-user installation paths. All download filenames include
-the release tag; the examples below use `v0.1.11` (substitute your chosen release):
+the release tag; the examples below use `v0.1.12` (substitute your chosen release):
 
-1. **`peggy-v0.1.11-win-x64-setup.exe` (recommended)** opens a prerequisite checklist
+1. **`peggy-v0.1.12-win-x64-setup.exe` (recommended)** opens a prerequisite checklist
    for PowerShell 7, Node.js 18 with npm, and GitHub Copilot CLI 1.0.81 or later
    before installing the embedded MSI. Each requirement shows its status,
    version and technical details, with a per-step running indicator, **Retry** and explicit WinGet
    **Install/Update/Repair** actions. Vendor consent and elevation remain
    visible; dependencies are never installed silently. If WinGet is unavailable,
    use the offered official download links or
-   `peggy-v0.1.11-install.ps1 -InstallPrerequisites`.
-2. **`peggy-v0.1.11-win-x64.msi`** runs the same prerequisite check and installs
+   `peggy-v0.1.12-install.ps1 -InstallPrerequisites`.
+2. **`peggy-v0.1.12-win-x64.msi`** runs the same prerequisite check and installs
    Peggy directly when all requirements are available.
-3. **`peggy-v0.1.11-install.ps1`** retains the existing checksum-verified ZIP path, optional
+3. **`peggy-v0.1.12-install.ps1`** retains the existing checksum-verified ZIP path, optional
    WinGet prerequisite installation, and optional speech-model download.
 
 The bootstrapper and MSI install x64 Peggy per user at
 `%LOCALAPPDATA%\Programs\Peggy`, register it in Installed Apps, and create the
 Peggy Start menu shortcut. WorkIQ installation, EULA acceptance, and Microsoft
 365 sign-in remain explicit first-run actions. The MSI and bootstrapper do not
-download the optional speech models; run the packaged
-`scripts\Install-SpeechModels.ps1` if voice is wanted.
+download the optional speech models; select **Install voice models** during
+setup or in Settings if voice is wanted.
+
+Release packages are checksum-verified but **not Authenticode-signed**.
+SmartScreen may show an unknown-publisher warning; this release does not remove
+that warning.
 
 Successful full-UI installation or upgrade starts Peggy automatically in the
 signed-in user's desktop session. Quiet/passive installs, maintenance,
@@ -403,26 +445,31 @@ version. Settings, monitoring selections, saved account preference, and download
 speech models are preserved. Re-running the same release is maintenance, not an
 upgrade, and does not automatically launch Peggy.
 
+**Rollback limitation:** a non-elevated Windows Installer rollback can restore
+the previous files without restoring the previous product's fully installed
+registration. Do not treat file restoration alone as a successful rollback;
+retain the installer logs and seek support if an upgrade fails.
+
 Interactive installation:
 
 ```powershell
-.\peggy-v0.1.11-win-x64-setup.exe
+.\peggy-v0.1.12-win-x64-setup.exe
 # Or:
-msiexec.exe /i .\peggy-v0.1.11-win-x64.msi
+msiexec.exe /i .\peggy-v0.1.12-win-x64.msi
 ```
 
 Unattended installation:
 
 ```powershell
-.\peggy-v0.1.11-win-x64-setup.exe /quiet /norestart
+.\peggy-v0.1.12-win-x64-setup.exe /quiet /norestart
 # Or:
-msiexec.exe /i .\peggy-v0.1.11-win-x64.msi /qn /norestart
+msiexec.exe /i .\peggy-v0.1.12-win-x64.msi /qn /norestart
 ```
 
-For the script path, download `peggy-v0.1.11-install.ps1`, then run:
+For the script path, download `peggy-v0.1.12-install.ps1`, then run:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\peggy-v0.1.11-install.ps1 `
+powershell.exe -ExecutionPolicy Bypass -File .\peggy-v0.1.12-install.ps1 `
     -InstallPrerequisites
 ```
 
@@ -444,7 +491,7 @@ Add `-SkipSpeechModels` to install without the local voice models, or
 `-NoLaunch` to install without starting Peggy. The former
 `-InstallSpeechModels` switch remains accepted for compatibility. Use
 `-Version <release-tag>` to install a specific published release (for example,
-`-Version v0.1.11`). The script still defaults to the latest stable release,
+`-Version v0.1.12`). The script still defaults to the latest stable release,
 regardless of its own filename. It selects the ZIP and checksum together from
 the resolved release, including authenticated GitHub CLI retries. Older tags
 with the legacy `peggy-win-x64.zip` / `peggy-win-x64.sha256` pair remain supported;
@@ -458,9 +505,9 @@ the token.
 The package and checksum can also be downloaded manually:
 
 ```powershell
-.\peggy-v0.1.11-install.ps1 `
-    -PackagePath .\peggy-v0.1.11-win-x64.zip `
-    -ChecksumPath .\peggy-v0.1.11-win-x64.sha256
+.\peggy-v0.1.12-install.ps1 `
+    -PackagePath .\peggy-v0.1.12-win-x64.zip `
+    -ChecksumPath .\peggy-v0.1.12-win-x64.sha256
 ```
 
 When `-ChecksumPath` is omitted, the script uses the ZIP's basename with a
@@ -473,9 +520,9 @@ directories are unchanged.
 Use **Installed Apps**, or use the same package type unattended:
 
 ```powershell
-.\peggy-v0.1.11-win-x64-setup.exe /uninstall /quiet /norestart
+.\peggy-v0.1.12-win-x64-setup.exe /uninstall /quiet /norestart
 # Direct MSI installation:
-msiexec.exe /x .\peggy-v0.1.11-win-x64.msi /qn /norestart
+msiexec.exe /x .\peggy-v0.1.12-win-x64.msi /qn /norestart
 ```
 
 Normal MSI/bootstrapper uninstall removes application files, the Start menu
@@ -507,51 +554,10 @@ powershell.exe -ExecutionPolicy Bypass -File `
 Use `-WhatIf` to preview the cleanup. Shared prerequisites such as PowerShell 7,
 Node.js, GitHub Copilot CLI, and WorkIQ are not removed. An uninstaller run from
 a custom installation directory detects that directory automatically; a
-standalone release copy (`peggy-v0.1.11-uninstall.ps1`) can target it with
+standalone release copy (`peggy-v0.1.12-uninstall.ps1`) can target it with
 `-InstallDirectory`.
 
-### Build from source
-
-Open PowerShell in the repository root.
-
-#### 1. Install standalone WorkIQ
-
-Peggy can run this installation from its first-run window. To install it
-yourself:
-
-```powershell
-npm install -g @microsoft/workiq
-workiq version
-```
-
-#### 2. Install local speech models
-
-```powershell
-.\scripts\Install-SpeechModels.ps1
-```
-
-The installer downloads about 803 MiB of pinned official sherpa-onnx assets,
-verifies every SHA-256 digest, and installs them under:
-
-```text
-%LOCALAPPDATA%\Peggy\models
-```
-
-Voice is optional. The GitHub Release installer includes these models by
-default; use `-SkipSpeechModels` to omit them. Source builds can run without
-the models by disabling local speech in Settings.
-
-#### 3. Build and run
-
-```powershell
-dotnet restore .\src\Peggy.Tray\Peggy.Tray.csproj
-dotnet run --project .\src\Peggy.Tray\Peggy.Tray.csproj -c Release
-```
-
-The tray project automatically builds and packages the MCP server and speech
-host beside the tray executable.
-
-#### 4. Complete Peggy setup
+### First-run setup
 
 On first launch, Peggy opens **Peggy setup**:
 
@@ -611,24 +617,6 @@ automatically only when the installed WorkIQ build exactly matches the build
 whose EULA was accepted. A WorkIQ update requires the user to review and accept
 the current EULA again through **Change or reconnect**.
 
-### 5. Add the optional speech-host firewall rule
-
-From an elevated PowerShell window:
-
-```powershell
-.\scripts\Protect-SpeechHost.ps1
-```
-
-The script finds the newest standard, RID-specific, or publish Release host and
-replaces the named outbound-block rule. If Peggy is installed elsewhere:
-
-```powershell
-.\scripts\Protect-SpeechHost.ps1 `
-    -HostPath "C:\Apps\Peggy\Peggy.Speech.Host\peggy-speech-host.exe"
-```
-
-Rerun the script if the executable moves.
-
 ## Using Peggy
 
 Peggy runs as a single-instance tray application. Right-clicking either the
@@ -636,7 +624,7 @@ tray icon or the desktop mascot opens the same menu. Double-clicking the tray
 icon opens the Alert Center.
 
 The Alerts header shows the semantic release version beside Peggy. **Help →
-About** shows the same version (for example, `v0.1.11`) and lets you copy it.
+About** shows the same version (for example, `v0.1.12`) and lets you copy it.
 
 ### Tray menu
 
@@ -707,7 +695,7 @@ not leave a partially applied identity, model, or source scope.
 | CPU threads | 1, 2, 4, or 8 |
 | Microphone gain | 4x, 8x, 12x, or 16x |
 | Monitoring schedule | Local 24-hour wake and sleep times |
-| Monitoring interval | 1–60 whole minutes, default 5; applies to Outlook and Teams and is retained across restarts and account changes |
+| Check Outlook and Teams every (minutes) | 1–60 whole minutes, default 5; applies to both enabled sources on Save without restarting and is retained across restarts and account changes |
 | Start at Windows sign-in | Manages the current user's `Run` registry entry |
 | Pause monitoring | Persists a manual pause independently of scheduled sleep |
 | Teams monitoring scope | Chats only, Chats + selected channels, Selected channels only, All Teams activity, or Off |
@@ -775,8 +763,9 @@ The speech host:
 
 ### Reinstalling incomplete models
 
-The installer refuses to treat a partial model directory as complete. Repair it
-with:
+The installer refuses to treat a partial model directory as complete. Use
+**Settings → Local voice (English only) → Install voice models** to repair it.
+From a source checkout, you can also run:
 
 ```powershell
 .\scripts\Install-SpeechModels.ps1 -Force
@@ -791,10 +780,63 @@ To install in another directory:
 
 Then select that directory in Settings or set `PEGGY_SPEECH_MODELS`.
 
-## Build and publish
+## Build from source and publish
+
+These instructions require a source checkout and the **.NET 10 SDK**. To use
+Peggy without building it, follow [Get started](#get-started) instead.
 
 Exit a running Peggy instance before rebuilding so loaded assemblies are not
 locked.
+
+### Build and run
+
+Open PowerShell in the repository root. Peggy can install standalone WorkIQ
+from its first-run window, or you can install it yourself:
+
+```powershell
+npm install -g @microsoft/workiq
+workiq version
+```
+
+For optional local voice, install the models:
+
+```powershell
+.\scripts\Install-SpeechModels.ps1
+```
+
+The installer downloads about 803 MiB of pinned official sherpa-onnx assets,
+verifies every SHA-256 digest, and installs them under
+`%LOCALAPPDATA%\Peggy\models`. Source builds can run without the models by
+disabling local speech in Settings. The release PowerShell installer downloads
+them by default (`-SkipSpeechModels` opts out); the MSI/bootstrapper does not.
+
+Build and launch:
+
+```powershell
+dotnet restore .\src\Peggy.Tray\Peggy.Tray.csproj
+dotnet run --project .\src\Peggy.Tray\Peggy.Tray.csproj -c Release
+```
+
+The tray project automatically builds and packages the MCP server and speech
+host beside the tray executable. Continue with [First-run setup](#first-run-setup).
+
+### Optional speech-host firewall rule
+
+From an elevated PowerShell window in the source checkout:
+
+```powershell
+.\scripts\Protect-SpeechHost.ps1
+```
+
+The script finds the newest standard, RID-specific, or publish Release host and
+replaces the named outbound-block rule. If Peggy is installed elsewhere:
+
+```powershell
+.\scripts\Protect-SpeechHost.ps1 `
+    -HostPath "C:\Apps\Peggy\Peggy.Speech.Host\peggy-speech-host.exe"
+```
+
+Rerun the script if the executable moves.
 
 ### Development build
 
@@ -870,16 +912,16 @@ git push origin v0.1.0
 The release workflow runs the regression suite, builds with pinned WiX Toolset
 6.0.2 packages, performs MSI database and administrative-image validation, and
 requires isolated in-place upgrade and rollback regressions before publishing
-eight versioned assets (shown for `v0.1.11`):
+eight versioned assets (shown for `v0.1.12`):
 
-- `peggy-v0.1.11-win-x64.zip`, a self-contained package for Windows x64.
-- `peggy-v0.1.11-win-x64.sha256`, the package checksum used by `install.ps1`.
-- `peggy-v0.1.11-win-x64.msi` and `peggy-v0.1.11-win-x64.msi.sha256`, the per-user MSI and its
+- `peggy-v0.1.12-win-x64.zip`, a self-contained package for Windows x64.
+- `peggy-v0.1.12-win-x64.sha256`, the package checksum used by `install.ps1`.
+- `peggy-v0.1.12-win-x64.msi` and `peggy-v0.1.12-win-x64.msi.sha256`, the per-user MSI and its
   checksum.
-- `peggy-v0.1.11-win-x64-setup.exe` and `peggy-v0.1.11-win-x64-setup.exe.sha256`, the WiX Burn
+- `peggy-v0.1.12-win-x64-setup.exe` and `peggy-v0.1.12-win-x64-setup.exe.sha256`, the WiX Burn
   prerequisite-checking bootstrapper and its checksum.
-- `peggy-v0.1.11-install.ps1`, the current-user bootstrap installer.
-- `peggy-v0.1.11-uninstall.ps1`, the current-user uninstaller.
+- `peggy-v0.1.12-install.ps1`, the current-user bootstrap installer.
+- `peggy-v0.1.12-uninstall.ps1`, the current-user uninstaller.
 
 There are no unversioned release aliases. Prerelease suffixes are retained in
 every asset name (for example, `peggy-v1.2.3-beta.2-win-x64.zip`). Checksum files
@@ -907,6 +949,8 @@ the mapped MSI version followed by `.0`. This applies to the tray, Core, MCP,
 speech host, and installer helpers, including nested publish outputs.
 For example, `v0.1.11-beta.1` uses MSI `0.1.1130` and file version
 `0.1.1130.0`; beta.2 uses `0.1.1131.0`, and stable uses `0.1.1199.0`.
+For `v0.1.12`, MSI uses `0.1.1299` and binaries use `0.1.1299.0`; the
+Alerts header and About dialog still display the semantic version `v0.1.12`.
 Semantic prerelease labels alone do not change .NET's default file version.
 
 WiX ICE custom actions can be blocked by policy in non-elevated build
@@ -926,9 +970,11 @@ identities, directories, registry entries, and shortcuts. Executable custom acti
 become inert markers so the regression cannot launch Peggy or use real account
 data. It checks exact installed hashes, product replacement, unchanged test
 settings/model/account sentinels, same-version maintenance, and a forced-failure
-rollback to the previous payload and registration. CI uses the checksum-verified
-`v0.1.10` and `v0.1.11-beta.1` MSIs as pinned baselines. Restart Manager, real application startup,
-and interactive authentication are outside this isolated regression.
+rollback to the previous payload and registration. CI uses three checksum-verified
+pinned baselines: the legacy-named `v0.1.10` and `v0.1.11-beta.1` MSIs, and the
+versioned `v0.1.11` MSI. Every baseline must pass the strict upgrade and rollback
+checks. Restart Manager, real application startup, and interactive authentication
+are outside this isolated regression.
 Restoring files without restoring the previous product's fully installed
 registration is a failure, not a successful rollback; failure logs and fixture
 recovery information are retained for diagnosis.
@@ -1163,23 +1209,23 @@ or sending email.
 
 ### Collect a diagnostic ZIP
 
-The repository is private, so the affected Windows user must authenticate to
-GitHub with an account that has access, clone the repository, and run the
-detailed collector from that clone:
+Use **Help → Troubleshooting → Create diagnostic ZIP** for the packaged
+read-only collector. To run it directly without offering to send email:
 
 ```powershell
-git clone --depth 1 https://github.com/didiergbenou-ms/peggy.git
-Set-Location .\peggy\scripts
-.\Collect-PeggyDiagnostics.ps1 -RunConnectivityTests
+powershell.exe -ExecutionPolicy Bypass -File `
+    "$env:LOCALAPPDATA\Programs\Peggy\scripts\Collect-PeggyDiagnostics.ps1" `
+    -RunConnectivityTests -NoEmail
 ```
 
-The script creates `Peggy-Diagnostics-<timestamp>.zip` on the user's Desktop,
-then displays the exact recipient and asks the user to type `SEND` before
-emailing it to `didiergbenou@microsoft.com` through their configured classic
-Outlook profile.
+For a custom installation, adjust the installation path. Developers with a
+source checkout can run `.\scripts\Collect-PeggyDiagnostics.ps1` instead;
+installed users do not need source-repository access.
 
-Use `-NoEmail` to create the ZIP without offering to send it. For approved
-automation, use `-SendWithoutPrompt`; `-EmailTo` can override the recipient.
+The script creates `Peggy-Diagnostics-<timestamp>.zip` on the user's Desktop.
+Without `-NoEmail`, it displays the configured support recipient and asks the
+user to type `SEND` before emailing the ZIP through classic Outlook.
+For approved automation, use `-SendWithoutPrompt`; `-EmailTo` can override the recipient.
 Use `-WorkIqAccount` only when Peggy's encrypted state cannot supply its pinned
 Microsoft 365 account.
 If Outlook cannot send the message, the ZIP remains on the Desktop for manual
@@ -1218,13 +1264,14 @@ team.
 | Build reports a locked Peggy assembly | Use **Quit Peggy**, then rebuild |
 | Settings are overridden | Remove the corresponding process environment override, especially `PEGGY_COPILOT_MODEL` |
 | Need isolated test state | Set `PEGGY_STATE_PATH` to a new file before launch |
-| Need diagnostics | Select **Create diagnostic ZIP** in the troubleshooter, or clone the repository and run the collector above; for a quick check, inspect `%TEMP%\peggy.log` or the path in `PEGGY_LOG_PATH` |
+| Need diagnostics | Select **Create diagnostic ZIP** in the troubleshooter or run the packaged collector above; for a quick check, inspect `%TEMP%\peggy.log` or the path in `PEGGY_LOG_PATH` |
 
 ## Current limitations
 
 - Windows x64 only.
 - English-only local speech.
-- Framework-dependent publish by default.
+- Source publishes are framework-dependent by default; release downloads are
+  self-contained.
 - Microsoft To Do actions target only the default `Tasks` list.
 - Monitoring is polling-based, not real-time.
 - The All Teams activity scope depends on the freshness and availability of
