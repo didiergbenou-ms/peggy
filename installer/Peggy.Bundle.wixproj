@@ -11,18 +11,13 @@
       ProductCode=$(ProductCode);
       SemanticVersion=$(SemanticVersion);
       MsiPath=$(MsiPath);
-      PrerequisiteCheckerPath=$(PrerequisiteCheckerPath);
+      BootstrapperPath=$(BootstrapperPath);
       IconPath=$(IconPath)
     </DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Include="Bundle.wxs" />
-    <PackageReference
-        Include="WixToolset.BootstrapperApplications.wixext"
-        Version="6.0.2" />
-    <PackageReference
-        Include="WixToolset.Util.wixext"
-        Version="6.0.2" />
+    <Compile Include="$(BootstrapperPayloadsPath)" />
   </ItemGroup>
 </Project>

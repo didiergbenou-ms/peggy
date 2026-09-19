@@ -1574,6 +1574,8 @@ public partial class App : Application
         bool refreshRuntime)
     {
         ArgumentNullException.ThrowIfNull(identity);
+        if (!refreshRuntime)
+            return await WorkIqSetupCompletion.ApplyIdentityAsync(_state, identity, _shutdown.Token);
         var principalChanged =
             !string.IsNullOrWhiteSpace(_state.State.PinnedAccount) &&
             !WorkIqSetupService.RepresentsSameAccount(
@@ -1603,28 +1605,6 @@ public partial class App : Application
                 identity.EulaAcceptedVersion,
                 _shutdown.Token);
             return false;
-        }
-
-        if (!refreshRuntime)
-        {
-            var replacementSessionId = Guid.NewGuid().ToString();
-            if (principalChanged)
-            {
-                await _state.SwitchWorkIqIdentityAsync(
-                    identity,
-                    replacementSessionId,
-                    DateTimeOffset.UtcNow,
-                    _shutdown.Token);
-            }
-            else
-            {
-                await _state.RebindWorkIqIdentityAsync(
-                    identity,
-                    replacementSessionId,
-                    DateTimeOffset.UtcNow,
-                    _shutdown.Token);
-            }
-            return principalChanged;
         }
 
         if (!_accountSwitching)

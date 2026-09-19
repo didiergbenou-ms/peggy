@@ -35,6 +35,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           .\scripts\Test-PeggyReleaseAssets.ps1
+          .\scripts\Test-PeggyBootstrapperPayload.ps1
           .\scripts\Build-WindowsRelease.ps1 `
             -Version $env:TAG `
             -OutputDirectory $env:RUNNER_TEMP `
@@ -77,6 +78,9 @@ jobs:
             -Version $env:TAG `
             -ArtifactDirectory $env:RUNNER_TEMP `
             -SkipPrerequisiteExecution
+          .\scripts\Test-PeggyUnifiedSetupLayout.ps1 `
+            -Version $env:TAG `
+            -ArtifactDirectory $env:RUNNER_TEMP
 
       - name: Regress real in-place MSI upgrade and rollback
         shell: pwsh
@@ -94,7 +98,9 @@ jobs:
           $baselines = @(
             @{ Tag = "v0.1.10"; Bundle = "peggy-win-x64-setup.exe" },
             @{ Tag = "v0.1.11-beta.1"; Bundle = "peggy-win-x64-setup.exe" },
-            @{ Tag = "v0.1.11"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.11").AssetNames.Bundle }
+            @{ Tag = "v0.1.11"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.11").AssetNames.Bundle },
+            @{ Tag = "v0.1.12"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.12").AssetNames.Bundle },
+            @{ Tag = "v0.1.13-beta.1"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.13-beta.1").AssetNames.Bundle }
           )
           foreach ($baselineRelease in $baselines) {
             $baselineTag = $baselineRelease.Tag

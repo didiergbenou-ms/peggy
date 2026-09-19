@@ -28,7 +28,8 @@ $bundlePath = Join-Path $artifactRoot $assetNames.Bundle
 $checkerPath = Join-Path (
     Join-Path $artifactRoot 'build\prerequisite-check'
 ) 'peggy-prerequisite-check.exe'
-foreach ($path in @($publishRoot, $zipPath, $msiPath, $bundlePath)) {
+$setupRoot = Join-Path $artifactRoot 'build\setup-bootstrapper'
+foreach ($path in @($publishRoot, $zipPath, $msiPath, $bundlePath, $setupRoot)) {
     if (-not (Test-Path -LiteralPath $path)) {
         throw "Installer validation input '$path' does not exist."
     }
@@ -705,50 +706,53 @@ try {
                 $msiHash
         }).Count -eq 1) `
         'Burn does not embed the exact validated MSI.'
-    $embeddedCheckers = @($embeddedPayloads | Where-Object {
-            $_.VersionInfo.ProductName -eq 'peggy-prerequisite-check'
-        })
-    Assert-Installer `
-        ($embeddedCheckers.Count -ge 1 -and $embeddedCheckers.Count -le 2) `
-        'Burn must embed the prerequisite/launch helper payloads.'
-    $checkerHashes = @($embeddedCheckers | ForEach-Object {
-        (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
-    } | Select-Object -Unique)
-    Assert-Installer ($checkerHashes.Count -eq 1) `
-        'Prerequisite and launch packages must use the same helper implementation.'
-
     [xml]$bundleManifest = Get-Content -LiteralPath (Join-Path $bundleBaRoot 'manifest.xml') -Raw
     $ns = [Xml.XmlNamespaceManager]::new($bundleManifest.NameTable)
     $ns.AddNamespace('w', 'http://wixtoolset.org/schemas/v4/2008/Burn')
     $chain = $bundleManifest.SelectSingleNode('//w:Chain', $ns)
     $packages = @($chain.ChildNodes | Where-Object { $_.NodeType -eq 'Element' })
     Assert-Installer `
-        ($packages.Count -eq 3 -and $packages[0].Id -eq 'PeggyPrerequisiteCheck' -and
-            $packages[1].Id -eq 'PeggyMsi' -and $packages[2].Id -eq 'LaunchPeggy') `
-        'Prerequisite UI must run before MSI and auto-launch exactly once after it.'
-    Assert-Installer `
-        ($packages[0].InstallArguments -eq '--bundle --display [WixBundleUILevel]' -and
-            $packages[0].RepairArguments -eq '--bundle --display [WixBundleUILevel]' -and
+        ($packages.Count -eq 1 -and $packages[0].Id -eq 'PeggyMsi' -and
+            $packages[0].LocalName -eq 'MsiPackage' -and
             $packages[0].PerMachine -eq 'no' -and $packages[0].Vital -eq 'yes') `
-        'Burn must pass the real display level to its current-user prerequisite helper.'
+        'The unified setup chain must contain only the per-user Peggy MSI, with no separate prerequisite or launch UI packages.'
     Assert-Installer `
-        ($packages[2].InstallCondition -eq (
-            'WixBundleUILevel = 4 AND WixBundleAction = 6 AND NOT WixBundleInstalled AND PeggyCurrentMsiState <> 5'
-        ) -and $packages[2].PerMachine -eq 'no' -and $packages[2].Vital -eq 'no' -and
-            $packages[2].Repairable -eq 'no' -and
-            $packages[2].Permanent -eq 'yes') `
-        'Burn launch must be non-fatal, full-UI new-install only, and unavailable during repair/uninstall.'
+        ($null -ne $packages[0].SelectSingleNode('w:MsiProperty[@Id="PEGGY_BUNDLE" and @Value="1"]', $ns)) `
+        'The single-window bootstrapper must suppress MSI auto-launch.'
+
+    foreach ($required in @(
+            'peggy-setup.exe', 'peggy-setup.dll', 'peggy-setup.deps.json',
+            'peggy-setup.runtimeconfig.json', 'peggy-tray.dll', 'Peggy.Core.dll',
+            'hostfxr.dll', 'hostpolicy.dll', 'coreclr.dll',
+            'WixToolset.BootstrapperApplicationApi.dll', 'mbanative.dll',
+            'scripts\Install-SpeechModels.ps1', 'THIRD-PARTY-NOTICES.txt'
+        )) {
+        Assert-Installer `
+            (Test-Path -LiteralPath (Join-Path $setupRoot $required) -PathType Leaf) `
+            "The self-contained setup build is missing '$required'."
+    }
+    $setupFiles = @(Get-ChildItem -LiteralPath $setupRoot -File -Recurse)
+    foreach ($file in $setupFiles) {
+        $relative = [IO.Path]::GetRelativePath($setupRoot, $file.FullName)
+        $extracted = Join-Path $bundleBaRoot $relative
+        Assert-Installer (Test-Path -LiteralPath $extracted -PathType Leaf) `
+            "Burn's bootstrapper container is missing '$relative'."
+        Assert-Installer `
+            ((Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash -eq
+                (Get-FileHash -LiteralPath $extracted -Algorithm SHA256).Hash) `
+            "Burn's bootstrapper container changed '$relative'."
+        if ($file.Name -match $binaryNamePattern) {
+            Assert-Installer ($file.VersionInfo.FileVersion -eq $versionInfo.FileVersion) `
+                "Setup binary '$relative' does not have FileVersion $($versionInfo.FileVersion)."
+        }
+    }
+    $runtimeConfig = Get-Content -LiteralPath (
+        Join-Path $setupRoot 'peggy-setup.runtimeconfig.json') -Raw | ConvertFrom-Json
     Assert-Installer `
-        ($null -ne $packages[1].SelectSingleNode('w:MsiProperty[@Id="PEGGY_BUNDLE" and @Value="1"]', $ns) -and
-            $null -ne $bundleManifest.SelectSingleNode(
-                '//w:MsiProductSearch[@Variable="PeggyCurrentMsiState" and @Type="state"]', $ns)) `
-        'Burn must suppress MSI auto-launch and detect already-installed product maintenance.'
-    Assert-Installer `
-        ($packages[2].InstallArguments -eq (
-            '--launch-bundle --display [WixBundleUILevel] --action [WixBundleAction] --target ' +
-            '"[LocalAppDataFolder]Programs\Peggy\peggy-tray.exe"'
-        ) -and $packages[2].CacheId -ne $packages[0].CacheId) `
-        'The launch helper needs explicit full-UI intent and its own package cache identity.'
+        (@($runtimeConfig.runtimeOptions.includedFrameworks | Where-Object {
+            $_.name -eq 'Microsoft.WindowsDesktop.App'
+        }).Count -eq 1) `
+        'The WPF setup host must include its runtime rather than require .NET on a new machine.'
 
     $bundleVersion = (Get-Item -LiteralPath $bundlePath).VersionInfo
     Assert-Installer `

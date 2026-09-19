@@ -13,5 +13,6 @@
     <ProjectReference Include="..\Peggy.Tray\Peggy.Tray.csproj" />
     <ProjectReference Include="..\..\installer\Peggy.PrerequisiteCheck\Peggy.PrerequisiteCheck.csproj" />
     <ProjectReference Include="..\..\installer\Peggy.UninstallCleanup\Peggy.UninstallCleanup.csproj" />
+    <ProjectReference Include="..\..\installer\Peggy.SetupBootstrapper\Peggy.SetupBootstrapper.csproj" Aliases="setup" />
   </ItemGroup>
 </Project>

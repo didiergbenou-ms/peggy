@@ -69,6 +69,8 @@
                 <TextBlock x:Name="CopilotCliStatus" Text="Not started — Copilot CLI" Style="{StaticResource SetupStatusStyle}"/>
               </DockPanel>
             </StackPanel>
+            <StackPanel x:Name="InstallerRequirements" Visibility="Collapsed"/>
+            <StackPanel x:Name="WorkIqLocalControls">
             <TextBlock Text="Standalone Microsoft WorkIQ" FontWeight="SemiBold"/>
             <DockPanel>
               <local:SetupStepIndicator x:Name="InstallationIndicator"/>
@@ -77,6 +79,18 @@
             <WrapPanel>
               <Button x:Name="RetryLocalButton" Content="Retry local checks" Click="RetryLocal_Click" Margin="0,0,10,0"/>
               <Button x:Name="InstallButton" Content="Install WorkIQ with npm" Click="Install_Click" IsEnabled="False"/>
+            </WrapPanel>
+            </StackPanel>
+          </StackPanel>
+        </GroupBox>
+        <GroupBox x:Name="InstallerGroup" Header="2. Install Peggy" Visibility="Collapsed" Margin="0,0,0,16">
+          <StackPanel>
+            <TextBlock x:Name="InstallerStatus" Text="Checking this PC..." Style="{StaticResource SetupStatusStyle}"/>
+            <ProgressBar x:Name="InstallerProgress" Minimum="0" Maximum="100" Height="6" Margin="0,0,0,10"/>
+            <WrapPanel>
+              <Button x:Name="InstallerRetryButton" Content="Retry requirements" Click="InstallerRetry_Click" Margin="0,0,10,0"/>
+              <Button x:Name="InstallerApplyButton" Content="Install Peggy" Click="InstallerApply_Click" IsEnabled="False"
+                      Style="{StaticResource PeggyPrimaryButtonStyle}"/>
             </WrapPanel>
           </StackPanel>
         </GroupBox>
@@ -113,7 +127,7 @@
             </WrapPanel>
           </StackPanel>
         </GroupBox>
-        <GroupBox Header="3. Microsoft 365 connection" Margin="0,0,0,16">
+        <GroupBox x:Name="MicrosoftConnectionGroup" Header="3. Microsoft 365 connection" Margin="0,0,0,16">
           <StackPanel>
             <StackPanel x:Name="AccountEditor">
               <Label Content="_Work email" Target="{Binding ElementName=AccountText}" Padding="0"/>
@@ -151,6 +165,12 @@
                         HorizontalAlignment="Left" Click="ChangeAccount_Click"/>
               </StackPanel>
             </Border>
+            <StackPanel x:Name="InstallerAccountSwitchConfirmation" Visibility="Collapsed">
+              <TextBlock Text="Switching accounts clears the previous account's local alerts, monitoring history, folder and team selections, conversation context, and action history. General settings are kept."
+                         Style="{StaticResource SetupStatusStyle}"/>
+              <CheckBox x:Name="ConfirmInstallerAccountSwitch" Content="I confirm switching Peggy to this verified account"
+                        Margin="0,0,0,12"/>
+            </StackPanel>
             <DockPanel>
               <local:SetupStepIndicator x:Name="MicrosoftSignInIndicator"/>
               <TextBlock x:Name="MicrosoftSignInStatus" Text="Not started — Microsoft sign-in"

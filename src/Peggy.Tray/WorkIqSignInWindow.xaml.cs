@@ -126,7 +126,7 @@ public partial class WorkIqSignInWindow : Window
     public bool VoiceModelsReady { get; private set; }
 
     internal bool CanFinish =>
-        !_busy && _candidateIdentity is not null &&
+        InstallerAllowsOnboarding && !_busy && _candidateIdentity is not null &&
         (!_requireMailAccess || _mailReady) &&
         _local?.WorkIq.IsReady == true &&
         string.Equals(_candidateIdentity.EulaAcceptedVersion,
@@ -366,6 +366,7 @@ public partial class WorkIqSignInWindow : Window
     private void ResetCandidate()
     {
         _candidateIdentity = null;
+        ConfirmInstallerAccountSwitch.IsChecked = false;
         _mailReady = false;
         ConnectedCard.Visibility = Visibility.Collapsed;
         AccountEditor.Visibility = Visibility.Visible;
@@ -381,6 +382,7 @@ public partial class WorkIqSignInWindow : Window
 
     private async void Finish_Click(object sender, RoutedEventArgs e)
     {
+        if (FinishInstallerWithoutOnboarding()) return;
         if (!CanFinish) return;
         await RunOperationAsync(async ct =>
         {
@@ -420,7 +422,13 @@ public partial class WorkIqSignInWindow : Window
                     "WorkIQ changed versions. Retry local checks and review the current EULA before signing in.");
             }
             SetStep(AccountVerifiedIndicator, AccountVerifiedStatus, SetupStepState.Succeeded, "Ready — Account verified");
-            if (IsDifferentAccount(candidate) &&
+            if (IsDifferentAccount(candidate) && _installer is not null &&
+                ConfirmInstallerAccountSwitch.IsChecked != true)
+            {
+                OperationStatus.Text = "Review and confirm the account switch above before choosing Finish.";
+                return;
+            }
+            if (IsDifferentAccount(candidate) && _installer is null &&
                 MessageBox.Show(this,
                     $"Switch Peggy from {_expectedAccount} to {candidate.Mail ?? candidate.Account}?\n\n" +
                     "Peggy will clear the current account's local alerts, monitoring history, selected " +
@@ -436,7 +444,14 @@ public partial class WorkIqSignInWindow : Window
             AuthenticatedMailbox = candidate.Mail;
             AcceptedEulaVersion = candidate.EulaAcceptedVersion;
             AuthenticatedIdentity = candidate;
-            DialogResult = true;
+            if (_installer is null) DialogResult = true;
+            else
+            {
+                await _installer.CompleteAsync(candidate, RevalidateVoiceModels(), ct);
+                _installer.Close(launch: true);
+                _installerFinished = true;
+                Close();
+            }
         }, "Confirming the verified account before finishing...", "Finish cancelled. Peggy's saved account has not changed.");
     }
 
@@ -551,12 +566,13 @@ public partial class WorkIqSignInWindow : Window
         SkipVoiceButton.IsEnabled = !_busy;
         FinishButton.IsEnabled = CanFinish;
         CancelButton.Content = _busy ? "Cancel operation" : "Cancel";
+        UpdateInstallerControls();
     }
 
     private async Task RunOperationAsync(
         Func<CancellationToken, Task> action, string status, string cancelled, bool hideFailureDetails = false)
     {
-        if (_busy || _closed) return;
+        if (_busy || _closed || !InstallerAllowsOnboarding) return;
         _busy = true;
         _operationGeneration++;
         _cancelledStatus = cancelled;
@@ -576,6 +592,7 @@ public partial class WorkIqSignInWindow : Window
         }
         catch (Exception ex) when (SetupReadinessService.IsExpectedFailure(ex))
         {
+            _installer?.ReportFailure(ex);
             if (!_closed)
             {
                 if (ex is WorkIqEulaChangedException)
@@ -798,6 +815,7 @@ public partial class WorkIqSignInWindow : Window
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
+        if (_installer is not null && HandleInstallerCancel()) return;
         if (_busy)
         {
             CancelActiveOperation();
