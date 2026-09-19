@@ -99,7 +99,8 @@ jobs:
             @{ Tag = "v0.1.10"; Bundle = "peggy-win-x64-setup.exe" },
             @{ Tag = "v0.1.11-beta.1"; Bundle = "peggy-win-x64-setup.exe" },
             @{ Tag = "v0.1.11"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.11").AssetNames.Bundle },
-            @{ Tag = "v0.1.12"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.12").AssetNames.Bundle }
+            @{ Tag = "v0.1.12"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.12").AssetNames.Bundle },
+            @{ Tag = "v0.1.13-beta.1"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.13-beta.1").AssetNames.Bundle }
           )
           foreach ($baselineRelease in $baselines) {
             $baselineTag = $baselineRelease.Tag
