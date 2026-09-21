@@ -502,14 +502,28 @@ static bool TryRenderUiSuite(string[] arguments)
             firstRun.Close();
 
             var bubble = new SpeechBubbleWindow();
+            var bubbleCenter = new AlertCenterWindow();
+            bubbleCenter.UpdateAlerts([alert], maskContent: false);
             bubble.Say(
-                "I found two items that may need your attention.",
+                alert.Summary,
                 new Point(420, 420),
-                seconds: 60);
-            PumpDispatcher(TimeSpan.FromMilliseconds(100));
+                seconds: 60,
+                onActivate: () =>
+                {
+                    bubbleCenter.ShowNearTaskbar();
+                    bubbleCenter.FocusAlert(alert.Id);
+                });
+            PumpDispatcher(TimeSpan.FromMilliseconds(350));
             SaveWindowContent(
                 bubble,
                 Path.Combine(directory, "speech-bubble.png"));
+            ((Button)bubble.FindName("BubbleBodyButton"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            PumpDispatcher(TimeSpan.FromMilliseconds(100));
+            SaveWindowContent(
+                bubbleCenter,
+                Path.Combine(directory, "bubble-opened-alert.png"));
+            bubbleCenter.Close();
             bubble.HideNow();
             bubble.Close();
             application.Shutdown();

@@ -5,7 +5,7 @@
         Background="Transparent" Topmost="True"
         ShowInTaskbar="False" ShowActivated="False"
         ResizeMode="NoResize" SizeToContent="WidthAndHeight"
-        IsHitTestVisible="False">
+        PreviewKeyDown="Bubble_KeyDown">
   <Window.Resources>
     <ResourceDictionary>
       <ResourceDictionary.MergedDictionaries>
@@ -31,20 +31,62 @@
         </Grid.ColumnDefinitions>
         <Border Background="{StaticResource PeggyBrandBrush}"
                 CornerRadius="16,0,0,16"/>
-        <StackPanel Grid.Column="1" Margin="13,10,15,12">
-          <TextBlock Text="PEGGY"
-                     Foreground="{StaticResource PeggyBrandBrush}"
-                     FontFamily="Segoe UI"
-                     FontWeight="SemiBold"
-                     FontSize="9"/>
-          <TextBlock x:Name="Text"
-                     TextWrapping="Wrap"
-                     FontFamily="Segoe UI"
-                     FontSize="13.5"
-                     Foreground="{StaticResource PeggyTextBrush}"
-                     LineHeight="19"
-                     Margin="0,3,0,0"/>
-        </StackPanel>
+        <Button x:Name="BubbleBodyButton"
+                Grid.Column="1"
+                IsEnabled="False"
+                HorizontalContentAlignment="Stretch"
+                AutomationProperties.Name="Open alert"
+                Click="BubbleBody_Click">
+          <Button.Style>
+            <Style TargetType="Button">
+              <Setter Property="Padding" Value="13,10,15,12"/>
+              <Setter Property="Cursor" Value="Hand"/>
+              <Setter Property="Template">
+                <Setter.Value>
+                  <ControlTemplate TargetType="Button">
+                    <Border Background="Transparent"
+                            Padding="{TemplateBinding Padding}"
+                            CornerRadius="0,16,16,0">
+                      <ContentPresenter/>
+                    </Border>
+                  </ControlTemplate>
+                </Setter.Value>
+              </Setter>
+              <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                  <Setter Property="Cursor" Value="Arrow"/>
+                </Trigger>
+              </Style.Triggers>
+            </Style>
+          </Button.Style>
+          <StackPanel>
+            <TextBlock Text="PEGGY"
+                       Foreground="{StaticResource PeggyBrandBrush}"
+                       FontFamily="Segoe UI"
+                       FontWeight="SemiBold"
+                       FontSize="9"
+                       Margin="0,0,22,0"/>
+            <TextBlock x:Name="Text"
+                       TextWrapping="Wrap"
+                       FontFamily="Segoe UI"
+                       FontSize="13.5"
+                       Foreground="{StaticResource PeggyTextBrush}"
+                       LineHeight="19"
+                       Margin="0,6,0,0"/>
+          </StackPanel>
+        </Button>
+        <Button x:Name="CloseBubbleButton"
+                Grid.Column="1"
+                Content="&#x00D7;"
+                Width="24" Height="24"
+                MinHeight="0" Padding="0"
+                Margin="0,4,4,0"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                FontSize="17"
+                ToolTip="Close bubble"
+                AutomationProperties.Name="Close bubble"
+                Click="CloseBubble_Click"/>
       </Grid>
     </Border>
     <Path Fill="{StaticResource PeggySurfaceBrush}"

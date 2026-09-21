@@ -727,7 +727,9 @@ public partial class App : Application
             ? $"A work item needs your attention. Open " +
               $"{AssistantName} for details."
             : top.Summary;
-        _bubble.Say(text, _mascot.HeadAnchor(), seconds: 12);
+        var generation = _monitoringGeneration;
+        _bubble.Say(text, _mascot.HeadAnchor(), seconds: 12,
+            onActivate: () => OpenBubbleAlert(top.Id, generation));
         ReturnToRestAfter(TimeSpan.FromSeconds(13));
 
         var critical = visible.FirstOrDefault(alert =>
@@ -2170,6 +2172,21 @@ public partial class App : Application
             return;
         }
         _alertCenter.ShowNearTaskbar();
+    }
+
+    private void OpenBubbleAlert(string alertId, int generation)
+    {
+        if (_quitting || _accountSwitching || generation != _monitoringGeneration)
+        {
+            Log("BUBBLE ALERT OPEN SKIPPED: monitoring session changed.");
+            return;
+        }
+        _alertCenter.UpdateAlerts(_alertManager.GetActiveAlerts(), ShouldMaskAlertContent());
+        _alertCenter.ShowNearTaskbar();
+        if (!_alertCenter.FocusAlert(alertId))
+        {
+            Log("BUBBLE ALERT OPEN: alert is no longer active; showing current alerts.");
+        }
     }
 
     private void OnSessionSwitch(

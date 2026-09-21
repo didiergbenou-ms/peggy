@@ -127,6 +127,27 @@ public partial class AlertCenterWindow : Window
         Activate();
     }
 
+    public bool FocusAlert(string alertId)
+    {
+        var cards = CardsPanel.Children.OfType<Border>()
+            .Where(card => card.Tag is string).ToList();
+        var target = cards.FirstOrDefault(card =>
+            string.Equals(card.Tag as string, alertId, StringComparison.Ordinal));
+        if (target is null) return false;
+        foreach (var card in cards)
+        {
+            var selected = ReferenceEquals(card, target);
+            card.BorderBrush = GetResourceBrush(
+                selected ? "BrandBrush" : "BorderBrush", Brushes.Gray);
+            card.BorderThickness = new Thickness(selected ? 2 : 1);
+        }
+        UpdateLayout();
+        target.Focusable = true;
+        target.BringIntoView();
+        target.Focus();
+        return true;
+    }
+
     public void SetMonitoringInterrupted(
         bool interrupted,
         int failureCount,

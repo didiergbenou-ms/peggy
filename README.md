@@ -249,9 +249,13 @@ Feedback such as **Less like this** and **Always alert** is retained locally and
 included in later classification runs.
 
 New or reactivated Critical/Attention alerts appear in Peggy's bubble without
-opening or focusing the Alert Center. Its contents still refresh if it is
-already open. Open it explicitly from the tray; existing startup and monitoring
-failure notices remain separate.
+opening or focusing the Alert Center automatically. Click the bubble's body to
+open and highlight its matching alert in Peggy, or use the close button to hide
+only the bubble; closing it does not resolve or dismiss the alert. Escape also
+closes a focused bubble. Ordinary greetings and status bubbles do not open alerts.
+Privacy masking still applies when opening an alert this way. The Alert Center
+remains available from the tray; existing startup and monitoring failure notices
+remain separate.
 
 ## Privacy
 
