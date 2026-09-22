@@ -65,7 +65,10 @@ internal static class AlertNotificationSmokeTests
             center.Left = 20;
             center.Top = 20;
             surface.Invoke(app,
-                [new List<AlertRecord> { new() { Tier = AlertTier.Attention } }]);
+                [new List<AlertRecord> { new()
+                {
+                    Tier = AlertTier.Attention, LastActivityUtc = DateTimeOffset.UtcNow
+                } }]);
             TestAssert.True(
                 center.IsVisible && center.Left == 20 && center.Top == 20,
                 "A bubble notification repositioned the user's already-open Alerts.");
@@ -75,7 +78,7 @@ internal static class AlertNotificationSmokeTests
             {
                 Tier = AlertTier.Attention,
                 Summary = "The specific alert behind the notification",
-                LastActivityUtc = DateTimeOffset.UtcNow.AddMinutes(-2)
+                LastActivityUtc = DateTimeOffset.UtcNow
             };
             state.State.Alerts.Add(new AlertRecord
             {

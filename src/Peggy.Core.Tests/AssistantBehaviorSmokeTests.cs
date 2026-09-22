@@ -278,7 +278,7 @@ internal static class AssistantBehaviorSmokeTests
                 Path.Combine(directory, "alert-state.dat")));
         await manager.InitializeAsync();
         var alerts = new AlertManager(manager);
-        var now = DateTimeOffset.UtcNow;
+        var now = new DateTimeOffset(DateTime.Today.AddHours(12)).ToUniversalTime();
         const string sourceUrl =
             "https://outlook.office.com/mail/deeplink/read/message-1";
         var message = new Message(

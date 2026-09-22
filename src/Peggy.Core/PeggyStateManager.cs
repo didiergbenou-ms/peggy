@@ -29,6 +29,7 @@ public sealed class PeggyStateManager
         {
             State = await _store.LoadAsync(ct);
             EnsureDailySession();
+            AlertDayPolicy.ClearPreviousDays(State, DateTimeOffset.UtcNow);
             PrepareMonitoringForProcessStart(DateTimeOffset.UtcNow);
             await _store.SaveAsync(State, ct);
         }

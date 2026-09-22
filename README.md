@@ -248,6 +248,20 @@ material-change hash. Alerts can be:
 Feedback such as **Less like this** and **Always alert** is retained locally and
 included in later classification runs.
 
+At the start of each local calendar day, Peggy clears previous-day Critical,
+Attention, and Awareness alerts from the active list, including snoozed alerts.
+Newly detected alerts and new source activity today can still raise alerts,
+including in a previously cleared conversation. This also runs while
+monitoring is paused or Peggy is sleeping, and catches up on launch or Windows
+resume. It does not wait for the next Outlook/Teams poll.
+
+Daily clearing dismisses the local alert rather than marking the work resolved.
+Dismissed records follow the existing local history retention; Outlook/Teams
+messages, monitoring cursors, seen-message markers, feedback and settings are not
+deleted or reset. A previous-day evaluation finishing after midnight cannot bring
+its old notification back unless it contains new activity today. This reset does
+not discard older messages that Peggy first discovers today.
+
 New or reactivated Critical/Attention alerts appear in Peggy's bubble without
 opening or focusing the Alert Center automatically. Click the bubble's body to
 open and highlight its matching alert in Peggy, or use the close button to hide

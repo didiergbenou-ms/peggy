@@ -49,6 +49,7 @@ internal static class DesktopSmokeTests
         try
         {
             AlertNotificationSmokeTests.Run(application);
+            DailyAlertSmokeTests.RunDesktop(application);
             MonitoringIntervalSmokeTests.RunDesktop();
             TestAlertCenter();
             TestAlertContextWindow();

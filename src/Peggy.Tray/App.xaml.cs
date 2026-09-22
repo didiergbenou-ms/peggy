@@ -68,6 +68,8 @@ public partial class App : Application
     private bool _quitting;
     private bool _scheduledSleeping;
     private bool _accountSwitching;
+    private long _alertCleanupVersion;
+    private long _savedAlertCleanupVersion;
     private int _monitoringGeneration;
     private int _monitoringCycleGeneration = -1;
     private string? _monitoringCycleWarning;
@@ -460,6 +462,11 @@ public partial class App : Application
 
         try
         {
+            await ClearPreviousDayAlertsAsync(DateTimeOffset.UtcNow);
+            if (generation != _monitoringGeneration)
+            {
+                return;
+            }
             var reactivated = _alertManager.ReactivateDue(DateTimeOffset.UtcNow);
             if (reactivated.Count > 0)
             {
@@ -548,6 +555,11 @@ public partial class App : Application
                     {
                         return;
                     }
+                    await ClearPreviousDayAlertsAsync(DateTimeOffset.UtcNow);
+                    if (generation != _monitoringGeneration)
+                    {
+                        return;
+                    }
                     _state.RecordCredit(
                         "monitoring",
                         result.Usage.Model,
@@ -557,7 +569,8 @@ public partial class App : Application
                     applied = _alertManager.Apply(
                         result.Decisions,
                         fresh,
-                        nowUtc);
+                        DateTimeOffset.UtcNow,
+                        observedAtUtc: nowUtc);
                     _state.MarkMessagesSeen(
                         fresh.Select(message => message.Id),
                         nowUtc);
@@ -706,9 +719,9 @@ public partial class App : Application
             return;
         }
         var visible = materialAlerts
-            .Where(alert => alert.Tier is
-                AlertTier.Critical or
-                AlertTier.Attention)
+            .Where(alert => alert.Status == AlertStatus.Active &&
+                !AlertDayPolicy.IsPreviousDay(alert, DateTimeOffset.UtcNow) &&
+                alert.Tier is AlertTier.Critical or AlertTier.Attention)
             .OrderBy(alert => alert.Tier)
             .ThenByDescending(alert => alert.LastActivityUtc)
             .ToList();
@@ -2226,7 +2239,10 @@ public partial class App : Application
     }
 
     private void OnSystemTimeChanged(object? sender, EventArgs e)
-        => QueueScheduleEvaluation(rebaseWhenAwake: false);
+    {
+        TimeZoneInfo.ClearCachedData();
+        QueueScheduleEvaluation(rebaseWhenAwake: false);
+    }
 
     private void QueueScheduleEvaluation(bool rebaseWhenAwake)
     {
@@ -2236,10 +2252,12 @@ public partial class App : Application
         }
 
         _ = Dispatcher.BeginInvoke(new Action(() =>
-            _ = EvaluateMonitoringScheduleAsync(
-                animateWake: true,
-                startCheckOnWake: true,
-                rebaseWhenAwake: rebaseWhenAwake)));
+            RunUiAction(
+                () => EvaluateMonitoringScheduleAsync(
+                    animateWake: true,
+                    startCheckOnWake: true,
+                    rebaseWhenAwake: rebaseWhenAwake),
+                $"{AssistantName} monitoring schedule")));
     }
 
     private void StartScheduleTimer()
@@ -2281,6 +2299,7 @@ public partial class App : Application
         bool startCheckOnWake,
         bool rebaseWhenAwake = false)
     {
+        await ClearPreviousDayAlertsAsync(DateTimeOffset.UtcNow);
         var now = DateTime.Now;
         var status = MonitoringSchedule.Evaluate(
             _state.State.Settings,
@@ -2354,9 +2373,22 @@ public partial class App : Application
             return;
         }
 
+        _scheduleTimer.Interval = GetNextScheduleEvaluationDelay(status, localNow);
+        _scheduleTimer.Start();
+    }
+
+    internal static TimeSpan GetNextScheduleEvaluationDelay(
+        MonitoringScheduleStatus status,
+        DateTime localNow)
+    {
         var delay = status.NextTransitionLocal is DateTime transition
             ? transition - localNow
             : TimeSpan.FromMinutes(1);
+        var untilMidnight = localNow.Date.AddDays(1) - localNow;
+        if (untilMidnight < delay)
+        {
+            delay = untilMidnight;
+        }
         if (delay < TimeSpan.FromSeconds(1))
         {
             delay = TimeSpan.FromSeconds(1);
@@ -2365,8 +2397,31 @@ public partial class App : Application
         {
             delay = TimeSpan.FromMinutes(1);
         }
-        _scheduleTimer.Interval = delay;
-        _scheduleTimer.Start();
+        return delay;
+    }
+
+    private async Task ClearPreviousDayAlertsAsync(DateTimeOffset nowUtc)
+    {
+        if (_quitting || _accountSwitching || _alertManager is null)
+        {
+            return;
+        }
+        var cleared = _alertManager.ClearPreviousDays(nowUtc);
+        if (cleared > 0)
+        {
+            _alertCleanupVersion++;
+            _bubble.HideNow();
+            _alertCenter.ClearCriticalBanner();
+            _conversationWindow.ClearCritical();
+            RefreshUi(showPersistentCards: false);
+            Log($"ALERT DAY CLEAR count={cleared}");
+        }
+        if (_savedAlertCleanupVersion < _alertCleanupVersion)
+        {
+            var version = _alertCleanupVersion;
+            await _state.SaveAsync(_shutdown.Token);
+            _savedAlertCleanupVersion = Math.Max(_savedAlertCleanupVersion, version);
+        }
     }
 
     private void OnWakingCompleted()

@@ -24,8 +24,10 @@ public sealed class AlertManager
     public AlertApplyResult Apply(
         IReadOnlyCollection<AlertDecision> decisions,
         IReadOnlyCollection<Message> messages,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc,
+        DateTimeOffset? observedAtUtc = null)
     {
+        ClearPreviousDays(nowUtc);
         var material = new List<AlertRecord>();
         var messageById = messages.ToDictionary(
             message => message.Id,
@@ -59,6 +61,12 @@ public sealed class AlertManager
             }
 
             var newest = decisionMessages.Max(message => message.ReceivedAt);
+            var observed = observedAtUtc ?? nowUtc;
+            // Discard yesterday's in-flight result, not older messages first detected today.
+            if (AlertDayPolicy.IsPreviousDay(Max(newest, observed), nowUtc))
+            {
+                continue;
+            }
             var source = decisionMessages[0].Source;
             var sourceReference = AlertSourceLink.SelectReference(
                 decision.SourceReference,
@@ -164,6 +172,9 @@ public sealed class AlertManager
             .ThenByDescending(alert => alert.LastActivityUtc)
             .ToList();
 
+    public int ClearPreviousDays(DateTimeOffset nowUtc)
+        => AlertDayPolicy.ClearPreviousDays(_state.State, nowUtc);
+
     public int DismissAlertsWithoutVerifiedSources(
         DateTimeOffset nowUtc)
     {
@@ -229,6 +240,7 @@ public sealed class AlertManager
 
     public IReadOnlyList<AlertRecord> ReactivateDue(DateTimeOffset nowUtc)
     {
+        ClearPreviousDays(nowUtc);
         var due = _state.State.Alerts
             .Where(alert =>
                 alert.Status == AlertStatus.Snoozed &&
