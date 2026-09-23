@@ -19,6 +19,12 @@ remain in a separate local process.
 Peggy v0.1.13 uses one **Peggy setup** window for prerequisites, installation,
 account connection, and optional voice.
 
+**Beta preview: [v0.1.14-beta.1](https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.14-beta.1).**
+This beta adds close/open actions on alert bubbles, automatic clearing of
+previous-day alerts, and conversation refresh before notification. To try it,
+download `peggy-v0.1.14-beta.1-win-x64-setup.exe` from the beta release page.
+The latest stable release and the installation examples below remain v0.1.13.
+
 1. **Check access and prerequisites.** You need Windows x64, GitHub Copilot
    access, and a Microsoft 365 work account with a Work IQ usage-based billing
    plan and tenant administrator consent. The installer checks PowerShell 7,
@@ -235,6 +241,9 @@ a specific `/l/message/` item rather than only a generic chat.
 - Known channel participation is retained across monitoring-window rebases.
 
 ### Alert lifecycle
+
+Bubble actions, daily clearing, and refresh before notifying described below
+are new in **v0.1.14-beta.1**.
 
 Each alert records its source, reason, tier, activity time, message IDs, and
 material-change hash. Alerts can be:
@@ -1036,6 +1045,8 @@ For example, `v0.1.11-beta.1` uses MSI `0.1.1130` and file version
 For `v0.1.13`, MSI uses `0.1.1399` and binaries use `0.1.1399.0`, above
 beta.1's `0.1.1330.0`; the Alerts header and About dialog still display the
 semantic version `v0.1.13`.
+The `v0.1.14-beta.1` preview uses MSI `0.1.1430` and binary file version
+`0.1.1430.0`, above stable v0.1.13; its user-facing version retains `-beta.1`.
 Semantic prerelease labels alone do not change .NET's default file version.
 
 WiX ICE custom actions can be blocked by policy in non-elevated build
@@ -1055,9 +1066,9 @@ identities, directories, registry entries, and shortcuts. Executable custom acti
 become inert markers so the regression cannot launch Peggy or use real account
 data. It checks exact installed hashes, product replacement, unchanged test
 settings/model/account sentinels, same-version maintenance, and a forced-failure
-rollback to the previous payload and registration. CI uses five checksum-verified
+rollback to the previous payload and registration. CI uses six checksum-verified
 pinned baselines: the setup EXEs from `v0.1.10`, `v0.1.11-beta.1`, `v0.1.11`,
-`v0.1.12`, and `v0.1.13-beta.1`.
+`v0.1.12`, `v0.1.13-beta.1`, and `v0.1.13`.
 The pinned WiX extraction tool reads each checksum-verified EXE without running
 it and supplies its embedded MSI. Every baseline must pass the strict upgrade
 and rollback checks. Restart Manager, real application startup, and interactive authentication
