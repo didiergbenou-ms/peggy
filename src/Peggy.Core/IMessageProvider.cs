@@ -16,6 +16,17 @@ public interface IMessageProvider
 
     Task<MessageThread?> GetThreadAsync(string threadId, CancellationToken ct = default);
 
+    /// <summary>Reads current thread messages, including own replies, since the supplied boundary.</summary>
+    Task<AlertThreadRefreshResult> RefreshThreadForAlertAsync(
+        string threadId,
+        DateTimeOffset sinceUtc,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        return Task.FromResult(new AlertThreadRefreshResult(
+            null, false, "This provider does not support fresh alert thread context."));
+    }
+
     Task<IReadOnlyList<CalendarItem>> ListUpcomingEventsAsync(
         DateTimeOffset startUtc,
         DateTimeOffset endUtc,

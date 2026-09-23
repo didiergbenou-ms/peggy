@@ -19,6 +19,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     private const int MaxChannelsPerBatch = 8;
     private const int MaxChannelConcurrency = 4;
     private const int MaxTeamsSearchPageSize = 200;
+    private const int MaxAlertRefreshItems = 250;
+    private const int MaxAlertRefreshPages = 6;
+    private const int MaxAlertRefreshBodyLength = 16_000;
     private const string DefaultActiveFolderPath = PeggyDefaults.ActiveCasesFolder;
     private static readonly TimeSpan CatalogCacheDuration = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan TeamsSearchOverlap = TimeSpan.FromMinutes(10);
@@ -304,6 +307,410 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
         return null;
     }
+
+    public async Task<AlertThreadRefreshResult> RefreshThreadForAlertAsync(
+        string threadId,
+        DateTimeOffset sinceUtc,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(threadId))
+        {
+            return new(null, false, "An exact thread identifier is required.");
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        var budget = new AlertRefreshBudget(timeout.Token);
+        try
+        {
+            if (TryDecodeKey(threadId, "email-thread:", out var conversationId))
+            {
+                await GetCurrentUserIdAsync(budget.Token);
+                return await RefreshEmailThreadForAlertAsync(
+                    conversationId, sinceUtc, budget);
+            }
+            if (TryDecodeKey(threadId, "teams-thread:", out var chatId))
+            {
+                await GetCurrentUserIdAsync(budget.Token);
+                return await RefreshChatThreadForAlertAsync(chatId, sinceUtc, budget);
+            }
+            if (TryDecodeCompositeKey(
+                    threadId, "teams-channel-thread:", 3, out var parts))
+            {
+                await GetCurrentUserIdAsync(budget.Token);
+                return await RefreshChannelThreadForAlertAsync(
+                    parts[0], parts[1], parts[2], sinceUtc, budget);
+            }
+
+            return new(null, false, "This thread identifier cannot be refreshed.");
+        }
+        catch (AlertRefreshIncompleteException ex)
+        {
+            return new(null, false, ex.Message);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return new(null, false, "The fresh thread read exceeded its time budget.");
+        }
+    }
+
+    private async Task<AlertThreadRefreshResult> RefreshEmailThreadForAlertAsync(
+        string conversationId,
+        DateTimeOffset sinceUtc,
+        AlertRefreshBudget budget)
+    {
+        var deletedFolders = await GetDeletedAlertFolderIdsAsync(budget);
+        var escaped = conversationId.Replace("'", "''", StringComparison.Ordinal);
+        var filter = Uri.EscapeDataString($"conversationId eq '{escaped}'");
+        // Exhaust the conversation, rather than assuming Outlook's first page is
+        // newest or filtering on receivedDateTime (which can omit sent messages).
+        var page = await ReadAlertPagesAsync<OutlookMessage>(
+            $"/me/messages?$filter={filter}&$top=50" +
+            "&$select=id,conversationId,from,sender,subject,bodyPreview,body," +
+            "receivedDateTime,sentDateTime,isRead,isDraft,parentFolderId,webLink",
+            allowContinuation: true, budget);
+        var complete = page.IsComplete;
+        var messages = new Dictionary<string, Message>(StringComparer.Ordinal);
+        foreach (var item in page.Items)
+        {
+            if (item.Removed is not null ||
+                item.IsDraft == true ||
+                (item.ParentFolderId is not null && deletedFolders.Contains(item.ParentFolderId)))
+            {
+                if (item.Id is not null)
+                {
+                    messages.Remove(item.Id);
+                }
+                continue;
+            }
+            if (!string.Equals(item.ConversationId, conversationId, StringComparison.Ordinal) ||
+                item.IsDraft is null ||
+                string.IsNullOrWhiteSpace(item.ParentFolderId))
+            {
+                complete = false;
+                continue;
+            }
+            var message = ToEmailMessage(item);
+            if (message is null || !TryGetAlertBody(item.Body, out var fullText))
+            {
+                complete = false;
+                continue;
+            }
+            messages[item.Id!] = message with { FullText = fullText };
+        }
+        return BuildAlertRefreshResult(
+            EncodeKey("email-thread:", conversationId),
+            MessageSource.Email, messages.Values, sinceUtc, complete, page.Warning);
+    }
+
+    private async Task<HashSet<string>> GetDeletedAlertFolderIdsAsync(
+        AlertRefreshBudget budget)
+    {
+        var root = await FetchAlertResourceAsync<MailFolder>(
+            "/me/mailFolders/deleteditems?$select=id,childFolderCount", budget);
+        if (string.IsNullOrWhiteSpace(root.Id))
+        {
+            throw new AlertRefreshIncompleteException(
+                "The deleted-mail folder could not be verified.");
+        }
+
+        var ids = new HashSet<string>(StringComparer.Ordinal) { root.Id };
+        var pending = new Queue<MailFolder>();
+        pending.Enqueue(root);
+        while (pending.TryDequeue(out var folder))
+        {
+            if (folder.ChildFolderCount == 0)
+            {
+                continue;
+            }
+            var children = await ReadAlertPagesAsync<MailFolder>(
+                $"/me/mailFolders/{Uri.EscapeDataString(folder.Id!)}/childFolders" +
+                "?includeHiddenFolders=true&$top=50&$select=id,childFolderCount",
+                allowContinuation: true, budget, maximumItems: 50);
+            if (!children.IsComplete ||
+                (folder.ChildFolderCount is > 0 &&
+                 children.Items.Count < folder.ChildFolderCount.Value))
+            {
+                throw new AlertRefreshIncompleteException(
+                    "The deleted-mail folder hierarchy could not be fully verified.");
+            }
+            foreach (var child in children.Items)
+            {
+                if (string.IsNullOrWhiteSpace(child.Id) ||
+                    !ids.Add(child.Id) || ids.Count > 50)
+                {
+                    throw new AlertRefreshIncompleteException(
+                        "The deleted-mail folder hierarchy exceeded its safe read boundary.");
+                }
+                pending.Enqueue(child);
+            }
+        }
+        return ids;
+    }
+
+    private async Task<AlertThreadRefreshResult> RefreshChatThreadForAlertAsync(
+        string chatId,
+        DateTimeOffset sinceUtc,
+        AlertRefreshBudget budget)
+    {
+        var path = $"/me/chats/{Uri.EscapeDataString(chatId)}";
+        var chat = await FetchAlertResourceAsync<Chat>(
+            path + "?$select=id,topic,viewpoint", budget);
+        if (!string.Equals(chat.Id, chatId, StringComparison.Ordinal))
+        {
+            return new(null, false, "The requested Teams chat could not be verified.");
+        }
+        var boundary = sinceUtc == DateTimeOffset.MinValue ? sinceUtc : sinceUtc.AddTicks(-1);
+        var filter = Uri.EscapeDataString($"lastModifiedDateTime gt {FormatGraphTimestamp(boundary)}");
+        var page = await ReadAlertPagesAsync<ChatMessage>(
+            path + "/messages?$top=50&$orderby=lastModifiedDateTime%20desc&$filter=" + filter,
+            allowContinuation: false, budget);
+        var complete = page.IsComplete;
+        var messages = new Dictionary<string, Message>(StringComparer.Ordinal);
+        foreach (var item in page.Items)
+        {
+            if ((item.ChatId is not null &&
+                 !string.Equals(item.ChatId, chatId, StringComparison.Ordinal)) ||
+                item.ChannelIdentity is not null)
+            {
+                complete = false;
+                continue;
+            }
+            AddAlertTeamsMessage(
+                messages, item,
+                () => ToTeamsMessage(
+                    chatId, NormalizeSubject(chat.Topic, "Teams chat"), item,
+                    chat.Viewpoint?.LastMessageReadDateTime ?? DateTimeOffset.MinValue),
+                ref complete);
+        }
+        return BuildAlertRefreshResult(
+            EncodeKey("teams-thread:", chatId),
+            MessageSource.Teams, messages.Values, sinceUtc, complete, page.Warning);
+    }
+
+    private async Task<AlertThreadRefreshResult> RefreshChannelThreadForAlertAsync(
+        string teamId,
+        string channelId,
+        string rootId,
+        DateTimeOffset sinceUtc,
+        AlertRefreshBudget budget)
+    {
+        var path = $"/teams/{Uri.EscapeDataString(teamId)}/channels/" +
+                   Uri.EscapeDataString(channelId);
+        var channel = await FetchAlertResourceAsync<TeamsChannel>(
+            path + "?$select=id,displayName", budget);
+        var rootPath = path + "/messages/" + Uri.EscapeDataString(rootId);
+        var root = await FetchAlertResourceAsync<ChatMessage>(rootPath, budget);
+        if (!string.Equals(channel.Id, channelId, StringComparison.Ordinal) ||
+            !string.Equals(root.Id, rootId, StringComparison.Ordinal) ||
+            !string.IsNullOrEmpty(root.ReplyToId) ||
+            root.Removed is not null || root.DeletedDateTime is not null ||
+            root.IsDeleted == true ||
+            !IsAlertChannelIdentity(root, teamId, channelId))
+        {
+            return new(null, false, "The requested Teams channel root could not be verified.");
+        }
+        channel.TeamId = teamId;
+        var page = await ReadAlertPagesAsync<ChatMessage>(
+            rootPath + "/replies?$top=50", allowContinuation: false, budget);
+        var complete = page.IsComplete;
+        var messages = new Dictionary<string, Message>(StringComparer.Ordinal);
+        AddAlertTeamsMessage(
+            messages, root,
+            () => ToChannelMessage(channel, root, rootId, false, false),
+            ref complete);
+        foreach (var item in page.Items)
+        {
+            if (!string.Equals(item.ReplyToId, rootId, StringComparison.Ordinal) ||
+                !IsAlertChannelIdentity(item, teamId, channelId))
+            {
+                complete = false;
+                continue;
+            }
+            AddAlertTeamsMessage(
+                messages, item,
+                () => ToChannelMessage(channel, item, rootId, false, false),
+                ref complete);
+        }
+        return BuildAlertRefreshResult(
+            EncodeChannelThreadKey(teamId, channelId, rootId),
+            MessageSource.Teams, messages.Values, sinceUtc, complete, page.Warning);
+    }
+
+    private static bool IsAlertChannelIdentity(
+        ChatMessage item, string teamId, string channelId)
+        => item.ChatId is null &&
+           (item.ChannelIdentity is null ||
+            (string.Equals(item.ChannelIdentity.TeamId, teamId, StringComparison.Ordinal) &&
+             string.Equals(item.ChannelIdentity.ChannelId, channelId, StringComparison.Ordinal)));
+
+    private static void AddAlertTeamsMessage(
+        IDictionary<string, Message> destination,
+        ChatMessage item,
+        Func<Message?> convert,
+        ref bool complete)
+    {
+        if (item.Removed is not null || item.DeletedDateTime is not null ||
+            item.IsDeleted == true ||
+            (!string.IsNullOrWhiteSpace(item.MessageType) &&
+             !string.Equals(item.MessageType, "message", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (item.Id is not null)
+            {
+                destination.Remove(item.Id);
+            }
+            return;
+        }
+        var message = string.IsNullOrWhiteSpace(item.MessageType) ? null : convert();
+        if (message is null || !TryGetAlertBody(item.Body, out var fullText))
+        {
+            complete = false;
+            return;
+        }
+        if (!destination.TryGetValue(item.Id!, out var previous) ||
+            previous.ReceivedAt <= message.ReceivedAt)
+        {
+            destination[item.Id!] = message with { FullText = fullText };
+        }
+    }
+
+    private static bool TryGetAlertBody(ItemBody? body, out string text)
+    {
+        text = string.Empty;
+        if (body?.Content is null || body.Content.Length > 64_000 ||
+            !(string.Equals(body.ContentType, "html", StringComparison.OrdinalIgnoreCase) ||
+              string.Equals(body.ContentType, "text", StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+        text = NormalizeContent(body.Content,
+            string.Equals(body.ContentType, "html", StringComparison.OrdinalIgnoreCase));
+        return text.Length is > 0 and <= MaxAlertRefreshBodyLength;
+    }
+
+    private async Task<T> FetchAlertResourceAsync<T>(
+        string url, AlertRefreshBudget budget)
+    {
+        budget.Token.ThrowIfCancellationRequested();
+        if (budget.RemainingRequests-- <= 0)
+        {
+            throw new AlertRefreshIncompleteException(
+                "The fresh thread read exceeded its request budget.");
+        }
+        return await _client.FetchAsync<T>(url, budget.Token);
+    }
+
+    private async Task<AlertPageRead<T>> ReadAlertPagesAsync<T>(
+        string initialUrl,
+        bool allowContinuation,
+        AlertRefreshBudget budget,
+        int maximumItems = MaxAlertRefreshItems)
+    {
+        var items = new List<T>();
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var url = initialUrl;
+        for (var index = 0; index < MaxAlertRefreshPages; index++)
+        {
+            if (!visited.Add(url))
+            {
+                return new(items, false, "WorkIQ repeated a thread page.");
+            }
+            var page = await FetchAlertResourceAsync<AlertRefreshPage<T>>(url, budget);
+            if (page.Value is null || page.Value.Any(item => item is null))
+            {
+                return new(items, false, "WorkIQ returned no verifiable thread page.");
+            }
+            var remaining = maximumItems - items.Count;
+            items.AddRange(page.Value.Take(remaining));
+            if (page.Value.Count > remaining)
+            {
+                return new(items, false, "The fresh thread read exceeded its message limit.");
+            }
+            if (page.NextLink is null)
+            {
+                return new(items, true, null);
+            }
+            // Teams delegated continuations are not reliably supported by WorkIQ.
+            // Never invent a skip token or claim that the first replies page is newest.
+            if (!allowContinuation)
+            {
+                return new(items, false, "Teams replies extend beyond WorkIQ's safe paging boundary.");
+            }
+            if (items.Count >= maximumItems)
+            {
+                return new(items, false, "The fresh thread read exceeded its message limit.");
+            }
+            var next = NormalizeAlertContinuation(page.NextLink, initialUrl);
+            if (next is null)
+            {
+                return new(items, false, "The thread continuation did not match the requested resource.");
+            }
+            url = next;
+        }
+        return new(items, false, "The fresh thread read exceeded its page limit.");
+    }
+
+    private static string? NormalizeAlertContinuation(string nextLink, string initialUrl)
+    {
+        if (!nextLink.StartsWith("/", StringComparison.Ordinal) &&
+            (!Uri.TryCreate(nextLink, UriKind.Absolute, out var absolute) ||
+             absolute.Scheme != Uri.UriSchemeHttps ||
+             !string.Equals(absolute.Host, "graph.microsoft.com", StringComparison.OrdinalIgnoreCase) ||
+             !absolute.IsDefaultPort || absolute.Fragment.Length > 0))
+        {
+            return null;
+        }
+        var normalized = NormalizeGraphUrl(nextLink);
+        return normalized is not null &&
+               !normalized.Contains('#') &&
+               string.Equals(
+                   normalized.Split('?')[0], initialUrl.Split('?')[0], StringComparison.Ordinal)
+            ? normalized
+            : null;
+    }
+
+    private static AlertThreadRefreshResult BuildAlertRefreshResult(
+        string threadId,
+        MessageSource source,
+        IEnumerable<Message> messages,
+        DateTimeOffset sinceUtc,
+        bool complete,
+        string? warning)
+    {
+        var ordered = messages.OrderBy(message => message.ReceivedAt)
+            .ThenBy(message => message.Id, StringComparer.Ordinal).ToList();
+        if (ordered.Count == 0)
+        {
+            return new(null, false, warning ?? "No current messages could be verified in this thread.");
+        }
+        var context = ordered.Where(message => message.ReceivedAt < sinceUtc).TakeLast(20)
+            .Concat(ordered.Where(message => message.ReceivedAt >= sinceUtc)).ToList();
+        return new(
+            new MessageThread(threadId, source, ordered[^1].Subject, context),
+            complete,
+            complete ? null : warning ?? "Some thread messages could not be verified.");
+    }
+
+    private sealed class AlertRefreshBudget(CancellationToken token)
+    {
+        public CancellationToken Token { get; } = token;
+        public int RemainingRequests { get; set; } = 11; // Plus the authenticated profile read.
+    }
+
+    private sealed class AlertRefreshIncompleteException(string message) : Exception(message);
+
+    private sealed record AlertPageRead<T>(IReadOnlyList<T> Items, bool IsComplete, string? Warning);
+
+    private sealed class AlertRefreshPage<T>
+    {
+        [JsonPropertyName("value")]
+        public List<T>? Value { get; init; }
+
+        [JsonPropertyName("@odata.nextLink")]
+        public string? NextLink { get; init; }
+    }
+
     public async Task<IReadOnlyList<CalendarItem>> ListUpcomingEventsAsync(
         DateTimeOffset startUtc,
         DateTimeOffset endUtc,
@@ -3211,6 +3618,16 @@ public sealed class WorkIqMessageProvider : IMessageProvider
            IsCurrentUserEmailAddress(
                message.Sender?.EmailAddress?.Address);
 
+    private bool IsCurrentUserTeamsMessage(ChatMessage message)
+    {
+        var sender = message.From?.User;
+        return (!string.IsNullOrWhiteSpace(_currentUserId) &&
+                !string.IsNullOrWhiteSpace(sender?.Id) &&
+                string.Equals(sender.Id, _currentUserId, StringComparison.OrdinalIgnoreCase)) ||
+               IsCurrentUserEmailAddress(sender?.Id) ||
+               IsCurrentUserEmailAddress(message.From?.EmailAddress?.Address);
+    }
+
     private bool IsCurrentUserEmailAddress(string? address)
     {
         var normalized = NormalizeEmailIdentity(address);
@@ -4175,7 +4592,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         }
     }
 
-    private static Message? ToChannelMessage(
+    private Message? ToChannelMessage(
         TeamsChannel channel,
         ChatMessage item,
         string rootMessageId,
@@ -4230,6 +4647,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             GetChannelActivityUtc(item),
             false)
         {
+            IsFromMe = IsCurrentUserTeamsMessage(item),
             WebUrl = item.WebUrl,
             TeamId = channel.TeamId,
             ChannelId = channel.Id,
@@ -4629,10 +5047,11 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             .ToUniversalTime()
             .ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
 
-    private static Message? ToEmailMessage(OutlookMessage item)
+    private Message? ToEmailMessage(OutlookMessage item)
     {
+        var timestamp = item.ReceivedDateTime ?? item.SentDateTime;
         if (string.IsNullOrWhiteSpace(item.Id) ||
-            item.ReceivedDateTime is null)
+            timestamp is null)
         {
             return null;
         }
@@ -4660,16 +5079,17 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             from,
             subject,
             preview,
-            item.ReceivedDateTime.Value,
+            timestamp.Value,
             item.IsRead ?? false)
         {
+            IsFromMe = IsCurrentUserEmailMessage(item),
             WebUrl = IsWebUrl(item.WebLink)
                 ? item.WebLink
                 : null
         };
     }
 
-    private static Message? ToTeamsMessage(
+    private Message? ToTeamsMessage(
         string chatId,
         string fallbackSubject,
         ChatMessage item,
@@ -4704,6 +5124,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             GetChatActivityUtc(item),
             GetChatActivityUtc(item) <= readAt)
         {
+            IsFromMe = IsCurrentUserTeamsMessage(item),
             WebUrl = IsCompatibleSourceUrl(
                 MessageSource.Teams,
                 item.WebUrl ?? string.Empty)
@@ -4889,6 +5310,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
         [JsonPropertyName("conversationId")]
         public string? ConversationId { get; init; }
+
+        [JsonPropertyName("parentFolderId")]
+        public string? ParentFolderId { get; init; }
 
         [JsonPropertyName("from")]
         public Recipient? From { get; init; }

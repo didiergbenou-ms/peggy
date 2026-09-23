@@ -467,19 +467,6 @@ public partial class App : Application
             {
                 return;
             }
-            var reactivated = _alertManager.ReactivateDue(DateTimeOffset.UtcNow);
-            if (reactivated.Count > 0)
-            {
-                await _state.SaveAsync(_shutdown.Token);
-                if (generation != _monitoringGeneration)
-                {
-                    return;
-                }
-                resultAnimationActive |= HasVisibleMaterialAlerts(
-                    reactivated);
-                SurfaceMaterialAlerts(reactivated);
-            }
-
             if (_state.EnsureDailySession())
             {
                 await ReplaceCopilotAsync(
@@ -489,6 +476,25 @@ public partial class App : Application
                 {
                     return;
                 }
+            }
+
+            checkStage = "notification-refresh";
+            var reactivated = await RefreshDueAlertsAsync(
+                CreateNotificationRefresher(), generation);
+            if (generation != _monitoringGeneration)
+            {
+                return;
+            }
+            if (reactivated is not null)
+            {
+                await _state.SaveAsync(_shutdown.Token);
+                if (generation != _monitoringGeneration)
+                {
+                    return;
+                }
+                resultAnimationActive |= HasVisibleMaterialAlerts(reactivated.MaterialUpdates);
+                SurfaceMaterialAlerts(reactivated.MaterialUpdates);
+                RefreshUi(showPersistentCards: false);
             }
 
             var hasMore = true;
@@ -555,19 +561,27 @@ public partial class App : Application
                     {
                         return;
                     }
-                    await ClearPreviousDayAlertsAsync(DateTimeOffset.UtcNow);
-                    if (generation != _monitoringGeneration)
-                    {
-                        return;
-                    }
                     _state.RecordCredit(
                         "monitoring",
                         result.Usage.Model,
                         result.Usage.OperationCredits,
                         result.Usage.SessionCredits,
                         nowUtc);
+                    checkStage = "notification-refresh";
+                    var revisions = CaptureAlertRevisions(result.Decisions);
+                    var reviewed = await RefreshPendingAlertDecisionsAsync(
+                        result.Decisions, fresh, CreateNotificationRefresher(), generation, revisions);
+                    if (generation != _monitoringGeneration)
+                    {
+                        return;
+                    }
+                    await ClearPreviousDayAlertsAsync(DateTimeOffset.UtcNow);
+                    if (generation != _monitoringGeneration)
+                    {
+                        return;
+                    }
                     applied = _alertManager.Apply(
-                        result.Decisions,
+                        RetainUnchangedReviews(reviewed, revisions),
                         fresh,
                         DateTimeOffset.UtcNow,
                         observedAtUtc: nowUtc);
@@ -709,6 +723,156 @@ public partial class App : Application
                     DispatcherPriority.Background);
             }
         }
+    }
+
+    private AlertNotificationRefresher CreateNotificationRefresher()
+    {
+        var runner = _copilot;
+        return new AlertNotificationRefresher(
+            _provider,
+            runner.RunNotificationReviewAsync,
+            CreateNotificationUsageRecorder(),
+            Log);
+    }
+
+    private Func<CopilotRunResult, bool, Task> CreateNotificationUsageRecorder()
+    {
+        var origin = _state;
+        var document = origin.State;
+        return async (usage, rejected) =>
+        {
+            if (!ReferenceEquals(_state, origin) || !ReferenceEquals(origin.State, document))
+            {
+                throw new InvalidOperationException("Notification review outlived its originating account state.");
+            }
+            // Pausing invalidates the notification, not usage already charged to this account.
+            origin.RecordCredit(
+                rejected ? "notification-refresh-rejected" : "notification-refresh",
+                usage.Model, usage.OperationCredits, usage.SessionCredits, DateTimeOffset.UtcNow);
+            await origin.SaveAsync(_shutdown.Token);
+        };
+    }
+
+    private sealed record AlertRevision(
+        string Id, AlertStatus Status, DateTimeOffset UpdatedUtc, string MaterialHash,
+        DateTimeOffset? SnoozedUntilUtc);
+
+    private AlertRevision[] GetAlertRevisions(string threadId)
+        => _state.State.Alerts
+            .Where(alert => alert.ThreadId == threadId &&
+                alert.Status is AlertStatus.Active or AlertStatus.Snoozed)
+            .OrderBy(alert => alert.Id, StringComparer.Ordinal)
+            .Select(alert => new AlertRevision(
+                alert.Id, alert.Status, alert.UpdatedUtc, alert.MaterialHash, alert.SnoozedUntilUtc))
+            .ToArray();
+
+    private Dictionary<string, AlertRevision[]> CaptureAlertRevisions(IEnumerable<AlertDecision> decisions)
+        => decisions.Select(decision => decision.ThreadId).Distinct(StringComparer.Ordinal)
+            .ToDictionary(thread => thread, GetAlertRevisions, StringComparer.Ordinal);
+
+    private IReadOnlyList<AlertDecision> RetainUnchangedReviews(
+        IReadOnlyList<AlertDecision> decisions, IReadOnlyDictionary<string, AlertRevision[]> revisions)
+        => decisions.Where(decision =>
+        {
+            if (revisions[decision.ThreadId].SequenceEqual(GetAlertRevisions(decision.ThreadId)))
+            {
+                return true;
+            }
+            Log("ALERT REFRESH SKIPPED reason=alert-changed-during-review");
+            return false;
+        }).ToList();
+
+    private async Task<IReadOnlyList<AlertDecision>> RefreshPendingAlertDecisionsAsync(
+        IReadOnlyList<AlertDecision> decisions,
+        IReadOnlyCollection<Message> messages,
+        AlertNotificationRefresher refresher,
+        int generation,
+        IReadOnlyDictionary<string, AlertRevision[]> revisions)
+    {
+        var reviewed = new List<AlertDecision>();
+        foreach (var decision in decisions
+                     .GroupBy(item => item.ThreadId, StringComparer.Ordinal)
+                     .Select(group => group.OrderBy(item => item.Tier).First())
+                     .OrderBy(item => item.Tier))
+        {
+            if (_quitting || _accountSwitching || generation != _monitoringGeneration)
+            {
+                return [];
+            }
+            var baseline = messages.Where(message => message.ThreadId == decision.ThreadId).ToList();
+            if (baseline.Count == 0)
+            {
+                throw new InvalidDataException("A pending alert has no monitored thread context.");
+            }
+            var result = await refresher.RefreshAsync(
+                decision, baseline, baseline.Min(message => message.ReceivedAt), _shutdown.Token);
+            if (result is not null)
+            {
+                reviewed.Add(result);
+            }
+        }
+        return _quitting || _accountSwitching || generation != _monitoringGeneration
+            ? [] : RetainUnchangedReviews(reviewed, revisions);
+    }
+
+    private async Task<AlertApplyResult?> RefreshDueAlertsAsync(
+        AlertNotificationRefresher refresher, int generation)
+    {
+        var pending = _alertManager.GetDueForNotification(DateTimeOffset.UtcNow)
+            .Select(alert => new
+            {
+                Alert = alert,
+                alert.UpdatedUtc,
+                alert.MaterialHash,
+                alert.SnoozedUntilUtc,
+                Decision = new AlertDecision(alert.ThreadId, alert.Tier, alert.Summary,
+                    alert.Reason, alert.SourceReference, alert.MessageIds.ToList())
+            }).ToList();
+        if (pending.Count == 0)
+        {
+            return null;
+        }
+        var results = new Dictionary<string, AlertDecision?>(StringComparer.Ordinal);
+        foreach (var item in pending)
+        {
+            if (_quitting || _accountSwitching || generation != _monitoringGeneration)
+            {
+                return null;
+            }
+            var baseline = GetFocusMessages(item.Alert.Id);
+            results[item.Alert.Id] = await refresher.RefreshAsync(
+                item.Decision, baseline,
+                baseline.Count > 0 ? baseline.Min(message => message.ReceivedAt) : item.Alert.LastActivityUtc,
+                _shutdown.Token);
+        }
+        if (_quitting || _accountSwitching || generation != _monitoringGeneration)
+        {
+            return null;
+        }
+        await ClearPreviousDayAlertsAsync(DateTimeOffset.UtcNow);
+        if (_quitting || _accountSwitching || generation != _monitoringGeneration)
+        {
+            return null;
+        }
+        var reactivated = new List<AlertRecord>();
+        foreach (var item in pending)
+        {
+            var alert = item.Alert;
+            if (alert.Status != AlertStatus.Snoozed ||
+                alert.UpdatedUtc != item.UpdatedUtc ||
+                alert.MaterialHash != item.MaterialHash ||
+                alert.SnoozedUntilUtc != item.SnoozedUntilUtc)
+            {
+                Log("ALERT REFRESH SKIPPED reason=alert-changed-during-review");
+                continue;
+            }
+            _alertManager.CompleteSnoozeRefresh(alert, results[alert.Id], DateTimeOffset.UtcNow);
+            if (alert.Status == AlertStatus.Active)
+            {
+                reactivated.Add(alert);
+            }
+        }
+        return new AlertApplyResult(reactivated, _alertManager.GetActiveAlerts());
     }
 
     private void SurfaceMaterialAlerts(

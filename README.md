@@ -262,6 +262,24 @@ deleted or reset. A previous-day evaluation finishing after midnight cannot brin
 its old notification back unless it contains new activity today. This reset does
 not discard older messages that Peggy first discovers today.
 
+Before adding a new alert or re-notifying a due snoozed alert, Peggy refreshes
+that exact Outlook/Teams conversation, including sent replies. If relevant
+context changed, Copilot reassesses the pending request. Peggy suppresses it only
+when fresh evidence confirms that nothing remains actionable. Acknowledgments,
+partial replies, promises to follow up, read status and unrelated chat activity
+do not by themselves settle an alert.
+
+Unavailable, incomplete, oversized or timed-out context, invalid reassessments,
+and uncertain conclusions preserve the original alert and are logged without
+message content. Refresh reads full message text rather than relying on short
+previews. Context is bounded to 100 messages and 64,000 characters; a source read
+has a 30-second limit and each batch has a 60-second refresh budget. Unreadable or
+oversized bodies and Teams results that still require unsupported paging cannot
+justify suppression. Reassessments use the configured Copilot model and appear in
+local credit usage. Refresh is a snapshot,
+not a guarantee against a reply arriving afterward. It does not continuously
+reconcile already-shown alerts or change messages, polling cursors or settings.
+
 New or reactivated Critical/Attention alerts appear in Peggy's bubble without
 opening or focusing the Alert Center automatically. Click the bubble's body to
 open and highlight its matching alert in Peggy, or use the close button to hide

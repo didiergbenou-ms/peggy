@@ -241,11 +241,7 @@ public sealed class AlertManager
     public IReadOnlyList<AlertRecord> ReactivateDue(DateTimeOffset nowUtc)
     {
         ClearPreviousDays(nowUtc);
-        var due = _state.State.Alerts
-            .Where(alert =>
-                alert.Status == AlertStatus.Snoozed &&
-                alert.SnoozedUntilUtc <= nowUtc)
-            .ToList();
+        var due = GetDueForNotification(nowUtc);
         foreach (var alert in due)
         {
             alert.Status = AlertStatus.Active;
@@ -254,6 +250,36 @@ public sealed class AlertManager
         }
 
         return due;
+    }
+
+    public IReadOnlyList<AlertRecord> GetDueForNotification(DateTimeOffset nowUtc)
+        => _state.State.Alerts
+            .Where(alert => alert.Status == AlertStatus.Snoozed &&
+                alert.SnoozedUntilUtc <= nowUtc &&
+                !AlertDayPolicy.IsPreviousDay(alert, nowUtc))
+            .OrderBy(alert => alert.Tier)
+            .ToList();
+
+    public void CompleteSnoozeRefresh(
+        AlertRecord alert, AlertDecision? decision, DateTimeOffset nowUtc)
+    {
+        if (alert.Status != AlertStatus.Snoozed ||
+            alert.SnoozedUntilUtc is not { } until || until > nowUtc ||
+            (decision is not null && decision.ThreadId != alert.ThreadId))
+        {
+            throw new InvalidOperationException("Only a due, unchanged snoozed alert can finish notification review.");
+        }
+        alert.SnoozedUntilUtc = null;
+        alert.UpdatedUtc = nowUtc;
+        alert.Status = decision is null ? AlertStatus.Dismissed : AlertStatus.Active;
+        if (decision is not null)
+        {
+            alert.Tier = ApplyExplicitFeedback(alert.ThreadId, decision.Tier);
+            alert.Summary = decision.Summary;
+            alert.Reason = decision.Reason;
+            alert.MaterialHash = ComputeMaterialHash(
+                alert.Tier, alert.Summary, alert.Reason, alert.MessageIds);
+        }
     }
 
     public void CorrectTier(

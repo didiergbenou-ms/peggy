@@ -18,6 +18,10 @@ public record Message(
     DateTimeOffset ReceivedAt,
     bool IsRead)
 {
+    public bool IsFromMe { get; init; }
+
+    public string? FullText { get; init; }
+
     public string? WebUrl { get; init; }
 
     public string? TeamId { get; init; }
@@ -37,6 +41,15 @@ public record MessageThread(
     MessageSource Source,
     string Subject,
     IReadOnlyList<Message> Messages);
+
+/// <summary>
+/// Fresh thread context. IsComplete is false whenever relevant messages may be
+/// missing; partial or unsupported reads must never justify suppressing an alert.
+/// </summary>
+public sealed record AlertThreadRefreshResult(
+    MessageThread? Thread,
+    bool IsComplete,
+    string? Warning = null);
 
 public sealed record MessageContextResolution(
     string? WebUrl,

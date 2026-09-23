@@ -11,6 +11,7 @@ public sealed class MockMessageProvider : IMessageProvider
     private readonly ConcurrentDictionary<string, WorkActionRequest> _executedActions =
         new();
     private readonly List<MessageThread> _threads;
+    private readonly IReadOnlyList<Message> _historicalMessages;
     private readonly PeggySettings _settings;
 
     public int ListJoinedTeamsCallCount { get; private set; }
@@ -105,6 +106,8 @@ public sealed class MockMessageProvider : IMessageProvider
             new("t-201", MessageSource.Teams, "Daily standup in 15 minutes",
                 new List<Message> { _messages["m-2002"] }),
         };
+        _historicalMessages = _threads.SelectMany(thread => thread.Messages)
+            .Where(message => !_messages.ContainsKey(message.Id)).ToList();
     }
 
     public Task<IReadOnlyList<Message>> ListUnreadAsync(MessageSource? source, int limit, CancellationToken ct = default)
@@ -186,6 +189,30 @@ public sealed class MockMessageProvider : IMessageProvider
     {
         ct.ThrowIfCancellationRequested();
         return Task.FromResult(_threads.FirstOrDefault(t => t.Id == threadId));
+    }
+
+    public Task<AlertThreadRefreshResult> RefreshThreadForAlertAsync(
+        string threadId,
+        DateTimeOffset sinceUtc,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var thread = _threads.FirstOrDefault(t => t.Id == threadId);
+        if (thread is null)
+        {
+            return Task.FromResult(new AlertThreadRefreshResult(
+                null, false, "The mock thread was not found."));
+        }
+
+        var messages = _messages.Values.Concat(_historicalMessages)
+            .Where(message => message.ThreadId == threadId)
+            .DistinctBy(message => message.Id, StringComparer.Ordinal)
+            .OrderBy(message => message.ReceivedAt)
+            .ToList();
+        return Task.FromResult(new AlertThreadRefreshResult(
+            thread with { Messages = messages },
+            messages.Count > 0,
+            messages.Count > 0 ? null : "The mock thread is empty."));
     }
 
     public Task<IReadOnlyList<CalendarItem>> ListUpcomingEventsAsync(

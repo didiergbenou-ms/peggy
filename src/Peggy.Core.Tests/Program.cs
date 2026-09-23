@@ -76,6 +76,8 @@ try
     await CoreBehaviorSmokeTests.RunAsync(testDirectory);
     await MonitoringIntervalSmokeTests.RunAsync(testDirectory);
     await DailyAlertSmokeTests.RunAsync(testDirectory);
+    await NotificationRefreshSmokeTests.RunAsync(testDirectory);
+    await AlertThreadRefreshProviderTests.RunAsync(testDirectory);
     await AssistantBehaviorSmokeTests.RunAsync(testDirectory);
     await AppIntegrationSmokeTests.RunAsync();
     await SettingsCatalogCacheSmokeTests.RunAsync();
@@ -1423,6 +1425,11 @@ static bool TryRunFakeWorkIq(string[] arguments)
         : null;
     var scenario = Environment.GetEnvironmentVariable(
         "PEGGY_FAKE_WORKIQ_SCENARIO");
+    if (scenario == "alert-thread-refresh")
+    {
+        AlertThreadRefreshProviderTests.HandleFakeRequest(arguments[0], url);
+        return true;
+    }
     if (scenario == "monitoring-modes")
     {
         MonitoringScopeSmokeTests.HandleFakeRequest(arguments[0], url);
