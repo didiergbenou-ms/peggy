@@ -1315,6 +1315,27 @@ details** copies the complete report; **Create diagnostic ZIP** runs the
 packaged collector with deterministic WorkIQ probes, without invoking Copilot
 or sending email.
 
+### Investigate a previous setup failure
+
+Unified setup writes to `%TEMP%\Peggy_<timestamp>.log`; its Windows Installer
+transaction uses the neighboring `_000_PeggyMsi.log` (the numeric suffix can vary).
+Keep these files before Windows temporary-file cleanup removes them.
+
+The new detailed setup logging adds `PEGGY_SETUP` records with a per-process
+session ID, PID, UTC timestamp, release version, operation ID and elapsed time.
+Started/completed/failed/cancelled records distinguish account verification,
+WorkIQ/EULA version checks, saved-state validation, account/preferences saving,
+lock acquisition/release and application launch. Exception records retain
+redacted messages, inner exceptions, HRESULTs, stack method names and available
+WorkIQ HTTP status. Burn install, rollback and shutdown context stays alongside
+these events, so separate setup instances can be correlated without confusing
+installation success with successful account setup or launch.
+
+New diagnostic messages redact credentials, email addresses, URLs and user-profile
+paths. Device-sign-in exception text is omitted rather than risking authentication
+codes in logs. Stack file paths and arbitrary exception data are not recorded.
+This does not change setup behavior or reconstruct details absent from older logs.
+
 ### Collect a diagnostic ZIP
 
 Use **Help → Troubleshooting → Create diagnostic ZIP** for the packaged
@@ -1342,10 +1363,18 @@ review and sharing.
 The bundle includes Peggy versions, selected installation hashes, process and
 startup details, the collector script hash and source Git commit, a decrypted
 operational-state summary, speech-model inventory, raw and redacted lifecycle
-logs, full relevant Windows Application events, and optional deep Copilot and
+logs, redacted recent setup logs, full relevant Windows Application events, and optional deep Copilot and
 WorkIQ diagnostics. WorkIQ diagnostics use Peggy's pinned account and test its
 exact profile fields, Inbox access, child-folder listing, message permission,
 configuration, and tenant policies while preserving full technical errors.
+
+Setup-log collection selects the newest ten default main Burn logs modified
+within the last fourteen days from `%TEMP%`, without collecting raw copies or
+neighboring MSI logs. `setup-logs-manifest.json` identifies selected files,
+unreadable logs, omitted files and truncation. Each log is limited to the last
+configured `LogTailLines` lines (default 2,000) and a 4 MiB tail; lines above
+65,536 characters are omitted. Native logs remain available separately in
+`%TEMP%` when deeper installer investigation is needed.
 
 The ZIP can contain account identifiers, folder metadata, process command
 lines, and raw CLI output. It still excludes credentials, tokens,

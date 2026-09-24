@@ -161,7 +161,8 @@ public partial class WorkIqSignInWindow
             "Saved account verification cancelled. You can reconnect above.");
     }
 
-    private async Task RunInstallerOperationAsync(Func<CancellationToken, Task> operation, string status)
+    private async Task RunInstallerOperationAsync(Func<CancellationToken, Task> operation, string status,
+        [System.Runtime.CompilerServices.CallerMemberName] string stage = "")
     {
         if (_installer is null || _installerBusy || _busy || _closed || _installerCommitted) return;
         _installerBusy = true;
@@ -169,7 +170,10 @@ public partial class WorkIqSignInWindow
         _installerCancellation = cancellation;
         InstallerStatus.Text = OperationStatus.Text = status;
         UpdateControls();
-        try { await operation(cancellation.Token); }
+        try
+        {
+            await _installer.Diagnostics.RunAsync($"ui.{stage}", () => operation(cancellation.Token));
+        }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
             InstallerStatus.Text = OperationStatus.Text = "Cancelled — No account was saved. Retry when ready.";

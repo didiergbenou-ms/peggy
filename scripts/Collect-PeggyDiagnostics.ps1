@@ -113,6 +113,207 @@ function Write-JsonFile {
         -Content (ConvertTo-Json -InputObject $Value -Depth 8)
 }
 
+function Read-PeggySetupLogTail {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [ValidateRange(1, 10000)][int]$LogTailLines = 2000,
+        [ValidateRange(1024, 16777216)][int]$MaxReadBytes = 4MB,
+        [ValidateRange(128, 65536)][int]$MaxLineCharacters = 65536
+    )
+
+    $stream = [IO.File]::Open(
+        $Path, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    )
+    try {
+        $sourceBytes = $stream.Length
+        $header = New-Object byte[] 4
+        $headerLength = $stream.Read($header, 0, $header.Length)
+        $encoding = [Text.Encoding]::UTF8
+        $preambleBytes = 0
+        $characterBytes = 1
+        if ($headerLength -ge 2 -and
+            $header[0] -eq 255 -and $header[1] -eq 254) {
+            $encoding = [Text.Encoding]::Unicode
+            $preambleBytes = 2
+            $characterBytes = 2
+        }
+        elseif ($headerLength -ge 2 -and
+            $header[0] -eq 254 -and $header[1] -eq 255) {
+            $encoding = [Text.Encoding]::BigEndianUnicode
+            $preambleBytes = 2
+            $characterBytes = 2
+        }
+        elseif ($headerLength -ge 3 -and
+            $header[0] -eq 239 -and $header[1] -eq 187 -and
+            $header[2] -eq 191) {
+            $preambleBytes = 3
+        }
+        $offset = [Math]::Max($preambleBytes, $sourceBytes - $MaxReadBytes)
+        $offset += ($offset - $preambleBytes) % $characterBytes
+        [void]$stream.Seek($offset, [IO.SeekOrigin]::Begin)
+        $buffer = New-Object byte[] ([int]($sourceBytes - $offset))
+        $readBytes = 0
+        while ($readBytes -lt $buffer.Length) {
+            $count = $stream.Read($buffer, $readBytes, $buffer.Length - $readBytes)
+            if ($count -eq 0) { break }
+            $readBytes += $count
+        }
+        $text = $encoding.GetString($buffer, 0, $readBytes)
+    }
+    finally {
+        $stream.Dispose()
+    }
+
+    $byteTailTruncated = $offset -gt $preambleBytes -or
+        $readBytes -lt $buffer.Length
+    if ($offset -gt $preambleBytes) {
+        # A byte-limited tail may start inside a credential: discard that entire line.
+        $newline = [regex]::Match($text, '\r\n|\n|\r')
+        $text = if ($newline.Success) {
+            $text.Substring($newline.Index + $newline.Length)
+        } else { '' }
+    }
+    $lines = if ($text.Length -eq 0) { @() } else {
+        $split = [regex]::Split($text, '\r\n|\n|\r')
+        $length = $split.Length
+        if ($split[$length - 1] -eq '') { $length-- }
+        if ($length -gt 0) { $split[0..($length - 1)] }
+    }
+    $lines = @($lines)
+    $lineCountTruncated = $lines.Count -gt $LogTailLines
+    $firstLine = [Math]::Max(0, $lines.Count - $LogTailLines)
+    $oversizedLineCount = 0
+    $safeLines = @(
+        for ($index = $firstLine; $index -lt $lines.Count; $index++) {
+            $line = $lines[$index]
+            if ($line.Length -le $MaxLineCharacters) {
+                $line = Protect-Text (Remove-CredentialText $line)
+            }
+            if ($line.Length -gt $MaxLineCharacters) {
+                # Do not cut a quoted secret into a fragment that redaction cannot recognize.
+                $oversizedLineCount++
+                '[oversized setup log line omitted]'
+            }
+            else {
+                $line
+            }
+        }
+    )
+    return [pscustomobject]@{
+        Content = $safeLines -join [Environment]::NewLine
+        SourceBytes = $sourceBytes
+        ReadBytes = $readBytes
+        LinesWritten = $safeLines.Count
+        ByteTailTruncated = $byteTailTruncated
+        LineCountTruncated = $lineCountTruncated
+        OversizedLineCount = $oversizedLineCount
+        Truncated = $byteTailTruncated -or $lineCountTruncated -or
+            $oversizedLineCount -gt 0
+    }
+}
+
+function Export-PeggySetupLogs {
+    param(
+        [Parameter(Mandatory)][string]$SourceDirectory,
+        [Parameter(Mandatory)][string]$DestinationDirectory,
+        [ValidateRange(1, 10000)][int]$LogTailLines = 2000,
+        [datetime]$NowUtc = [datetime]::UtcNow
+    )
+
+    $pattern = '\APeggy_[0-9]{14}\.log\z'
+    $cutoff = $NowUtc.ToUniversalTime().AddDays(-14)
+    $manifest = [ordered]@{
+        Source = '%TEMP%'
+        FilePattern = $pattern
+        CollectedAtUtc = $NowUtc.ToUniversalTime().ToString('O')
+        CutoffUtc = $cutoff.ToString('O')
+        MaximumLogCount = 10
+        MaximumReadBytes = 4MB
+        MaximumLineCharacters = 65536
+        LogTailLines = $LogTailLines
+        EligibleLogCount = 0
+        OmittedLogCount = 0
+        CollectedLogCount = 0
+        Status = 'NoRecentLogs'
+        ErrorType = $null
+        ErrorMessage = $null
+        Files = @()
+    }
+    try {
+        $eligible = @(Get-ChildItem -LiteralPath $SourceDirectory `
+            -Filter 'Peggy_*.log' -File -ErrorAction Stop | Where-Object {
+                $_.Name -cmatch $pattern -and
+                -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+                $_.LastWriteTimeUtc -ge $cutoff -and
+                $_.LastWriteTimeUtc -le $NowUtc.ToUniversalTime()
+            } | Sort-Object -Property @(
+                @{ Expression = 'LastWriteTimeUtc'; Descending = $true },
+                @{ Expression = 'Name'; Descending = $true }
+            ))
+        $manifest.EligibleLogCount = $eligible.Count
+        $manifest.OmittedLogCount = [Math]::Max(0, $eligible.Count - 10)
+        foreach ($file in @($eligible | Select-Object -First 10)) {
+            $entry = [ordered]@{
+                SourceRelativePath = $file.Name
+                OutputRelativePath = $null
+                ModifiedUtc = $file.LastWriteTimeUtc.ToString('O')
+                SourceBytes = $file.Length
+                ReadBytes = $null
+                LinesWritten = 0
+                ByteTailTruncated = $null
+                LineCountTruncated = $null
+                OversizedLineCount = 0
+                Truncated = $null
+                Status = 'Error'
+                ErrorType = $null
+                ErrorMessage = $null
+            }
+            try {
+                $tail = Read-PeggySetupLogTail -Path $file.FullName `
+                    -LogTailLines $LogTailLines `
+                    -MaxReadBytes $manifest.MaximumReadBytes `
+                    -MaxLineCharacters $manifest.MaximumLineCharacters
+                $relativePath = Join-Path 'setup-logs' ($file.Name + '.txt')
+                [void][IO.Directory]::CreateDirectory(
+                    (Join-Path $DestinationDirectory 'setup-logs'))
+                Write-TextFile -Path (Join-Path $DestinationDirectory $relativePath) `
+                    -Content $tail.Content
+                $entry.OutputRelativePath = $relativePath
+                foreach ($property in @(
+                    'SourceBytes', 'ReadBytes', 'LinesWritten', 'ByteTailTruncated',
+                    'LineCountTruncated', 'OversizedLineCount', 'Truncated'
+                )) {
+                    $entry[$property] = $tail.$property
+                }
+                $entry.Status = 'Collected'
+                $manifest.CollectedLogCount++
+            }
+            catch [IO.IOException], [UnauthorizedAccessException],
+                [Security.SecurityException] {
+                $entry.ErrorType = $_.Exception.GetBaseException().GetType().FullName
+                $entry.ErrorMessage = Protect-Text (
+                    Remove-CredentialText $_.Exception.Message)
+            }
+            $manifest.Files += [pscustomobject]$entry
+        }
+        if ($manifest.Files.Count -gt 0) {
+            $manifest.Status = if (
+                $manifest.CollectedLogCount -eq $manifest.Files.Count
+            ) { 'Collected' } else { 'Partial' }
+        }
+    }
+    catch [IO.IOException], [UnauthorizedAccessException],
+        [Security.SecurityException], [Management.Automation.ItemNotFoundException] {
+        $manifest.Status = 'Error'
+        $manifest.ErrorType = $_.Exception.GetBaseException().GetType().FullName
+        $manifest.ErrorMessage = Protect-Text (
+            Remove-CredentialText $_.Exception.Message)
+    }
+    Write-JsonFile -Path (Join-Path $DestinationDirectory 'setup-logs-manifest.json') `
+        -Value $manifest
+}
+
 function Get-Sha256 {
     param([Parameter(Mandatory)][string]$Path)
 
@@ -1493,6 +1694,11 @@ try {
             -Content $logDetail
     }
 
+    Export-PeggySetupLogs `
+        -SourceDirectory ([IO.Path]::GetTempPath()) `
+        -DestinationDirectory $staging `
+        -LogTailLines $LogTailLines
+
     $scopeFiles = @(Get-ChildItem `
         -LiteralPath ([IO.Path]::GetTempPath()) `
         -File `
@@ -1930,6 +2136,9 @@ Collected:
 - Encrypted-state file metadata, hash, and decrypted operational summary
 - Speech-model inventory only
 - Raw and redacted Peggy lifecycle logs
+- Redacted main Burn setup logs (newest 10 modified within 14 days), with
+  collection/error manifest; each is limited to the last $LogTailLines lines
+  and a 4 MiB tail, with lines over 65,536 characters omitted
 - Temporary Peggy scope-file metadata only
 - Prerequisite versions
 - Full Peggy-related Windows Application event messages

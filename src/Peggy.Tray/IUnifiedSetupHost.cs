@@ -13,6 +13,7 @@ internal sealed record SetupInstallResult(bool Succeeded, bool Cancelled, bool R
 internal interface IUnifiedSetupHost
 {
     PeggyStateDocument InitialState { get; }
+    SetupDiagnostics Diagnostics { get; }
     bool RequiresOnboarding { get; }
     string ActionLabel { get; }
     event Action<SetupInstallProgress>? Progress;
@@ -23,5 +24,5 @@ internal interface IUnifiedSetupHost
     Task CompleteAsync(WorkIqAccountIdentity identity, bool voiceReady, CancellationToken ct);
     void Cancel();
     void Close(bool launch);
-    void ReportFailure(Exception exception);
+    void ReportFailure(Exception exception, bool includeExceptionMessages = true);
 }

@@ -1,5 +1,6 @@
 using WixToolset.BootstrapperApplicationApi;
 using Peggy.Tray;
+using Peggy.Core;
 
 namespace Peggy.SetupBootstrapper;
 
@@ -14,30 +15,55 @@ internal sealed class BurnInstaller
     private volatile bool _rollback;
     private bool _downgrade;
     private int _inFlight;
+    private bool _applyStarted;
+    private bool _applyCompleted;
 
     internal BurnInstaller(BootstrapperApplication application, IEngine engine, IBootstrapperCommand command)
     {
         _engine = engine;
         _command = command;
-        application.DetectBegin += (_, _) => { CurrentMsiPresent = false; _downgrade = false; };
+        Diagnostics = new SetupDiagnostics(line => engine.Log(LogLevel.Standard, line), PeggyReleaseVersion.Display);
+        Diagnostics.Event("session", "opened",
+            $"action={command.Action}; display={command.Display}; relation={command.Relation}");
+        application.DetectBegin += (_, _) =>
+        {
+            CurrentMsiPresent = false;
+            _downgrade = false;
+            Diagnostics.Event("burn.detect", "started");
+        };
         application.DetectPackageComplete += (_, e) =>
         {
             if (e.PackageId == "PeggyMsi") CurrentMsiPresent = e.State == PackageState.Present;
+            Diagnostics.Event("burn.detect-package", "completed", $"package={e.PackageId}; state={e.State}");
         };
         application.DetectRelatedBundle += (_, e) =>
         {
+            Diagnostics.Event("burn.related-bundle", "detected", $"relation={e.RelationType}; version={e.Version}");
             if (e.RelationType == RelationType.Upgrade &&
                 engine.CompareVersions(e.Version, engine.GetVariableVersion("WixBundleVersion")) > 0)
                 _downgrade = true;
         };
-        application.DetectComplete += (_, e) => _detect?.TrySetResult(e.Status);
+        application.DetectComplete += (_, e) =>
+        {
+            Diagnostics.Event("burn.detect", e.Status < 0 ? "failed" : "completed", $"status=0x{e.Status:X8}");
+            _detect?.TrySetResult(e.Status);
+        };
         application.PlanMsiPackage += (_, e) =>
         {
             e.UiLevel = INSTALLUILEVEL.None;
             e.DisableExternalUiHandler = false;
         };
-        application.PlanComplete += (_, e) => _plan?.TrySetResult(e.Status);
-        application.ApplyBegin += (_, e) => e.Cancel = _cancel;
+        application.PlanComplete += (_, e) =>
+        {
+            Diagnostics.Event("burn.plan", e.Status < 0 ? "failed" : "completed", $"status=0x{e.Status:X8}");
+            _plan?.TrySetResult(e.Status);
+        };
+        application.ApplyBegin += (_, e) =>
+        {
+            e.Cancel = _cancel;
+            _applyStarted = true;
+            Diagnostics.Event("burn.apply", "started", $"cancel={_cancel}");
+        };
         application.CacheAcquireProgress += (_, e) =>
         {
             e.Cancel = _cancel;
@@ -47,6 +73,8 @@ internal sealed class BurnInstaller
         {
             _rollback = !e.ShouldExecute;
             e.Cancel = _cancel && !_rollback;
+            Diagnostics.Event("burn.execute-package", "started",
+                $"package={e.PackageId}; rollback={_rollback}; cancel={e.Cancel}");
         };
         application.ExecuteProgress += (_, e) =>
         {
@@ -58,11 +86,13 @@ internal sealed class BurnInstaller
         application.ExecuteFilesInUse += (_, e) =>
         {
             e.Result = Result.Cancel;
+            Diagnostics.Event("burn.files-in-use", "blocked", "response=Cancel");
             Progress?.Invoke(new("Files are in use. Quit Peggy and retry after rollback completes.", 0));
         };
         application.Error += (_, e) =>
         {
             engine.Log(LogLevel.Error, $"Peggy setup: installer error {e.ErrorCode} ({e.ErrorType}).");
+            Diagnostics.Event("burn.error", "failed", $"error={e.ErrorCode}; type={e.ErrorType}; rollback={_rollback}");
             e.Result = _cancel ? Result.Cancel : e.Recommendation;
             Progress?.Invoke(new($"Windows Installer reported error {e.ErrorCode}. Wait for it to finish, then retry.", 0));
         };
@@ -76,6 +106,9 @@ internal sealed class BurnInstaller
             var restart = e.Restart != ApplyRestart.None;
             var succeeded = e.Status >= 0;
             ExitCode = succeeded ? restart ? 3010 : 0 : e.Status;
+            _applyCompleted = true;
+            Diagnostics.Event("burn.apply", succeeded ? "completed" : _cancel ? "cancelled" : "failed",
+                $"status=0x{e.Status:X8}; restart={e.Restart}; exitCode={ExitCode}");
             _apply?.TrySetResult(new(succeeded, _cancel && !succeeded, restart,
                 succeeded
                     ? restart ? "Peggy is installed. Restart Windows before connecting accounts. Setup will not restart this PC automatically."
@@ -83,12 +116,16 @@ internal sealed class BurnInstaller
                     : _cancel ? "Installation cancelled. Windows Installer has completed rollback. You can retry or close."
                     : $"Installation failed (0x{e.Status:X8}). Windows Installer has finished. Review the log, then Retry."));
         };
-        application.Shutdown += (_, e) => e.Action = IsLayout
-            ? BOOTSTRAPPER_SHUTDOWN_ACTION.SkipCleanup
-            : BOOTSTRAPPER_SHUTDOWN_ACTION.None;
+        application.Shutdown += (_, e) =>
+        {
+            e.Action = IsLayout ? BOOTSTRAPPER_SHUTDOWN_ACTION.SkipCleanup : BOOTSTRAPPER_SHUTDOWN_ACTION.None;
+            Diagnostics.Event("burn.shutdown", "requested",
+                $"action={e.Action}; exitCode={ExitCode}; applyStarted={_applyStarted}; applyCompleted={_applyCompleted}; msiPresentAtDetect={CurrentMsiPresent}");
+        };
     }
 
     internal event Action<SetupInstallProgress>? Progress;
+    internal SetupDiagnostics Diagnostics { get; }
     internal bool CurrentMsiPresent { get; private set; }
     internal int ExitCode { get; private set; } = 1602;
     internal bool RequiresOnboarding => SetupPolicy.ShouldOnboard(_command.Action, _command.Display,
@@ -125,6 +162,7 @@ internal sealed class BurnInstaller
             throw new InvalidOperationException("An installer operation is already running.");
         _cancel = false;
         _rollback = false;
+        _applyStarted = _applyCompleted = false;
         using var cancellation = ct.Register(Cancel);
         try
         {
@@ -133,6 +171,7 @@ internal sealed class BurnInstaller
             _plan = NewCompletion<int>();
             // Burn initializes WixBundleLayoutDirectory from the command before
             // creating this BA; preserve its resolved destination unchanged.
+            Diagnostics.Event("burn.plan", "started", $"action={_command.Action}");
             _engine.Plan(_command.Action);
             ThrowFailure(await _plan.Task, "Plan");
             ct.ThrowIfCancellationRequested();
@@ -144,14 +183,26 @@ internal sealed class BurnInstaller
         finally { Interlocked.Exchange(ref _inFlight, 0); }
     }
 
-    internal void Cancel() => _cancel = true;
-    internal void LogFailure(Exception ex, bool preserveExitCode = false)
+    internal void Cancel()
+    {
+        Diagnostics.Event("burn.cancel", "requested", $"rollback={_rollback}; applyStarted={_applyStarted}");
+        _cancel = true;
+    }
+    internal void LogFailure(Exception ex, bool preserveExitCode = false,
+        bool includeExceptionMessages = true)
     {
         if (!preserveExitCode) ExitCode = ex is OperationCanceledException ? 1602 : 1603;
         _engine.Log(LogLevel.Error, $"Peggy setup operation failed ({ex.GetType().Name}); review the inline setup status.");
+        Diagnostics.Failure("setup.operation", ex,
+            $"preserveExitCode={preserveExitCode}; exitCode={ExitCode}; applyStarted={_applyStarted}; applyCompleted={_applyCompleted}",
+            includeExceptionMessages);
     }
     internal void WindowReady() => _engine.CloseSplashScreen();
-    internal void Quit() => _engine.Quit(ExitCode);
+    internal void Quit()
+    {
+        Diagnostics.Event("session", "closing", $"exitCode={ExitCode}");
+        _engine.Quit(ExitCode);
+    }
     private static TaskCompletionSource<T> NewCompletion<T>() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private static void ThrowFailure(int status, string phase)

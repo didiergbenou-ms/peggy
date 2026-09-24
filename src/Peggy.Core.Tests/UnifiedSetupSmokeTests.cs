@@ -49,6 +49,8 @@ internal static class UnifiedSetupSmokeTests
 
     internal static async Task RunAsync(string directory)
     {
+        await SetupDiagnosticsSmokeTests.RunAsync(directory);
+        await SetupLogCollectorSmokeTests.RunAsync(directory);
         foreach (var display in new[] { Display.None, Display.Passive, Display.Embedded })
             TestAssert.True(!SetupPolicy.ShowWindow(display, RelationType.None) &&
                 !SetupPolicy.ShouldOnboard(LaunchAction.Install, display, RelationType.None, false),
@@ -112,6 +114,12 @@ internal static class UnifiedSetupSmokeTests
             "Retry or restart-required return code was lost.");
         TestAssert.True(application.ReportShutdown() == BOOTSTRAPPER_SHUTDOWN_ACTION.None,
             "Normal setup requested an automatic restart.");
+        burn.LogFailure(new InvalidOperationException("Post-install synthetic failure",
+            new IOException("Synthetic underlying cause")), preserveExitCode: true);
+        TestAssert.True(burn.ExitCode == 3010 && fake.Logs.Any(line =>
+            line.Contains("Post-install synthetic failure") && line.Contains("Synthetic underlying cause")) &&
+            fake.Logs.Any(line => line.Contains("burn.shutdown") && line.Contains("exitCode=3010")),
+            "Detailed failure logging changed the committed exit code or lost shutdown/error context.");
         var layoutApplication = new FakeApplication();
         var layoutEngine = DispatchProxy.Create<IEngine, FakeEngine>();
         var layoutFake = (FakeEngine)(object)layoutEngine;
@@ -187,6 +195,8 @@ internal static class UnifiedSetupSmokeTests
         TestFreshInstallAndFinish();
         TestCancelAndRestart();
         TestUpgradeAndPersistenceFailure();
+        TestFinishStageDiagnostics();
+        TestAuthenticationDiagnostics();
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -295,6 +305,61 @@ internal static class UnifiedSetupSmokeTests
             host.FailCompletion = false;
             Click(window, "FinishButton");
             TestAssert.True(host.Launched && host.Completions == 1, "Persistence retry could not complete.");
+            var entries = host.Logs.Select(SetupDiagnosticsSmokeTests.Parse).ToList();
+            TestAssert.True(entries.Any(entry => entry.GetProperty("stage").GetString() == "finish.save-setup" &&
+                    entry.GetProperty("outcome").GetString() == "failed") &&
+                entries.Any(entry => entry.GetProperty("stage").GetString() == "finish.save-setup" &&
+                    entry.GetProperty("outcome").GetString() == "completed") &&
+                entries.Any(entry => entry.GetProperty("stage").GetString() == "finish.launch" &&
+                    entry.GetProperty("outcome").GetString() == "completed"),
+                "Finish persistence failure/retry and launch were not retained in diagnostics.");
+        }
+        finally { window.Close(); }
+    }
+
+    private static void TestFinishStageDiagnostics()
+    {
+        foreach (var stage in new[] { "finish.verify-account", "finish.workiq-version", "finish.launch" })
+        {
+            var host = new FakeHost { SavedIdentity = Identity };
+            var setup = new FakeWorkIq();
+            var window = CreateWindow(host, setup);
+            try
+            {
+                Complete(window.PrepareInstallerAsync());
+                Complete(window.ApplyInstallerAsync());
+                Complete(window.CheckCopilotAsync());
+                if (stage == "finish.verify-account") setup.FailVerification = true;
+                if (stage == "finish.workiq-version") setup.FailVersion = true;
+                if (stage == "finish.launch") host.FailLaunch = true;
+                Click(window, "FinishButton");
+                TestAssert.True(!host.Launched && host.Logs.Select(SetupDiagnosticsSmokeTests.Parse).Any(entry =>
+                        entry.GetProperty("stage").GetString() == stage &&
+                        entry.GetProperty("outcome").GetString() == "failed" &&
+                        entry.GetProperty("errors").GetArrayLength() > 0),
+                    $"Finish diagnostics did not identify {stage} as the failed step.");
+            }
+            finally { window.Close(); }
+        }
+    }
+
+    private static void TestAuthenticationDiagnostics()
+    {
+        var host = new FakeHost();
+        var readiness = new FakeReadiness { FailSignIn = true };
+        var window = new WorkIqSignInWindow(host, new FakeWorkIq(), readiness,
+            installVoice: (_, _, _) => Task.CompletedTask, voiceInstalled: _ => false);
+        try
+        {
+            Complete(window.PrepareInstallerAsync());
+            Complete(window.ApplyInstallerAsync());
+            Complete(window.CheckCopilotAsync(signIn: true));
+            TestAssert.True(host.Logs.Any(line => line.Contains("authentication-detail-omitted")) &&
+                host.Logs.All(line => !line.Contains("UNSTRUCTURED-LOGIN-SECRET")) &&
+                host.Logs.Select(SetupDiagnosticsSmokeTests.Parse).Any(entry =>
+                    entry.GetProperty("stage").GetString() == "ui.CheckCopilotAsync" &&
+                    entry.GetProperty("outcome").GetString() == "failed"),
+                "Device-sign-in diagnostics either lost the failure or exposed raw authentication output.");
         }
         finally { window.Close(); }
     }
@@ -350,11 +415,15 @@ internal static class UnifiedSetupSmokeTests
 
     private sealed class FakeHost : IUnifiedSetupHost
     {
+        public List<string> Logs { get; } = [];
+        public SetupDiagnostics Diagnostics { get; }
+        public FakeHost() => Diagnostics = new(Logs.Add, "synthetic-beta");
         public PeggyStateDocument InitialState { get; init; } = new();
         public bool RequiresOnboarding => true;
         public string ActionLabel => "Install / update Peggy";
         public bool Ready { get; set; } = true;
         public bool FailCompletion { get; set; }
+        public bool FailLaunch { get; set; }
         public bool Launched { get; private set; }
         public int RequirementInstalls, Applies, Completions, Cancels;
         public WorkIqAccountIdentity? SavedIdentity { get; init; }
@@ -375,32 +444,47 @@ internal static class UnifiedSetupSmokeTests
             Completions++; return Task.CompletedTask;
         }
         public void Cancel() => Cancels++;
-        public void Close(bool launch) => Launched |= launch;
-        public void ReportFailure(Exception exception) { }
+        public void Close(bool launch)
+        {
+            if (launch && FailLaunch) throw new InvalidOperationException("Synthetic missing installed executable.");
+            Launched |= launch;
+        }
+        public void ReportFailure(Exception exception, bool includeExceptionMessages = true)
+            => Diagnostics.Failure("setup.operation", exception, includeExceptionMessages: includeExceptionMessages);
     }
 
     private sealed class FakeWorkIq : IWorkIqSetupService
     {
         public int VersionChecks, SignIns;
+        public bool FailVerification, FailVersion;
         public WorkIqAccountIdentity VerifiedIdentity = Identity;
         public bool TryGetExecutablePath(out string executablePath) { executablePath = "fake-workiq"; return true; }
-        public Task<string> GetVersionAsync(CancellationToken ct = default) { VersionChecks++; return Task.FromResult("1.0.0"); }
+        public Task<string> GetVersionAsync(CancellationToken ct = default)
+        {
+            VersionChecks++;
+            if (FailVersion) throw new InvalidOperationException("Synthetic WorkIQ version failure.");
+            return Task.FromResult("1.0.0");
+        }
         public Task InstallAsync(CancellationToken ct = default) => Task.CompletedTask;
         public Task<WorkIqAccountIdentity> SignInAsync(string account, string version, CancellationToken ct = default,
             IProgress<WorkIqSignInStage>? progress = null) { SignIns++; return Task.FromResult(Identity); }
-        public Task<WorkIqAccountIdentity> VerifyAccountAsync(string account, CancellationToken ct = default) => Task.FromResult(VerifiedIdentity);
+        public Task<WorkIqAccountIdentity> VerifyAccountAsync(string account, CancellationToken ct = default)
+            => FailVerification ? throw new WorkIqSetupException("Synthetic identity failure.")
+                : Task.FromResult(VerifiedIdentity);
         public Task ProbeInboxAccessAsync(WorkIqAccountIdentity identity, CancellationToken ct = default) => Task.CompletedTask;
     }
 
     private sealed class FakeReadiness : ISetupReadinessService
     {
+        public bool FailSignIn { get; init; }
         public Task<SetupLocalReadiness> CheckLocalAsync(CancellationToken ct, IProgress<SetupLocalCheckUpdate>? progress = null)
         {
             var ready = new SetupCheck(SetupCheckState.Ready, "Ready (simulated)", Version: "1.0.0");
             return Task.FromResult(new SetupLocalReadiness(ready, ready, ready, ready, ready));
         }
         public Task<SetupCheck> CheckCopilotAccessAsync(CancellationToken ct) => Task.FromResult(new SetupCheck(SetupCheckState.Ready, "Available (simulated)"));
-        public Task SignInCopilotAsync(CancellationToken ct, IProgress<CopilotDeviceCodeChallenge>? progress = null) => Task.CompletedTask;
+        public Task SignInCopilotAsync(CancellationToken ct, IProgress<CopilotDeviceCodeChallenge>? progress = null)
+            => FailSignIn ? throw new InvalidOperationException("UNSTRUCTURED-LOGIN-SECRET") : Task.CompletedTask;
     }
 
     private sealed class FakeApplication : BootstrapperApplication
@@ -432,11 +516,13 @@ internal static class UnifiedSetupSmokeTests
         public int Plans, Applies;
         public LaunchAction LastAction;
         public int VariableWrites;
+        public List<string> Logs { get; } = [];
         public TaskCompletionSource ApplyStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
         protected override object? Invoke(MethodInfo? method, object?[]? args)
         {
             switch (method!.Name)
             {
+                case "Log": Logs.Add((string)args![1]!); break;
                 case "Detect": _application!.Detect(Downgrade); break;
                 case "Plan": Plans++; LastAction = (LaunchAction)args![0]!; _application!.Plan(); break;
                 case "SetVariableString": VariableWrites++; break;

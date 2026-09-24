@@ -231,6 +231,8 @@ public partial class WorkIqSignInWindow : Window
                     : "Verifying existing GitHub Copilot access using the model catalog. No model prompt is sent.";
             }
             var result = await _readiness.CheckCopilotAccessAsync(ct);
+            _installer?.Diagnostics.Event("copilot.access", result.IsReady ? "ready" : "not-ready",
+                signIn ? null : result.Summary);
             ct.ThrowIfCancellationRequested();
             _copilotAccess = result;
             SetStep(CopilotAccessIndicator, CopilotAccessStatus, StateFor(result), result.StatusText);
@@ -323,7 +325,8 @@ public partial class WorkIqSignInWindow : Window
             "Checking — Mail access ready: testing Inbox access without reading message bodies.");
         try
         {
-            await _setup.ProbeInboxAccessAsync(_candidateIdentity!, ct);
+            await TraceSetupStepAsync("account.probe-inbox",
+                () => _setup.ProbeInboxAccessAsync(_candidateIdentity!, ct));
             ct.ThrowIfCancellationRequested();
             _mailReady = true;
             SetStep(MailAccessIndicator, MailAccessStatus, SetupStepState.Succeeded,
@@ -392,7 +395,8 @@ public partial class WorkIqSignInWindow : Window
             WorkIqAccountIdentity current;
             try
             {
-                current = await _setup.VerifyAccountAsync(candidate.Account, ct);
+                current = await TraceSetupStepAsync("finish.verify-account",
+                    () => _setup.VerifyAccountAsync(candidate.Account, ct));
             }
             catch
             {
@@ -408,23 +412,29 @@ public partial class WorkIqSignInWindow : Window
             if (!WorkIqSetupService.RepresentsSameAccount(candidate.Account, candidate.Mail,
                     candidate.UserPrincipalName, candidate.PrincipalId, current))
             {
+                _installer?.Diagnostics.Event("finish.compare-account", "mismatch");
                 ResetCandidate();
                 SetStep(AccountVerifiedIndicator, AccountVerifiedStatus, SetupStepState.Failed,
                     "Failed — WorkIQ changed accounts. Retry sign-in.");
                 throw new WorkIqSetupException("WorkIQ changed accounts. Verify your account again before finishing.");
             }
-            var version = await _setup.GetVersionAsync(ct);
+            _installer?.Diagnostics.Event("finish.compare-account", "matched");
+            var version = await TraceSetupStepAsync("finish.workiq-version",
+                () => _setup.GetVersionAsync(ct));
             ct.ThrowIfCancellationRequested();
             if (!string.Equals(version, candidate.EulaAcceptedVersion, StringComparison.Ordinal))
             {
+                _installer?.Diagnostics.Event("finish.compare-eula-version", "mismatch");
                 ResetCandidate();
                 throw new WorkIqEulaChangedException(
                     "WorkIQ changed versions. Retry local checks and review the current EULA before signing in.");
             }
+            _installer?.Diagnostics.Event("finish.compare-eula-version", "matched");
             SetStep(AccountVerifiedIndicator, AccountVerifiedStatus, SetupStepState.Succeeded, "Ready — Account verified");
             if (IsDifferentAccount(candidate) && _installer is not null &&
                 ConfirmInstallerAccountSwitch.IsChecked != true)
             {
+                _installer.Diagnostics.Event("finish.confirm-account-switch", "awaiting-user");
                 OperationStatus.Text = "Review and confirm the account switch above before choosing Finish.";
                 return;
             }
@@ -447,8 +457,10 @@ public partial class WorkIqSignInWindow : Window
             if (_installer is null) DialogResult = true;
             else
             {
-                await _installer.CompleteAsync(candidate, RevalidateVoiceModels(), ct);
-                _installer.Close(launch: true);
+                var voiceReady = _installer.Diagnostics.Run("finish.check-voice-files", RevalidateVoiceModels);
+                await TraceSetupStepAsync("finish.save-setup",
+                    () => _installer.CompleteAsync(candidate, voiceReady, ct));
+                _installer.Diagnostics.Run("finish.launch", () => _installer.Close(launch: true));
                 _installerFinished = true;
                 Close();
             }
@@ -570,7 +582,8 @@ public partial class WorkIqSignInWindow : Window
     }
 
     private async Task RunOperationAsync(
-        Func<CancellationToken, Task> action, string status, string cancelled, bool hideFailureDetails = false)
+        Func<CancellationToken, Task> action, string status, string cancelled, bool hideFailureDetails = false,
+        [System.Runtime.CompilerServices.CallerMemberName] string stage = "")
     {
         if (_busy || _closed || !InstallerAllowsOnboarding) return;
         _busy = true;
@@ -581,7 +594,12 @@ public partial class WorkIqSignInWindow : Window
         UpdateControls();
         using var operation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
         _activeOperationCancellation = operation;
-        try { await action(operation.Token); }
+        try
+        {
+            if (_installer is null) await action(operation.Token);
+            else await _installer.Diagnostics.RunAsync($"ui.{stage}",
+                () => action(operation.Token), includeExceptionMessages: !hideFailureDetails);
+        }
         catch (OperationCanceledException) when (operation.IsCancellationRequested)
         {
             if (!_closed)
@@ -592,7 +610,7 @@ public partial class WorkIqSignInWindow : Window
         }
         catch (Exception ex) when (SetupReadinessService.IsExpectedFailure(ex))
         {
-            _installer?.ReportFailure(ex);
+            _installer?.ReportFailure(ex, includeExceptionMessages: !hideFailureDetails);
             if (!_closed)
             {
                 if (ex is WorkIqEulaChangedException)
@@ -618,6 +636,12 @@ public partial class WorkIqSignInWindow : Window
             UpdateControls();
         }
     }
+
+    private Task<T> TraceSetupStepAsync<T>(string stage, Func<Task<T>> action)
+        => _installer is null ? action() : _installer.Diagnostics.RunAsync(stage, action);
+
+    private Task TraceSetupStepAsync(string stage, Func<Task> action)
+        => _installer is null ? action() : _installer.Diagnostics.RunAsync(stage, action);
 
     private void MarkInterruptedChecks(SetupStepState state, string status)
     {
