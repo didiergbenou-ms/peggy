@@ -19,10 +19,12 @@ remain in a separate local process.
 Peggy v0.1.13 uses one **Peggy setup** window for prerequisites, installation,
 account connection, and optional voice.
 
-**Beta preview: [v0.1.14-beta.1](https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.14-beta.1).**
-This beta adds close/open actions on alert bubbles, automatic clearing of
-previous-day alerts, and conversation refresh before notification. To try it,
-download `peggy-v0.1.14-beta.1-win-x64-setup.exe` from the beta release page.
+**Beta preview: [v0.1.14-beta.2](https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.14-beta.2).**
+This beta adds an Awareness-alert preference, detailed setup diagnostics, Teams
+refresh pagination, and safer upgrades with automatic closing of compatible
+running Peggy versions. It retains beta.1's bubble actions, daily clearing and
+refresh-before-notifying behavior. To try it, download
+`peggy-v0.1.14-beta.2-win-x64-setup.exe` from the beta release page.
 The latest stable release and the installation examples below remain v0.1.13.
 
 1. **Check access and prerequisites.** You need Windows x64, GitHub Copilot
@@ -34,7 +36,8 @@ The latest stable release and the installation examples below remain v0.1.13.
    [latest release](https://github.com/didiergbenou-ms/peggy/releases/latest)
    with a GitHub account that can access this private repository. Download
    `peggy-v0.1.13-win-x64-setup.exe` (or the corresponding filename for your
-   chosen release). Quit Peggy first and run setup normally from your desktop,
+   chosen release). For stable v0.1.13, quit Peggy first; beta.2 can close it safely
+   when you choose **Install / update**. Run setup normally from your desktop,
    not as administrator. Its prerequisite checklist offers explicit
    install/update actions. Packages are **not Authenticode-signed**; Windows
    SmartScreen may warn about an unknown publisher. Follow your organization's
@@ -265,6 +268,8 @@ active-alert context. Critical and Attention alerts remain enabled. Explicit tie
 feedback is applied before this filter, so **Always alert** items promoted to
 Attention are still received.
 
+The Awareness preference and Teams refresh pagination are new in v0.1.14-beta.2.
+
 This takes effect on Save without restarting or deleting history. Re-enabling
 shows still-active stored Awareness items, but does not replay messages skipped
 while off or generate catch-up pop-ups. Awareness remains non-interrupting.
@@ -295,8 +300,12 @@ and uncertain conclusions preserve the original alert and are logged without
 message content. Refresh reads full message text rather than relying on short
 previews. Context is bounded to 100 messages and 64,000 characters; a source read
 has a 30-second limit and each batch has a 60-second refresh budget. Unreadable or
-oversized bodies and Teams results that still require unsupported paging cannot
-justify suppression. Reassessments use the configured Copilot model and appear in
+oversized bodies or unverified continuation pages cannot justify suppression.
+Teams refresh follows same-conversation continuation pages, including when WorkIQ
+returns ten items despite a larger requested page size. Original requests and
+sent replies on later pages are included before reassessment. Repeated,
+non-progressing or wrong-resource pages retain the alert instead of treating
+partial context as complete. Reassessments use the configured Copilot model and appear in
 local credit usage. Refresh is a snapshot,
 not a guarantee against a reply arriving afterward. It does not continuously
 reconcile already-shown alerts or change messages, polling cursors or settings.
@@ -548,6 +557,24 @@ rollback transaction, including files from older builds that reused a file
 version. Settings, monitoring selections, saved account preference, and downloaded
 speech models are preserved. Re-running the same release is maintenance, not an
 upgrade, and does not automatically launch Peggy.
+
+**Beta.2 upgrade behavior:** opening setup and checking requirements leave Peggy
+running. Choosing **Install / update Peggy** requests shutdown of the verified
+current-user installation, waits for its exit and unlocked files, then installs.
+Versions supporting the new shutdown endpoint finish current work, stop voice and
+save state before exiting. Already-shipped v0.1.13 and v0.1.14-beta.1 instead use
+Windows Restart Manager without force termination; those versions cannot confirm
+a final state save. Unverified, unsupported or unresponsive processes require
+manual Quit and Retry/Cancel. No unrelated Node or Copilot processes are targeted.
+Quiet/passive operations and maintenance do not automatically close Peggy.
+
+Only one same-user setup instance can own preparation and installation. Setup
+disables Burn's separate implicit uninstall-on-exit cleanup, which runs after the
+setup UI process and its lock have exited. Explicit uninstall and real install
+transactions still retain their normal execution and rollback handling. Automatic
+purging of eligible orphaned bundle registrations is intentionally skipped instead
+of risking another instance's installation. These protections do not repair
+earlier lost local data.
 
 **Rollback limitation:** a non-elevated Windows Installer rollback can restore
 the previous files without restoring the previous product's fully installed
@@ -1058,8 +1085,9 @@ For example, `v0.1.11-beta.1` uses MSI `0.1.1130` and file version
 For `v0.1.13`, MSI uses `0.1.1399` and binaries use `0.1.1399.0`, above
 beta.1's `0.1.1330.0`; the Alerts header and About dialog still display the
 semantic version `v0.1.13`.
-The `v0.1.14-beta.1` preview uses MSI `0.1.1430` and binary file version
-`0.1.1430.0`, above stable v0.1.13; its user-facing version retains `-beta.1`.
+The `v0.1.14-beta.2` preview uses MSI `0.1.1431` and binary file version
+`0.1.1431.0`, above beta.1's `0.1.1430.0` and stable v0.1.13; its user-facing
+version retains `-beta.2`.
 Semantic prerelease labels alone do not change .NET's default file version.
 
 WiX ICE custom actions can be blocked by policy in non-elevated build
@@ -1079,9 +1107,9 @@ identities, directories, registry entries, and shortcuts. Executable custom acti
 become inert markers so the regression cannot launch Peggy or use real account
 data. It checks exact installed hashes, product replacement, unchanged test
 settings/model/account sentinels, same-version maintenance, and a forced-failure
-rollback to the previous payload and registration. CI uses six checksum-verified
+rollback to the previous payload and registration. CI uses seven checksum-verified
 pinned baselines: the setup EXEs from `v0.1.10`, `v0.1.11-beta.1`, `v0.1.11`,
-`v0.1.12`, `v0.1.13-beta.1`, and `v0.1.13`.
+`v0.1.12`, `v0.1.13-beta.1`, `v0.1.13`, and `v0.1.14-beta.1`.
 The pinned WiX extraction tool reads each checksum-verified EXE without running
 it and supplies its embedded MSI. Every baseline must pass the strict upgrade
 and rollback checks. Restart Manager, real application startup, and interactive authentication
@@ -1334,7 +1362,7 @@ Unified setup writes to `%TEMP%\Peggy_<timestamp>.log`; its Windows Installer
 transaction uses the neighboring `_000_PeggyMsi.log` (the numeric suffix can vary).
 Keep these files before Windows temporary-file cleanup removes them.
 
-The new detailed setup logging adds `PEGGY_SETUP` records with a per-process
+Starting with v0.1.14-beta.2, detailed setup logging adds `PEGGY_SETUP` records with a per-process
 session ID, PID, UTC timestamp, release version, operation ID and elapsed time.
 Started/completed/failed/cancelled records distinguish account verification,
 WorkIQ/EULA version checks, saved-state validation, account/preferences saving,
