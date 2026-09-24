@@ -44,7 +44,24 @@ internal static class UnifiedSetupSmokeTests
             await completion.Task;
             thread.Join();
         }
-        finally { Directory.Delete(directory, recursive: true); }
+        finally { await DeleteSyntheticDirectoryAsync(directory); }
+    }
+
+    internal static async Task DeleteSyntheticDirectoryAsync(string directory)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+                return;
+            }
+            catch (IOException) when (attempt < 20)
+            {
+                if (attempt == 0) Console.WriteLine("Retrying transient synthetic-directory cleanup lock.");
+                await Task.Delay(100);
+            }
+        }
     }
 
     internal static async Task RunAsync(string directory)
@@ -66,6 +83,7 @@ internal static class UnifiedSetupSmokeTests
             !SetupPolicy.ShouldOnboard(LaunchAction.Install, Display.Full, RelationType.None, true),
             "Fresh install/upgrade and same-product maintenance were not distinguished.");
         await TestBurnBridgeAsync();
+        await SetupShutdownSmokeTests.RunAsync(directory);
         await TestStateCompletionAsync(directory);
     }
 
@@ -80,7 +98,8 @@ internal static class UnifiedSetupSmokeTests
         fake.Application = application;
         var command = new BootstrapperCommand(LaunchAction.Install, Display.Full, "", 0,
             ResumeType.None, IntPtr.Zero, RelationType.None, false, "", "", "");
-        var burn = new BurnInstaller(application, engine, command);
+        using var lease = new SetupInstanceLease(@"Local\Peggy.Test.Setup." + Guid.NewGuid().ToString("N"));
+        var burn = new BurnInstaller(application, engine, command, lease);
         var owner = new IntPtr(1);
         try { await burn.ApplyAsync(IntPtr.Zero, CancellationToken.None); throw new Exception("Null owner was accepted."); }
         catch (ArgumentException) { }
@@ -99,6 +118,15 @@ internal static class UnifiedSetupSmokeTests
         application.ReportProgress(progress);
         TestAssert.True(progress.Cancel && !first.IsCompleted && fake.Applies == 1,
             "Cancellation exited before rollback or allowed duplicate Apply.");
+        var rollback = new ExecutePackageBeginEventArgs("PeggyMsi", false,
+            ActionState.Uninstall, INSTALLUILEVEL.None, false, false);
+        application.BeginPackage(rollback);
+        var rollbackProgress = new ExecuteProgressEventArgs("PeggyMsi", 60, 60, false);
+        application.ReportProgress(rollbackProgress);
+        TestAssert.True(!rollback.Cancel && !rollbackProgress.Cancel && !first.IsCompleted,
+            "Cancellation interrupted Burn-owned rollback or returned before ApplyComplete.");
+        TestAssert.True(application.ReportShutdown() == BOOTSTRAPPER_SHUTDOWN_ACTION.SkipCleanup,
+            "Rollback enabled a separate post-BA implicit uninstall.");
         var complete = new ApplyCompleteEventArgs(unchecked((int)0x80070642), ApplyRestart.None,
             BOOTSTRAPPER_APPLYCOMPLETE_ACTION.Restart, BOOTSTRAPPER_APPLYCOMPLETE_ACTION.Restart);
         application.Complete(complete);
@@ -112,8 +140,8 @@ internal static class UnifiedSetupSmokeTests
         var result = await retry;
         TestAssert.True(result.Succeeded && result.RestartRequired && burn.ExitCode == 3010 && fake.Applies == 2,
             "Retry or restart-required return code was lost.");
-        TestAssert.True(application.ReportShutdown() == BOOTSTRAPPER_SHUTDOWN_ACTION.None,
-            "Normal setup requested an automatic restart.");
+        TestAssert.True(application.ReportShutdown() == BOOTSTRAPPER_SHUTDOWN_ACTION.SkipCleanup,
+            "Normal setup enabled a separate post-BA implicit uninstall or automatic restart.");
         burn.LogFailure(new InvalidOperationException("Post-install synthetic failure",
             new IOException("Synthetic underlying cause")), preserveExitCode: true);
         TestAssert.True(burn.ExitCode == 3010 && fake.Logs.Any(line =>
@@ -197,6 +225,7 @@ internal static class UnifiedSetupSmokeTests
         TestUpgradeAndPersistenceFailure();
         TestFinishStageDiagnostics();
         TestAuthenticationDiagnostics();
+        TestRefreshedAccountAndMaintenance();
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -418,8 +447,9 @@ internal static class UnifiedSetupSmokeTests
         public List<string> Logs { get; } = [];
         public SetupDiagnostics Diagnostics { get; }
         public FakeHost() => Diagnostics = new(Logs.Add, "synthetic-beta");
-        public PeggyStateDocument InitialState { get; init; } = new();
-        public bool RequiresOnboarding => true;
+        public PeggyStateDocument InitialState { get; set; } = new();
+        public bool Onboard { get; init; } = true;
+        public bool RequiresOnboarding => Onboard;
         public string ActionLabel => "Install / update Peggy";
         public bool Ready { get; set; } = true;
         public bool FailCompletion { get; set; }
@@ -487,18 +517,20 @@ internal static class UnifiedSetupSmokeTests
             => FailSignIn ? throw new InvalidOperationException("UNSTRUCTURED-LOGIN-SECRET") : Task.CompletedTask;
     }
 
-    private sealed class FakeApplication : BootstrapperApplication
+    internal sealed class FakeApplication : BootstrapperApplication
     {
         protected override void Run() { }
-        public void Detect(bool downgrade)
+        public void Detect(bool downgrade, bool present = false)
         {
             OnDetectBegin(new(false, RegistrationType.None, 1, false));
             if (downgrade) OnDetectRelatedBundle(new("newer", RelationType.Upgrade, "", false, "9.0.0", false, false));
-            OnDetectPackageComplete(new("PeggyMsi", 0, PackageState.Absent, false));
+            OnDetectPackageComplete(new("PeggyMsi", 0, present ? PackageState.Present : PackageState.Absent, false));
             OnDetectComplete(new(0, false));
         }
-        public void Plan() => OnPlanComplete(new(0));
+        public void Plan(int status = 0) => OnPlanComplete(new(status));
         public void ReportProgress(ExecuteProgressEventArgs args) => OnExecuteProgress(args);
+        public void BeginPackage(ExecutePackageBeginEventArgs args) => OnExecutePackageBegin(args);
+        public void BeginApply(ApplyBeginEventArgs args) => OnApplyBegin(args);
         public void Complete(ApplyCompleteEventArgs args) => OnApplyComplete(args);
         public BOOTSTRAPPER_SHUTDOWN_ACTION ReportShutdown()
         {
@@ -508,11 +540,53 @@ internal static class UnifiedSetupSmokeTests
         }
     }
 
+    private static void TestRefreshedAccountAndMaintenance()
+    {
+        var host = new FakeHost
+        {
+            InitialState = new PeggyStateDocument { PinnedAccount = "old@example.test" },
+            SavedIdentity = Identity
+        };
+        var window = CreateWindow(host, new FakeWorkIq());
+        try
+        {
+            window.Show();
+            SetupStepIndicatorTests.DrainDispatcher();
+            host.InitialState = new PeggyStateDocument
+            {
+                PinnedAccount = Identity.Account,
+                PinnedMailbox = Identity.Mail ?? "",
+                PinnedUserPrincipalName = Identity.UserPrincipalName ?? "",
+                PinnedPrincipalId = Identity.PrincipalId
+            };
+            Complete(window.ApplyInstallerAsync());
+            TestAssert.True(Find<StackPanel>(window, "InstallerAccountSwitchConfirmation").Visibility == Visibility.Collapsed &&
+                Find<TextBox>(window, "AccountText").Text == Identity.Account,
+                "Installer kept its stale account preview after acquiring the application guard.");
+        }
+        finally { window.Close(); }
+        var maintenance = new FakeHost { Onboard = false };
+        var maintenanceWindow = CreateWindow(maintenance, new FakeWorkIq());
+        try
+        {
+            maintenanceWindow.Show();
+            SetupStepIndicatorTests.DrainDispatcher();
+            Complete(maintenanceWindow.ApplyInstallerAsync());
+            Click(maintenanceWindow, "FinishButton");
+            TestAssert.True(!maintenance.Launched && maintenance.Completions == 0,
+                "Maintenance Finish launched Peggy or saved account setup.");
+        }
+        finally { maintenanceWindow.Close(); }
+    }
+
     public class FakeEngine : DispatchProxy
     {
         private FakeApplication? _application;
         internal object Application { set => _application = (FakeApplication)value; }
         public bool Downgrade;
+        public bool CurrentMsiPresent;
+        public bool ThrowApply;
+        public int PlanStatus;
         public int Plans, Applies;
         public LaunchAction LastAction;
         public int VariableWrites;
@@ -523,13 +597,14 @@ internal static class UnifiedSetupSmokeTests
             switch (method!.Name)
             {
                 case "Log": Logs.Add((string)args![1]!); break;
-                case "Detect": _application!.Detect(Downgrade); break;
-                case "Plan": Plans++; LastAction = (LaunchAction)args![0]!; _application!.Plan(); break;
+                case "Detect": _application!.Detect(Downgrade, CurrentMsiPresent); break;
+                case "Plan": Plans++; LastAction = (LaunchAction)args![0]!; _application!.Plan(PlanStatus); break;
                 case "SetVariableString": VariableWrites++; break;
                 case "Apply":
                     TestAssert.True((IntPtr)args![0]! != IntPtr.Zero,
                         "Burn Apply was called without the required owner HWND.");
                     Applies++;
+                    if (ThrowApply) throw new InvalidOperationException("Synthetic in-flight Apply failure.");
                     ApplyStarted.TrySetResult();
                     break;
                 case "CompareVersions": return 1;

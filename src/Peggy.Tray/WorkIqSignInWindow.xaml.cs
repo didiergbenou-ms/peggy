@@ -15,12 +15,12 @@ public partial class WorkIqSignInWindow : Window
 {
     private readonly IWorkIqSetupService _setup;
     private readonly ISetupReadinessService _readiness;
-    private readonly string _expectedAccount;
-    private readonly string _expectedMailbox;
-    private readonly string _expectedUserPrincipalName;
-    private readonly string _expectedPrincipalId;
-    private readonly bool _firstRun;
-    private readonly bool _requireMailAccess;
+    private string _expectedAccount;
+    private string _expectedMailbox;
+    private string _expectedUserPrincipalName;
+    private string _expectedPrincipalId;
+    private bool _firstRun;
+    private bool _requireMailAccess;
     private readonly SpeechModelSetupService _speechModels;
     private readonly Func<string, bool, CancellationToken, Task> _installVoice;
     private readonly Func<string, bool> _voiceInstalled;

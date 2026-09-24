@@ -153,6 +153,7 @@ public partial class App : Application
         _poll.Start();
         StartScheduleTimer();
         ScheduleMockSmokeExit(e.Args);
+        StartSetupShutdownEndpoint();
     }
 
     private void CreateRuntimeServices()
@@ -1095,7 +1096,9 @@ public partial class App : Application
         }
     }
 
-    private async Task ShowSettingsAsync()
+    private Task ShowSettingsAsync() => _settingsTransactions.RunAsync(ShowSettingsCoreAsync);
+
+    private async Task ShowSettingsCoreAsync()
     {
         if (_settingsWindow is { IsVisible: true } existingSettings)
         {
@@ -2941,47 +2944,18 @@ public partial class App : Application
         timer.Start();
     }
 
-    private async Task QuitAppAsync()
+    private Task QuitAppAsync()
     {
-        if (_quitting)
+        if (_quitTask is null || _quitTask.IsFaulted || _quitTask.IsCanceled)
         {
-            return;
+            _quitTask = GracefulShutdownSequence.RunAsync(
+                StopRuntimeForQuitAsync, () => _state.SaveAsync(), ExitAfterSavedState);
         }
-        _quitting = true;
-        _poll?.Stop();
-        _scheduleTimer?.Stop();
-        _idleTimer?.Stop();
-        _alertRevealTimer?.Stop();
-        _wakeCheckTimer?.Stop();
-        await _conversation.DisposeAsync();
-        _bubble.HideNow();
-        _tray.Visible = false;
-        _shutdown.Cancel();
+        return _quitTask;
+    }
 
-        try
-        {
-            await _activeCheck;
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        try
-        {
-            await _copilotWarmup;
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        await _copilot.DisposeAsync();
-        try
-        {
-            await _state.SaveAsync();
-        }
-        catch (Exception ex)
-        {
-            Log($"STATE SAVE ERROR type={ex.GetType().Name}");
-        }
-
+    private void ExitAfterSavedState()
+    {
         SystemEvents.SessionSwitch -= OnSessionSwitch;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         SystemEvents.TimeChanged -= OnSystemTimeChanged;
@@ -3007,6 +2981,7 @@ public partial class App : Application
         }
         _shutdown.Dispose();
         _singleInstance.Dispose();
+        _setupShutdown?.Dispose();
         base.OnExit(e);
     }
 

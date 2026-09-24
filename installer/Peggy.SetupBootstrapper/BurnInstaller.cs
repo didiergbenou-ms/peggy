@@ -17,11 +17,15 @@ internal sealed class BurnInstaller
     private int _inFlight;
     private bool _applyStarted;
     private bool _applyCompleted;
+    private bool _ownsApply;
+    private readonly SetupInstanceLease? _setupLease;
 
-    internal BurnInstaller(BootstrapperApplication application, IEngine engine, IBootstrapperCommand command)
+    internal BurnInstaller(BootstrapperApplication application, IEngine engine, IBootstrapperCommand command,
+        SetupInstanceLease? setupLease = null)
     {
         _engine = engine;
         _command = command;
+        _setupLease = IsLayout || IsRelated ? null : setupLease ?? new SetupInstanceLease();
         Diagnostics = new SetupDiagnostics(line => engine.Log(LogLevel.Standard, line), PeggyReleaseVersion.Display);
         Diagnostics.Event("session", "opened",
             $"action={command.Action}; display={command.Display}; relation={command.Relation}");
@@ -118,9 +122,13 @@ internal sealed class BurnInstaller
         };
         application.Shutdown += (_, e) =>
         {
-            e.Action = IsLayout ? BOOTSTRAPPER_SHUTDOWN_ACTION.SkipCleanup : BOOTSTRAPPER_SHUTDOWN_ACTION.None;
+            // WiX 6 stops the BA before CoreCleanup, beyond this process's lease.
+            // CoreCleanup is a new implicit uninstall, NOT Apply rollback. Even
+            // ApplyBegin cancellation can leave it eligible: always suppress it.
+            // Explicit uninstall, related removal and rollback finish in CoreApply.
+            e.Action = BOOTSTRAPPER_SHUTDOWN_ACTION.SkipCleanup;
             Diagnostics.Event("burn.shutdown", "requested",
-                $"action={e.Action}; exitCode={ExitCode}; applyStarted={_applyStarted}; applyCompleted={_applyCompleted}; msiPresentAtDetect={CurrentMsiPresent}");
+                $"action={e.Action}; reason=disable-post-ba-implicit-uninstall; exitCode={ExitCode}; ownsApply={_ownsApply}; setupOwned={_setupLease?.IsOwned == true}; applyStarted={_applyStarted}; applyCompleted={_applyCompleted}; msiPresentAtDetect={CurrentMsiPresent}");
         };
     }
 
@@ -135,6 +143,8 @@ internal sealed class BurnInstaller
     internal bool MayOnboard => RequiresWindow && _command.Action == LaunchAction.Install;
     internal bool IsRelated => _command.Relation != RelationType.None;
     internal bool ChecksRequirements => _command.Action is LaunchAction.Install or LaunchAction.Repair;
+    internal bool MayCloseRunningApp =>
+        RequiresWindow && _command.Action == LaunchAction.Install && !CurrentMsiPresent;
     internal string ActionLabel => _command.Action switch
     {
         LaunchAction.Uninstall or LaunchAction.UnsafeUninstall => "Uninstall Peggy",
@@ -156,6 +166,7 @@ internal sealed class BurnInstaller
 
     internal async Task<SetupInstallResult> ApplyAsync(IntPtr owner, CancellationToken ct)
     {
+        EnsureSetupOwnership();
         if (owner == IntPtr.Zero)
             throw new ArgumentException("Windows Installer requires an owner window handle, including for unattended setup.", nameof(owner));
         if (Interlocked.CompareExchange(ref _inFlight, 1, 0) != 0)
@@ -176,12 +187,31 @@ internal sealed class BurnInstaller
             ThrowFailure(await _plan.Task, "Plan");
             ct.ThrowIfCancellationRequested();
             _apply = NewCompletion<SetupInstallResult>();
+            // Once handed to Burn, even a synchronous exception may represent an
+            // in-flight transaction. Track ownership independently of shutdown's
+            // implicit cleanup; cancellation must still wait for ApplyComplete.
+            _ownsApply = true;
+            Diagnostics.Event("burn.apply-ownership", "acquired");
             _engine.Apply(owner);
             // Cancellation must wait for ApplyComplete: the engine owns rollback.
             return await _apply.Task;
         }
         finally { Interlocked.Exchange(ref _inFlight, 0); }
     }
+
+    internal void EnsureSetupOwnership()
+    {
+        if (IsLayout || IsRelated) return; // Related removal executes inside the parent transaction.
+        if (_setupLease!.TryAcquire())
+        {
+            Diagnostics.Event("setup.guard", "owned");
+            return;
+        }
+        Diagnostics.Event("setup.guard", "blocked");
+        throw new InvalidOperationException("Another Peggy setup is open. Finish or close that setup, then Retry here, or Cancel. This setup has not changed Peggy.");
+    }
+
+    internal void ReportProgress(string message) => Progress?.Invoke(new(message, 0));
 
     internal void Cancel()
     {

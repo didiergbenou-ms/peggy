@@ -13,8 +13,7 @@ internal sealed class UnifiedSetupHost : IUnifiedSetupHost
     private readonly WorkIqSetupService _setup = new();
     private SingleInstanceGuard? _guard;
     private IReadOnlyList<PrerequisiteResult> _requirements = [];
-    private string? _initialFailure;
-    private string _expectedIdentity = "";
+    private readonly SetupStateBaseline _baseline;
     private bool _prepared;
     private bool _committed;
     private bool _restart;
@@ -25,25 +24,26 @@ internal sealed class UnifiedSetupHost : IUnifiedSetupHost
     internal UnifiedSetupHost(BurnInstaller burn)
     {
         _burn = burn;
+        _baseline = new(_store);
         if (burn.MayOnboard && InteractiveIdentity.CanInstallDependencies)
         {
             try
             {
-                InitialState = Diagnostics.Run("state.load-initial",
-                    () => Task.Run(() => _store.LoadAsync()).GetAwaiter().GetResult());
-                _expectedIdentity = IdentityStamp(InitialState);
+                Diagnostics.Run("state.load-initial",
+                    () => Task.Run(() => _baseline.RefreshAsync(CancellationToken.None)).GetAwaiter().GetResult());
                 Diagnostics.Event("state.initial", "loaded",
                     $"hasPinnedAccount={!string.IsNullOrWhiteSpace(InitialState.PinnedAccount)}");
             }
             catch (Exception ex) when (SetupReadinessService.IsExpectedFailure(ex))
             {
-                _initialFailure = $"Could not read Peggy's saved settings: {ex.Message}";
+                // A preview may race Peggy's save. Retry authoritatively only after
+                // shutdown and guard acquisition, before any installer Apply.
                 burn.LogFailure(ex);
             }
         }
     }
 
-    public PeggyStateDocument InitialState { get; } = new();
+    public PeggyStateDocument InitialState => _baseline.State;
     public SetupDiagnostics Diagnostics => _burn.Diagnostics;
     public bool RequiresOnboarding => _onboard;
     public string ActionLabel => _burn.ActionLabel;
@@ -58,14 +58,10 @@ internal sealed class UnifiedSetupHost : IUnifiedSetupHost
     {
         _prepared = false;
         ValidateInteractiveIdentity();
-        AcquireGuard();
+        _burn.EnsureSetupOwnership();
+        ct.ThrowIfCancellationRequested();
         await _burn.DetectAsync();
         _onboard = _burn.RequiresOnboarding;
-        if (_onboard)
-        {
-            if (_initialFailure is not null) throw new InvalidOperationException(_initialFailure);
-            await ReloadAndValidateAsync(ct);
-        }
         PrerequisiteEngine.RefreshEnvironment();
         _requirements = _burn.ChecksRequirements
             ? await Diagnostics.RunAsync("prerequisites.check", () => PrerequisiteEngine.CheckAllAsync(ct)) : [];
@@ -80,7 +76,8 @@ internal sealed class UnifiedSetupHost : IUnifiedSetupHost
         => Diagnostics.RunAsync($"prerequisite.install.{id}", async () =>
     {
         ValidateInteractiveIdentity();
-        AcquireGuard();
+        _burn.EnsureSetupOwnership();
+        ct.ThrowIfCancellationRequested();
         var result = _requirements.SingleOrDefault(item => item.Id == id)
             ?? throw new InvalidOperationException("Retry local checks before installing this requirement.");
         var winget = PrerequisiteEngine.ResolveCommand(["winget.exe"])
@@ -99,10 +96,20 @@ internal sealed class UnifiedSetupHost : IUnifiedSetupHost
         => Diagnostics.RunAsync("setup.install", async () =>
     {
         ValidateInteractiveIdentity();
-        AcquireGuard();
+        _burn.EnsureSetupOwnership();
         if (!_prepared || _requirements.Any(item => item.State != PrerequisiteState.Ready))
             throw new InvalidOperationException("Complete local requirements before installing Peggy.");
-        if (_onboard) await ReloadAndValidateAsync(ct);
+        using (var platform = new WindowsSetupShutdownPlatform())
+        {
+            var shutdown = new SetupAppShutdown(platform, Diagnostics, _burn.ReportProgress);
+            await shutdown.AcquireAsync(TryAcquireGuard, _burn.EnsureSetupOwnership, _burn.MayCloseRunningApp, ct);
+        }
+        if (_onboard)
+        {
+            await Diagnostics.RunAsync("state.load-after-app-exit", () => _baseline.RefreshAsync(ct));
+            Diagnostics.Event("state.baseline", "refreshed", "appGuardOwned=True");
+        }
+        ct.ThrowIfCancellationRequested();
         var result = await _burn.ApplyAsync(owner, ct);
         _committed = result.Succeeded;
         _restart = result.RestartRequired;
@@ -175,7 +182,7 @@ internal sealed class UnifiedSetupHost : IUnifiedSetupHost
             _completed = true;
             Diagnostics.Event("finish.setup-saved", "completed", $"firstSetup={initialSetup}; voiceReady={voiceReady}");
         }
-        finally { _expectedIdentity = IdentityStamp(state.State); }
+        finally { _baseline.AcceptSaved(state.State); }
     });
 
     public void Cancel() => _burn.Cancel();
@@ -221,23 +228,35 @@ internal sealed class UnifiedSetupHost : IUnifiedSetupHost
     internal async Task RunWithoutWindowAsync(IntPtr owner)
     {
         // Related-bundle removal runs inside the newer bundle's guarded transaction.
-        if (!_burn.IsRelated) AcquireGuard();
+        _burn.EnsureSetupOwnership();
+        if (!_burn.IsRelated)
+        {
+            using var platform = new WindowsSetupShutdownPlatform();
+            await new SetupAppShutdown(platform, Diagnostics, _burn.ReportProgress)
+                .AcquireAsync(TryAcquireGuard, _burn.EnsureSetupOwnership, mayClose: false, CancellationToken.None);
+        }
         try { await _burn.ApplyAsync(owner, CancellationToken.None); }
         finally { Close(launch: false); }
     }
 
     private void AcquireGuard() => Diagnostics.Run("guard.acquire", () =>
     {
-        _guard ??= new SingleInstanceGuard();
-        if (!_guard.TryAcquire())
-            throw new InvalidOperationException("Peggy is running. Choose Quit Peggy from its tray menu, then Retry. Setup will not close Peggy for you.");
+        _burn.EnsureSetupOwnership();
+        if (!TryAcquireGuard())
+            throw SetupAppShutdown.Blocked("Peggy's application lock is still owned. Choose Quit Peggy from its tray menu.");
     });
+
+    private bool TryAcquireGuard()
+    {
+        _guard ??= new SingleInstanceGuard();
+        return _guard.TryAcquire();
+    }
 
     private Task<PeggyStateDocument> ReloadAndValidateAsync(CancellationToken ct)
         => Diagnostics.RunAsync("state.reload-and-validate", async () =>
     {
         var current = await _store.LoadAsync(ct);
-        if (!string.Equals(_expectedIdentity, IdentityStamp(current), StringComparison.Ordinal))
+        if (!_baseline.Matches(current))
         {
             Diagnostics.Event("state.identity-comparison", "mismatch",
                 $"stateFileExists={File.Exists(_store.Path)}; hasPinnedAccount={!string.IsNullOrWhiteSpace(current.PinnedAccount)}");
@@ -245,10 +264,6 @@ internal sealed class UnifiedSetupHost : IUnifiedSetupHost
         }
         return current;
     });
-
-    private static string IdentityStamp(PeggyStateDocument state) =>
-        string.Join("\n", state.PinnedAccount, state.PinnedMailbox, state.PinnedUserPrincipalName,
-            state.PinnedPrincipalId, state.WorkIqEulaAcceptedVersion);
 
     private static void ValidateInteractiveIdentity()
     {

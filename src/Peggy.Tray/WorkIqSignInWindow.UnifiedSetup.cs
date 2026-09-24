@@ -77,7 +77,7 @@ public partial class WorkIqSignInWindow
         InstallerStatus.Text = _requirementsReady
             ? $"Ready — Choose {_installer.ActionLabel}. Account setup starts only after installation completes."
             : "Action required — Install or repair the missing requirements above, then continue. Vendor prompts may open.";
-    }, "Checking requirements and whether Peggy is running...");
+    }, "Checking requirements. Peggy will remain running until you choose Install / update.");
 
     private void ShowInstallerRequirements(IReadOnlyList<SetupRequirement> requirements)
     {
@@ -127,10 +127,11 @@ public partial class WorkIqSignInWindow
             var result = await _installer!.ApplyAsync(new WindowInteropHelper(this).Handle, ct);
             _installerCommitted = result.Succeeded;
             _installerRestart = result.RestartRequired;
+            if (result.Succeeded && _installer.RequiresOnboarding) RefreshInstallerState();
             InstallerStatus.Text = result.Message;
             InstallerProgress.Value = result.Succeeded ? 100 : 0;
             OperationStatus.Text = result.Message;
-        }, "Installing Peggy. Cancel waits for Windows Installer to finish rolling back.");
+        }, "Preparing installation. If Peggy is running, setup will ask it to close safely before updating files.");
         if (!InstallerAllowsOnboarding) return;
         await CheckLocalAsync();
         await RunOperationAsync(async ct =>
@@ -159,6 +160,26 @@ public partial class WorkIqSignInWindow
             OperationStatus.Text = "Peggy was updated. Your account and settings are kept. Choose Finish to launch.";
         }, "Checking the saved Microsoft 365 connection without signing in again.",
             "Saved account verification cancelled. You can reconnect above.");
+    }
+
+    private void RefreshInstallerState()
+    {
+        var state = _installer!.InitialState;
+        _expectedAccount = state.PinnedAccount ?? "";
+        _expectedMailbox = state.PinnedMailbox ?? "";
+        _expectedUserPrincipalName = state.PinnedUserPrincipalName ?? "";
+        _expectedPrincipalId = state.PinnedPrincipalId ?? "";
+        _firstRun = _expectedAccount.Length == 0 && _expectedMailbox.Length == 0;
+        _requireMailAccess = _firstRun || state.Settings.OutlookScope != OutlookMonitoringScope.Off;
+        AccountText.Text = _expectedAccount.Length > 0 ? _expectedAccount : _expectedMailbox;
+        CopilotAccessGroup.Visibility = VoiceSetupGroup.Visibility = _firstRun ? Visibility.Visible : Visibility.Collapsed;
+        _candidateIdentity = null;
+        _mailReady = false;
+        ConfirmInstallerAccountSwitch.IsChecked = false;
+        if (!_requireMailAccess)
+            SetStep(MailAccessIndicator, MailAccessStatus, SetupStepState.Skipped,
+                "Optional / skipped — Mail access: Outlook monitoring is Off.");
+        UpdateMonitoringSummary();
     }
 
     private async Task RunInstallerOperationAsync(Func<CancellationToken, Task> operation, string status,
