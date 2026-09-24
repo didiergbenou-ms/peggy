@@ -73,7 +73,11 @@ internal sealed class AlertNotificationRefresher(
                 candidate.MessageIds.Count == 0 ||
                 candidate.MessageIds.Any(id => !thread.Messages.Any(message => message.Id == id)))
             {
-                log("ALERT REFRESH RETAINED reason=incomplete-context");
+                var detail = !refreshed.IsComplete
+                    ? refreshed.Warning ?? "provider-incomplete"
+                    : "missing-or-mismatched-thread-messages";
+                log("ALERT REFRESH RETAINED reason=incomplete-context detail=" +
+                    SetupDiagnostics.Protect(detail));
                 return candidate;
             }
 

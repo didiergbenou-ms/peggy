@@ -20,7 +20,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     private const int MaxChannelConcurrency = 4;
     private const int MaxTeamsSearchPageSize = 200;
     private const int MaxAlertRefreshItems = 250;
-    private const int MaxAlertRefreshPages = 6;
+    private const int MaxAlertRefreshPages = 10;
     private const int MaxAlertRefreshBodyLength = 16_000;
     private const string DefaultActiveFolderPath = PeggyDefaults.ActiveCasesFolder;
     private static readonly TimeSpan CatalogCacheDuration = TimeSpan.FromMinutes(30);
@@ -369,7 +369,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             $"/me/messages?$filter={filter}&$top=50" +
             "&$select=id,conversationId,from,sender,subject,bodyPreview,body," +
             "receivedDateTime,sentDateTime,isRead,isDraft,parentFolderId,webLink",
-            allowContinuation: true, budget);
+            budget);
         var complete = page.IsComplete;
         var messages = new Dictionary<string, Message>(StringComparer.Ordinal);
         foreach (var item in page.Items)
@@ -427,7 +427,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             var children = await ReadAlertPagesAsync<MailFolder>(
                 $"/me/mailFolders/{Uri.EscapeDataString(folder.Id!)}/childFolders" +
                 "?includeHiddenFolders=true&$top=50&$select=id,childFolderCount",
-                allowContinuation: true, budget, maximumItems: 50);
+                budget, maximumItems: 50);
             if (!children.IsComplete ||
                 (folder.ChildFolderCount is > 0 &&
                  children.Items.Count < folder.ChildFolderCount.Value))
@@ -465,7 +465,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         var filter = Uri.EscapeDataString($"lastModifiedDateTime gt {FormatGraphTimestamp(boundary)}");
         var page = await ReadAlertPagesAsync<ChatMessage>(
             path + "/messages?$top=50&$orderby=lastModifiedDateTime%20desc&$filter=" + filter,
-            allowContinuation: false, budget);
+            budget, itemKey: item => item.Id);
         var complete = page.IsComplete;
         var messages = new Dictionary<string, Message>(StringComparer.Ordinal);
         foreach (var item in page.Items)
@@ -513,7 +513,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         }
         channel.TeamId = teamId;
         var page = await ReadAlertPagesAsync<ChatMessage>(
-            rootPath + "/replies?$top=50", allowContinuation: false, budget);
+            rootPath + "/replies?$top=50", budget, itemKey: item => item.Id);
         var complete = page.IsComplete;
         var messages = new Dictionary<string, Message>(StringComparer.Ordinal);
         AddAlertTeamsMessage(
@@ -603,12 +603,13 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
     private async Task<AlertPageRead<T>> ReadAlertPagesAsync<T>(
         string initialUrl,
-        bool allowContinuation,
         AlertRefreshBudget budget,
-        int maximumItems = MaxAlertRefreshItems)
+        int maximumItems = MaxAlertRefreshItems,
+        Func<T, string?>? itemKey = null)
     {
         var items = new List<T>();
         var visited = new HashSet<string>(StringComparer.Ordinal);
+        var seenItems = new HashSet<string>(StringComparer.Ordinal);
         var url = initialUrl;
         for (var index = 0; index < MaxAlertRefreshPages; index++)
         {
@@ -621,6 +622,17 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             {
                 return new(items, false, "WorkIQ returned no verifiable thread page.");
             }
+            if (itemKey is not null && page.Value.Count > 0)
+            {
+                var madeProgress = false;
+                foreach (var item in page.Value)
+                {
+                    var key = itemKey(item);
+                    if (!string.IsNullOrWhiteSpace(key)) madeProgress |= seenItems.Add(key);
+                }
+                if (!madeProgress)
+                    return new(items, false, "WorkIQ repeated thread messages without advancing.");
+            }
             var remaining = maximumItems - items.Count;
             items.AddRange(page.Value.Take(remaining));
             if (page.Value.Count > remaining)
@@ -630,12 +642,6 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             if (page.NextLink is null)
             {
                 return new(items, true, null);
-            }
-            // Teams delegated continuations are not reliably supported by WorkIQ.
-            // Never invent a skip token or claim that the first replies page is newest.
-            if (!allowContinuation)
-            {
-                return new(items, false, "Teams replies extend beyond WorkIQ's safe paging boundary.");
             }
             if (items.Count >= maximumItems)
             {
@@ -657,18 +663,21 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             (!Uri.TryCreate(nextLink, UriKind.Absolute, out var absolute) ||
              absolute.Scheme != Uri.UriSchemeHttps ||
              !string.Equals(absolute.Host, "graph.microsoft.com", StringComparison.OrdinalIgnoreCase) ||
-             !absolute.IsDefaultPort || absolute.Fragment.Length > 0))
+             !absolute.IsDefaultPort || absolute.Fragment.Length > 0 || absolute.UserInfo.Length > 0))
         {
             return null;
         }
         var normalized = NormalizeGraphUrl(nextLink);
         return normalized is not null &&
                !normalized.Contains('#') &&
-               string.Equals(
-                   normalized.Split('?')[0], initialUrl.Split('?')[0], StringComparison.Ordinal)
+               SameAlertResourcePath(normalized.Split('?')[0], initialUrl.Split('?')[0])
             ? normalized
             : null;
     }
+
+    private static bool SameAlertResourcePath(string actual, string expected)
+        => actual.Split('/').Select(Uri.UnescapeDataString)
+            .SequenceEqual(expected.Split('/').Select(Uri.UnescapeDataString), StringComparer.Ordinal);
 
     private static AlertThreadRefreshResult BuildAlertRefreshResult(
         string threadId,

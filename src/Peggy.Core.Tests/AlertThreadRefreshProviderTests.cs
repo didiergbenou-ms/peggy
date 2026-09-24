@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Json;
 using Peggy.Core;
+using Peggy.Tray;
 
 namespace Peggy.Core.Tests;
 
@@ -178,19 +179,44 @@ internal static class AlertThreadRefreshProviderTests
                 $"{name} represented a reaction as new textual activity.");
         }
         foreach (var (name, threadId) in new[]
-                 { ("chat-paged", ChatThread), ("channel-paged", ChannelThread) })
+                 { ("chat-paged", ChatThread), ("channel-paged", ChannelThread), ("chat-relative-paged", ChatThread) })
         {
             SetCase(name, logPath);
             var result = await Provider().RefreshThreadForAlertAsync(threadId, Anchor);
-            TestAssert.True(!result.IsComplete && result.Warning is not null && result.Thread is not null,
-                $"{name} silently treated truncated replies as complete.");
+            TestAssert.True(result.IsComplete && result.Warning is null && result.Thread is not null &&
+                result.Thread.Messages.Any(message => message.Preview == "Original paged request") &&
+                result.Thread.Messages.Any(message => message.IsFromMe && message.Preview == "Own paged reply"),
+                $"{name} did not reach the original request and own reply past the provider's ten-item page cap.");
             TestAssert.True(result.Thread!.Messages.All(message =>
                                 !message.Id.Contains("truncated", StringComparison.Ordinal) &&
                                 !message.Preview.Contains("paging", StringComparison.Ordinal)) &&
-                            File.ReadAllLines(logPath).All(line =>
-                                !line.Contains("skiptoken", StringComparison.OrdinalIgnoreCase)),
-                $"{name} invented synthetic content or bypassed the delegated paging boundary.");
+                            File.ReadAllLines(logPath).Count(line =>
+                                line.Contains("%24skiptoken=A%2BB%2FC%3D", StringComparison.Ordinal)) == 1,
+                $"{name} invented synthetic content or modified the opaque continuation token.");
+            if (name == "chat-paged")
+            {
+                var original = result.Thread.Messages.Single(message => message.Preview == "Original paged request");
+                var decision = new AlertDecision(ChatThread, AlertTier.Attention, "Reply required",
+                    "A pending request", original.WebUrl!, [original.Id]);
+                var reviews = 0;
+                var refresher = new AlertNotificationRefresher(Provider(), (_, context, _) =>
+                {
+                    reviews++;
+                    TestAssert.True(context.Any(message => message.Id == original.Id),
+                        "The notification review lost its paged original request.");
+                    var sent = context.Single(message => message.IsFromMe && message.Preview == "Own paged reply");
+                    return Task.FromResult(new CopilotNotificationReviewResult(
+                        new(NotificationVerdict.Suppress, AlertTier.Attention, "Handled", "Reply resolved the request",
+                            [sent.Id]), new("synthetic", "synthetic", "synthetic", 0, 0, 0, 0)));
+                }, (_, _) => Task.CompletedTask, _ => { });
+                TestAssert.True(await refresher.RefreshAsync(decision, [original], Anchor, CancellationToken.None) is null &&
+                    reviews == 1, "The paged sent reply did not reach pre-notification reassessment.");
+            }
         }
+        SetCase("chat-overlap-paged", logPath);
+        var overlap = await Provider().RefreshThreadForAlertAsync(ChatThread, Anchor);
+        TestAssert.True(overlap.IsComplete && overlap.Thread!.Messages.Count == 12,
+            "A progressing overlapping page failed to deduplicate safely.");
         SetCase("chat-full-body", logPath);
         var full = await Provider().RefreshThreadForAlertAsync(ChatThread, Anchor);
         TestAssert.True(full.IsComplete &&
@@ -208,6 +234,9 @@ internal static class AlertThreadRefreshProviderTests
                      "email-deleted-unavailable", "chat-empty", "chat-wrong",
                      "email-missing-body", "email-large-body", "email-unknown-body-type",
                      "chat-large-body",
+                     "chat-unsafe-paged", "chat-wrong-paged", "channel-wrong-paged",
+                     "chat-repeated-paged", "chat-replayed-final-paged", "chat-limit-paged",
+                     "chat-page-limit-paged", "channel-page-limit-paged",
                      "chat-wrong-message", "chat-missing-type", "chat-empty-body", "channel-wrong-root",
                      "channel-deleted-root", "channel-wrong-reply", "channel-wrong-identity"
                  })
@@ -233,6 +262,10 @@ internal static class AlertThreadRefreshProviderTests
             () => Provider().RefreshThreadForAlertAsync(EmailThread, Anchor),
             "An unavailable source must not become complete context.");
         TestAssert.Contains("403", exception.Message, "The normal source transport error was not preserved.");
+        SetCase("chat-failed-paged", logPath);
+        await TestAssert.ThrowsAsync<InvalidOperationException>(
+            () => Provider().RefreshThreadForAlertAsync(ChatThread, Anchor),
+            "A failed continuation read was treated as complete context.");
         SetCase("identity-mismatch", logPath);
         await TestAssert.ThrowsAsync<InvalidOperationException>(
             () => Provider().RefreshThreadForAlertAsync(ChatThread, Anchor),
@@ -306,6 +339,11 @@ internal static class AlertThreadRefreshProviderTests
         }
         else if (path == $"/me/chats/{ChatId}/messages")
         {
+            if (name.Contains("paged", StringComparison.Ordinal))
+            {
+                Console.WriteLine(JsonSerializer.Serialize(TeamsPagedResponse(name, url, false)));
+                return;
+            }
             var items = name switch
             {
                 "chat-empty" => [],
@@ -316,9 +354,7 @@ internal static class AlertThreadRefreshProviderTests
                 "chat-large-body" => new[] { TeamsMessage("large", new string('x', 17_000)) },
                 _ => TeamsItems(isChannel: false)
             };
-            response = Page(items, name == "chat-paged"
-                ? $"https://graph.microsoft.com/v1.0/me/chats/{Uri.EscapeDataString(ChatId)}/messages?$skiptoken=restricted"
-                : null);
+            response = Page(items);
         }
         else if (path == $"/teams/{TeamId}/channels/{ChannelId}")
         {
@@ -331,21 +367,62 @@ internal static class AlertThreadRefreshProviderTests
         }
         else if (path == $"/teams/{TeamId}/channels/{ChannelId}/messages/{RootId}/replies")
         {
+            if (name.Contains("paged", StringComparison.Ordinal))
+            {
+                Console.WriteLine(JsonSerializer.Serialize(TeamsPagedResponse(name, url, true)));
+                return;
+            }
             var items = name switch
             {
                 "channel-wrong-reply" => new[] { TeamsMessage("wrong", "Wrong root", replyToId: "another-root") },
                 "channel-wrong-identity" => new[] { TeamsMessage("wrong", "Wrong channel", replyToId: RootId, channelId: "another-channel") },
                 _ => TeamsItems(isChannel: true)
             };
-            response = Page(items, name == "channel-paged"
-                ? $"https://graph.microsoft.com/v1.0{url.Split('?')[0]}?$skiptoken=restricted"
-                : null);
+            response = Page(items);
         }
         else
         {
             throw new InvalidOperationException($"Unexpected alert refresh fixture request: {url}");
         }
         Console.WriteLine(JsonSerializer.Serialize(response));
+    }
+
+    private static object TeamsPagedResponse(string name, string url, bool isChannel)
+    {
+        var isNextPage = url.Contains("skiptoken", StringComparison.Ordinal);
+        var marker = url.IndexOf("page=", StringComparison.Ordinal);
+        var page = marker < 0 ? 1 : int.Parse(url[(marker + 5)..]);
+        var path = isChannel
+            ? $"/teams/{TeamId}/channels/{ChannelId}/messages/{RootId}/replies"
+            : $"/me/chats/{ChatId}/messages";
+        var next = (name == "chat-relative-paged" ? "" : "https://graph.microsoft.com/v1.0") +
+            path + "?$top=10&$skiptoken=A%2BB%2FC%3D";
+        var parent = isChannel ? RootId : null;
+        if (name.Contains("page-limit", StringComparison.Ordinal))
+            return Page([], $"https://graph.microsoft.com/v1.0{path}?page={page + 1}");
+        if (name == "chat-limit-paged")
+            return Page(Enumerable.Range(0, 50).Select(index =>
+                TeamsMessage($"page-{page}-{index}", "Context", replyToId: parent)).ToArray(),
+                $"https://graph.microsoft.com/v1.0{path}?page={page + 1}");
+        if (isNextPage && name == "chat-failed-paged")
+            return new { results = new[] { new { statusCode = 403, error = new { message = "Continuation unavailable" } } } };
+        var first = Enumerable.Range(0, 10).Select(index =>
+            TeamsMessage($"paged-{index}", $"Context {index}", replyToId: parent,
+                created: Anchor.AddMinutes(20 + index))).ToArray();
+        if (name == "chat-unsafe-paged")
+            return Page(first, "https://example.invalid/me/chats/other/messages?$skiptoken=unsafe");
+        if (name.Contains("wrong-paged", StringComparison.Ordinal))
+            return Page(first, "https://graph.microsoft.com/v1.0/me/chats/other/messages?$skiptoken=wrong");
+        if (name == "chat-repeated-paged") return Page(first, next);
+        if (!isNextPage) return Page(first, next);
+        if (name == "chat-replayed-final-paged") return Page(first);
+        var last = new[]
+        {
+            TeamsMessage("paged-request", "Original paged request", replyToId: parent, created: Anchor),
+            TeamsMessage("paged-own", "Own paged reply", senderId: "user-me",
+                replyToId: parent, created: Anchor.AddMinutes(1))
+        };
+        return Page(name == "chat-overlap-paged" ? new[] { first[^1] }.Concat(last).ToArray() : last);
     }
 
     private static object EmailResponse(string name, string url)
