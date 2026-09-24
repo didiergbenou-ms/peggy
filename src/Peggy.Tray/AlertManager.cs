@@ -91,6 +91,10 @@ public sealed class AlertManager
                         StringComparison.Ordinal))
                 .OrderByDescending(alert => alert.UpdatedUtc)
                 .FirstOrDefault();
+            if (existing is null && !IsTierEnabled(tier))
+            {
+                continue;
+            }
             if (existing is not null &&
                 !AlertSourceLink.TryCreate(sourceReference, out _) &&
                 AlertSourceLink.TryCreate(
@@ -161,13 +165,19 @@ public sealed class AlertManager
         }
 
         return new AlertApplyResult(
-            material,
+            material.Where(alert => IsTierEnabled(alert.Tier)).ToList(),
             GetActiveAlerts());
     }
 
+    public bool IsTierEnabled(AlertTier tier)
+        => tier != AlertTier.Awareness || _state.State.Settings.ReceiveAwarenessAlerts;
+
+    public bool ShouldReceiveDecision(AlertDecision decision)
+        => IsTierEnabled(ApplyExplicitFeedback(decision.ThreadId, decision.Tier));
+
     public IReadOnlyList<AlertRecord> GetActiveAlerts()
         => _state.State.Alerts
-            .Where(alert => alert.Status == AlertStatus.Active)
+            .Where(alert => alert.Status == AlertStatus.Active && IsTierEnabled(alert.Tier))
             .OrderBy(alert => alert.Tier)
             .ThenByDescending(alert => alert.LastActivityUtc)
             .ToList();
@@ -210,9 +220,7 @@ public sealed class AlertManager
 
     public int DismissAllActive(DateTimeOffset nowUtc)
     {
-        var active = _state.State.Alerts
-            .Where(alert => alert.Status == AlertStatus.Active)
-            .ToList();
+        var active = GetActiveAlerts();
         foreach (var alert in active)
         {
             alert.Status = AlertStatus.Dismissed;
@@ -255,6 +263,7 @@ public sealed class AlertManager
     public IReadOnlyList<AlertRecord> GetDueForNotification(DateTimeOffset nowUtc)
         => _state.State.Alerts
             .Where(alert => alert.Status == AlertStatus.Snoozed &&
+                IsTierEnabled(alert.Tier) &&
                 alert.SnoozedUntilUtc <= nowUtc &&
                 !AlertDayPolicy.IsPreviousDay(alert, nowUtc))
             .OrderBy(alert => alert.Tier)

@@ -75,6 +75,7 @@ try
 {
     await CoreBehaviorSmokeTests.RunAsync(testDirectory);
     await MonitoringIntervalSmokeTests.RunAsync(testDirectory);
+    await AwarenessAlertSmokeTests.RunAsync(testDirectory);
     await DailyAlertSmokeTests.RunAsync(testDirectory);
     await NotificationRefreshSmokeTests.RunAsync(testDirectory);
     await AlertThreadRefreshProviderTests.RunAsync(testDirectory);

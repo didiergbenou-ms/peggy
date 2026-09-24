@@ -257,6 +257,18 @@ material-change hash. Alerts can be:
 Feedback such as **Less like this** and **Always alert** is retained locally and
 included in later classification runs.
 
+**Settings > Monitoring behavior > Receive Awareness alerts** controls the
+Awareness tier for both Outlook and Teams. It is on by default, including after
+upgrading an existing profile. Turning it off and saving skips new Awareness
+alerts and hides stored Awareness items from the active list, counts and Peggy's
+active-alert context. Critical and Attention alerts remain enabled. Explicit tier
+feedback is applied before this filter, so **Always alert** items promoted to
+Attention are still received.
+
+This takes effect on Save without restarting or deleting history. Re-enabling
+shows still-active stored Awareness items, but does not replay messages skipped
+while off or generate catch-up pop-ups. Awareness remains non-interrupting.
+
 At the start of each local calendar day, Peggy clears previous-day Critical,
 Attention, and Awareness alerts from the active list, including snoozed alerts.
 Newly detected alerts and new source activity today can still raise alerts,
@@ -786,6 +798,7 @@ not leave a partially applied identity, model, or source scope.
 | Microphone gain | 4x, 8x, 12x, or 16x |
 | Monitoring schedule | Local 24-hour wake and sleep times |
 | Check Outlook and Teams every (minutes) | 1–60 whole minutes, default 5; applies to both enabled sources on Save without restarting and is retained across restarts and account changes |
+| Receive Awareness alerts | On by default; turn off to skip new Awareness alerts and hide existing ones without changing Critical/Attention alerts or deleting history |
 | Start at Windows sign-in | Manages the current user's `Run` registry entry |
 | Pause monitoring | Persists a manual pause independently of scheduled sleep |
 | Teams monitoring scope | Chats only, Chats + selected channels, Selected channels only, All Teams activity, or Off |

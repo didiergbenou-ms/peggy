@@ -191,6 +191,7 @@ public partial class SettingsWindow : Window
         RenderSelectedOutlookFolders();
         StartupCheck.IsChecked = settings.StartAtSignIn;
         PausedCheck.IsChecked = settings.MonitoringPaused;
+        AwarenessAlertsCheck.IsChecked = settings.ReceiveAwarenessAlerts;
         SpeechEnabledCheck.IsChecked = settings.SpeechEnabled;
         var environmentSpeechModels = Environment.GetEnvironmentVariable(
             "PEGGY_SPEECH_MODELS");
@@ -1938,6 +1939,7 @@ public partial class SettingsWindow : Window
             TeamsChannelWatchlist = watchlist,
             StartAtSignIn = StartupCheck.IsChecked == true,
             MonitoringPaused = PausedCheck.IsChecked == true,
+            ReceiveAwarenessAlerts = AwarenessAlertsCheck.IsChecked == true,
             MonitoringIntervalMinutes = monitoringIntervalMinutes,
             MonitoringScheduleEnabled =
                 ScheduleEnabledCheck.IsChecked == true,

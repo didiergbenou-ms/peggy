@@ -290,6 +290,20 @@ internal static class NotificationRefreshSmokeTests
             TestAssert.True(due.Result?.MaterialUpdates.Single().Id == snoozed.Id &&
                 snoozed.Status == AlertStatus.Active,
                 "An unavailable refresh prevented an otherwise due notification.");
+            state.State.Settings.ReceiveAwarenessAlerts = false;
+            manager.Snooze(snoozed.Id, TimeSpan.FromSeconds(1), DateTimeOffset.UtcNow.AddSeconds(-2));
+            var downgrade = Create(Complete(incoming, reply), (_, _, _) =>
+            {
+                var result = Review(NotificationVerdict.Keep, reply.Id);
+                return Task.FromResult(result with { Review = result.Review with { Tier = AlertTier.Awareness } });
+            });
+            due = Invoke<Task<AlertApplyResult?>>(app, "RefreshDueAlertsAsync", downgrade, 41);
+            SetupStepIndicatorTests.Complete(due);
+            TestAssert.True(due.Result?.MaterialUpdates.Count == 0 && manager.GetActiveAlerts().Count == 0 &&
+                snoozed.Tier == AlertTier.Awareness,
+                "A snoozed Attention alert downgraded during review bypassed the disabled Awareness tier.");
+            state.State.Settings.ReceiveAwarenessAlerts = true;
+            snoozed.Tier = AlertTier.Attention;
             manager.Snooze(snoozed.Id, TimeSpan.FromSeconds(1), DateTimeOffset.UtcNow.AddSeconds(-2));
             var duringReview = Create(Complete(incoming, reply), (_, _, _) =>
             {

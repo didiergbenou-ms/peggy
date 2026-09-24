@@ -357,6 +357,15 @@
                       Margin="0,0,0,9"/>
             <CheckBox x:Name="PausedCheck"
                       Content="Pause monitoring"/>
+            <Separator Margin="0,12,0,12"/>
+            <CheckBox x:Name="AwarenessAlertsCheck"
+                      Content="Receive Awareness alerts"
+                      AutomationProperties.Name="Receive Awareness alerts"
+                      FontWeight="SemiBold"/>
+            <TextBlock
+                Text="Awareness items appear in Alerts without a pop-up. Turn off to skip new Awareness items and hide existing ones. Critical and Attention alerts are unchanged."
+                Style="{StaticResource SettingsHintStyle}"
+                Margin="0,6,0,0"/>
           </StackPanel>
         </GroupBox>
 

@@ -510,6 +510,9 @@ function Get-PeggyOperationalState {
             MonitoringPaused = Get-ObjectPropertyValue `
                 $settings `
                 'monitoringPaused'
+            ReceiveAwarenessAlerts = Get-ObjectPropertyValue `
+                $settings `
+                'receiveAwarenessAlerts'
             MonitoringIntervalMinutes = Get-ObjectPropertyValue `
                 $settings `
                 'monitoringIntervalMinutes'

@@ -581,6 +581,7 @@ public sealed class PeggyStateManager
                 settings.MonitorTeamsChatsInSelectedScope,
             StartAtSignIn = settings.StartAtSignIn,
             MonitoringPaused = settings.MonitoringPaused,
+            ReceiveAwarenessAlerts = settings.ReceiveAwarenessAlerts,
             MonitoringIntervalMinutes = settings.MonitoringIntervalMinutes,
             MonitoringScheduleEnabled =
                 settings.MonitoringScheduleEnabled,

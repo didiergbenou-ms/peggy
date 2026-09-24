@@ -200,6 +200,19 @@ internal static class DailyAlertSmokeTests
                 .FindName("BubbleBodyButton") is Button { IsEnabled: false },
                 "Clearing left yesterday's bubble action usable.");
 
+            state.State.Settings.ReceiveAwarenessAlerts = false;
+            typeof(App).GetMethod("RefreshUi", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .Invoke(app, [false]);
+            TestAssert.True(((TextBlock)center.FindName("StatusText")).Text == "No active alerts" &&
+                alertsMenu.Text?.Contains("0 active, 0 awareness", StringComparison.Ordinal) == true &&
+                today.Status == AlertStatus.Active && !bubble.IsVisible,
+                "Disabling Awareness left stale counts, deleted history or opened a notification.");
+            state.State.Settings.ReceiveAwarenessAlerts = true;
+            typeof(App).GetMethod("RefreshUi", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .Invoke(app, [false]);
+            TestAssert.True(((TextBlock)center.FindName("StatusText")).Text == "0 active, 1 awareness" &&
+                !bubble.IsVisible, "Re-enabling Awareness failed to refresh counts or replayed a popup.");
+
             var asleep = Alert(midnight.AddDays(-3), AlertTier.Attention, AlertStatus.Snoozed);
             state.State.Alerts.Add(asleep);
             var minute = DateTime.Now.Hour * 60 + DateTime.Now.Minute;

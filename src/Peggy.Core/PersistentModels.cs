@@ -96,6 +96,8 @@ public sealed class PeggySettings
 
     public bool MonitoringPaused { get; set; }
 
+    public bool ReceiveAwarenessAlerts { get; set; } = true;
+
     public int MonitoringIntervalMinutes { get; set; } =
         PeggyDefaults.DefaultMonitoringIntervalMinutes;
 

@@ -799,6 +799,12 @@ public partial class App : Application
             {
                 return [];
             }
+            if (!_alertManager.ShouldReceiveDecision(decision))
+            {
+                // Still apply local tier downgrades, but do not refresh opted-out items.
+                reviewed.Add(decision);
+                continue;
+            }
             var baseline = messages.Where(message => message.ThreadId == decision.ThreadId).ToList();
             if (baseline.Count == 0)
             {
@@ -867,7 +873,7 @@ public partial class App : Application
                 continue;
             }
             _alertManager.CompleteSnoozeRefresh(alert, results[alert.Id], DateTimeOffset.UtcNow);
-            if (alert.Status == AlertStatus.Active)
+            if (alert.Status == AlertStatus.Active && _alertManager.IsTierEnabled(alert.Tier))
             {
                 reactivated.Add(alert);
             }
@@ -2705,6 +2711,7 @@ public partial class App : Application
                 .ToList(),
             StartAtSignIn = settings.StartAtSignIn,
             MonitoringPaused = settings.MonitoringPaused,
+            ReceiveAwarenessAlerts = settings.ReceiveAwarenessAlerts,
             MonitoringIntervalMinutes = settings.MonitoringIntervalMinutes,
             MonitoringScheduleEnabled =
                 settings.MonitoringScheduleEnabled,
