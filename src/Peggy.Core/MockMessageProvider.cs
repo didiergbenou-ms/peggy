@@ -207,6 +207,7 @@ public sealed class MockMessageProvider : IMessageProvider
         var messages = _messages.Values.Concat(_historicalMessages)
             .Where(message => message.ThreadId == threadId)
             .DistinctBy(message => message.Id, StringComparer.Ordinal)
+            .Select(message => message with { SentAtUtc = message.SentAtUtc ?? message.ReceivedAt })
             .OrderBy(message => message.ReceivedAt)
             .ToList();
         return Task.FromResult(new AlertThreadRefreshResult(

@@ -20,7 +20,9 @@ public record Message(
 {
     public bool IsFromMe { get; init; }
 
-    public string? FullText { get; init; }
+    public DateTimeOffset? SentAtUtc { get; init; }
+
+    public bool IsLikedByMe { get; init; }
 
     public string? WebUrl { get; init; }
 

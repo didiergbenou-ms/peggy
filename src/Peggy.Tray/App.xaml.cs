@@ -727,32 +727,7 @@ public partial class App : Application
     }
 
     private AlertNotificationRefresher CreateNotificationRefresher()
-    {
-        var runner = _copilot;
-        return new AlertNotificationRefresher(
-            _provider,
-            runner.RunNotificationReviewAsync,
-            CreateNotificationUsageRecorder(),
-            Log);
-    }
-
-    private Func<CopilotRunResult, bool, Task> CreateNotificationUsageRecorder()
-    {
-        var origin = _state;
-        var document = origin.State;
-        return async (usage, rejected) =>
-        {
-            if (!ReferenceEquals(_state, origin) || !ReferenceEquals(origin.State, document))
-            {
-                throw new InvalidOperationException("Notification review outlived its originating account state.");
-            }
-            // Pausing invalidates the notification, not usage already charged to this account.
-            origin.RecordCredit(
-                rejected ? "notification-refresh-rejected" : "notification-refresh",
-                usage.Model, usage.OperationCredits, usage.SessionCredits, DateTimeOffset.UtcNow);
-            await origin.SaveAsync(_shutdown.Token);
-        };
-    }
+        => new(_provider, Log);
 
     private sealed record AlertRevision(
         string Id, AlertStatus Status, DateTimeOffset UpdatedUtc, string MaterialHash,

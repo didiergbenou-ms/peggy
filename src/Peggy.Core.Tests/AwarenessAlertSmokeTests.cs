@@ -153,10 +153,7 @@ internal static class AwarenessAlertSmokeTests
             var provider = DispatchProxy.Create<IMessageProvider, NotificationRefreshProviderProxy>();
             ((NotificationRefreshProviderProxy)provider).Read = (_, _, _) =>
                 throw new NotSupportedException("Opted-out Awareness must not perform WorkIQ refresh.");
-            var refresher = new AlertNotificationRefresher(provider,
-                (_, _, _) => throw new NotSupportedException("Opted-out Awareness must not spend review credits."),
-                (_, _) => throw new NotSupportedException("No review credits expected."),
-                _ => { });
+            var refresher = new AlertNotificationRefresher(provider, _ => { });
             var snapshot = typeof(App).GetMethod("CaptureAlertRevisions", BindingFlags.NonPublic | BindingFlags.Instance)!
                 .Invoke(app, [new[] { decision }])!;
             var task = (Task<IReadOnlyList<AlertDecision>>)typeof(App).GetMethod(

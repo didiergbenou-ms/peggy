@@ -37,6 +37,7 @@ internal static class AlertThreadRefreshProviderTests
             await TestDefaultAndMockAsync();
             await TestEmailAsync(logPath);
             await TestTeamsAsync(logPath);
+            await TestAcknowledgmentMetadataAsync(logPath);
             await TestIncompleteReadsAsync(logPath);
             await TestCancellationAsync(logPath);
         }
@@ -102,19 +103,17 @@ internal static class AlertThreadRefreshProviderTests
         TestAssert.True(messages.All(message => message.ThreadId == EmailThread),
             "Email refresh changed the exact conversation identity.");
         var mine = messages.Single(message => message.Id == EmailId("own"));
-        TestAssert.True(mine.IsFromMe && mine.ReceivedAt == Anchor.AddMinutes(2),
+        TestAssert.True(mine.IsFromMe && mine.SentAtUtc == Anchor.AddMinutes(2),
             "The own sent reply beyond the first page lost authenticated identity or sent time.");
         TestAssert.True(messages.Single(message => message.Id == EmailId("sender-own")).IsFromMe,
             "An authenticated Outlook sender identity was not recognized.");
         TestAssert.True(!messages.Single(message => message.Id == EmailId("same-name")).IsFromMe,
             "An Outlook sender display name was mistaken for authenticated identity.");
-        TestAssert.Equal("Fresh edited request", messages.Single(message => message.Id == EmailId("original")).Preview,
-            "Email page deduplication lost the fresh message content.");
         TestAssert.True(messages.Select(message => message.Id).Distinct().Count() == messages.Count &&
-                        messages.All(message => !message.Preview.StartsWith("EXCLUDED", StringComparison.Ordinal)),
+                        messages.All(message => SourceId(message) is not ("draft" or "deleted" or "deleted-child" or "removed")),
             "Draft, deleted, tombstone, or duplicate email leaked into the context.");
-        TestAssert.True(messages.All(message => message.FullText is not null),
-            "Complete email refresh relied on a truncated body preview.");
+        TestAssert.True(messages.All(message => message.Preview.Length == 0 && message.Subject.Length == 0),
+            "Reply-only email refresh unnecessarily retained content.");
         TestAssert.Equal(20, messages.Count(message => message.ReceivedAt < Anchor),
             "Earlier email context was not bounded independently of the required window.");
         TestAssert.True(messages.SequenceEqual(messages.OrderBy(message => message.ReceivedAt)),
@@ -124,10 +123,13 @@ internal static class AlertThreadRefreshProviderTests
                         requests.Any(line => line.Contains("%24skiptoken=second", StringComparison.Ordinal)) &&
                         requests.Any(line => line.Contains("/deleted-root/childFolders", StringComparison.Ordinal)),
             "Email refresh did not traverse both message pages and the deleted-folder hierarchy.");
+        TestAssert.True(requests.Where(line => line.StartsWith("fetch /me/messages?", StringComparison.Ordinal))
+            .All(line => !line.Contains("body", StringComparison.OrdinalIgnoreCase)),
+            "Reply-only email refresh requested message bodies.");
 
         SetCase("email-updated", logPath);
         var updated = await provider.RefreshThreadForAlertAsync(EmailThread, Anchor);
-        TestAssert.True(updated.IsComplete && updated.Thread!.Messages.Single().Preview == "New read, not cached" &&
+        TestAssert.True(updated.IsComplete && updated.Thread!.Messages.Count == 1 &&
                         File.ReadAllLines(logPath).Any(line => line.StartsWith("fetch /me?", StringComparison.Ordinal)),
             "A subsequent refresh reused cached message context or unauthenticated identity.");
         SetCase("email-relative", logPath);
@@ -136,10 +138,8 @@ internal static class AlertThreadRefreshProviderTests
             "A safe relative Graph continuation was not followed.");
         SetCase("email-full-body", logPath);
         var full = await Provider().RefreshThreadForAlertAsync(EmailThread, Anchor);
-        TestAssert.True(full.IsComplete &&
-            full.Thread!.Messages.Single().FullText!.EndsWith("Still need the second answer.", StringComparison.Ordinal) &&
-            !full.Thread.Messages.Single().Preview.Contains("second answer", StringComparison.Ordinal),
-            "Refresh lost outstanding work beyond the short Outlook preview.");
+        TestAssert.True(full.IsComplete && full.Thread!.Messages.Single().Preview.Length == 0,
+            "Reply-only refresh incorrectly depends on interpreting the email body.");
     }
 
     private static async Task TestTeamsAsync(string logPath)
@@ -160,22 +160,24 @@ internal static class AlertThreadRefreshProviderTests
                     "Chat refresh must bound the modified-time window rather than truncate long-lived chats.");
             }
             TestAssert.True(messages.All(message => message.ThreadId == threadId) &&
-                            messages.All(message => !message.Preview.StartsWith("EXCLUDED", StringComparison.Ordinal)),
+                            messages.All(message => SourceId(message) is not ("deleted" or "service" or "removed")),
                 $"{name} included wrong-thread, service, or deleted content.");
-            TestAssert.True(messages.Single(message => message.Preview == "Own reply").IsFromMe &&
-                            messages.Single(message => message.Preview == "Own email reply").IsFromMe &&
-                            messages.Single(message => message.Preview == "Own alias reply").IsFromMe,
+            TestAssert.True(messages.Single(message => SourceId(message) == "own").IsFromMe &&
+                            messages.Single(message => SourceId(message) == "own-email").IsFromMe &&
+                            messages.Single(message => SourceId(message) == "own-alias").IsFromMe,
                 $"{name} failed to identify the authenticated sender by ID/email.");
-            TestAssert.True(!messages.Single(message => message.Preview == "Same display name").IsFromMe,
+            TestAssert.True(!messages.Single(message => SourceId(message) == "same-name").IsFromMe,
                 $"{name} inferred identity from a sender display name.");
-            var edited = messages.Single(message => message.Preview == "Edited reply");
+            var edited = messages.Single(message => SourceId(message) == "edited");
             TestAssert.Equal(Anchor.AddMinutes(3), edited.ReceivedAt, $"{name} lost the edit timestamp.");
+            TestAssert.Equal<DateTimeOffset?>(Anchor, edited.SentAtUtc,
+                $"{name} confused a message edit with a newly sent reply.");
             var encodedItem = edited.Id.Split(':')[^1];
             TestAssert.True(OpaqueIdentifier.TryDecode(encodedItem, "", out var versioned) &&
                             versioned == $"edited\n{Anchor.AddMinutes(3).UtcTicks}",
                 $"{name} lost the versioned source message identity.");
             TestAssert.Equal(Anchor.AddHours(-1),
-                messages.Single(message => message.Preview == "Existing text, later reaction").ReceivedAt,
+                messages.Single(message => SourceId(message) == "reaction").ReceivedAt,
                 $"{name} represented a reaction as new textual activity.");
         }
         foreach (var (name, threadId) in new[]
@@ -184,8 +186,8 @@ internal static class AlertThreadRefreshProviderTests
             SetCase(name, logPath);
             var result = await Provider().RefreshThreadForAlertAsync(threadId, Anchor);
             TestAssert.True(result.IsComplete && result.Warning is null && result.Thread is not null &&
-                result.Thread.Messages.Any(message => message.Preview == "Original paged request") &&
-                result.Thread.Messages.Any(message => message.IsFromMe && message.Preview == "Own paged reply"),
+                result.Thread.Messages.Any(message => SourceId(message) == "paged-request") &&
+                result.Thread.Messages.Any(message => message.IsFromMe && SourceId(message) == "paged-own"),
                 $"{name} did not reach the original request and own reply past the provider's ten-item page cap.");
             TestAssert.True(result.Thread!.Messages.All(message =>
                                 !message.Id.Contains("truncated", StringComparison.Ordinal) &&
@@ -193,25 +195,12 @@ internal static class AlertThreadRefreshProviderTests
                             File.ReadAllLines(logPath).Count(line =>
                                 line.Contains("%24skiptoken=A%2BB%2FC%3D", StringComparison.Ordinal)) == 1,
                 $"{name} invented synthetic content or modified the opaque continuation token.");
-            if (name == "chat-paged")
-            {
-                var original = result.Thread.Messages.Single(message => message.Preview == "Original paged request");
-                var decision = new AlertDecision(ChatThread, AlertTier.Attention, "Reply required",
-                    "A pending request", original.WebUrl!, [original.Id]);
-                var reviews = 0;
-                var refresher = new AlertNotificationRefresher(Provider(), (_, context, _) =>
-                {
-                    reviews++;
-                    TestAssert.True(context.Any(message => message.Id == original.Id),
-                        "The notification review lost its paged original request.");
-                    var sent = context.Single(message => message.IsFromMe && message.Preview == "Own paged reply");
-                    return Task.FromResult(new CopilotNotificationReviewResult(
-                        new(NotificationVerdict.Suppress, AlertTier.Attention, "Handled", "Reply resolved the request",
-                            [sent.Id]), new("synthetic", "synthetic", "synthetic", 0, 0, 0, 0)));
-                }, (_, _) => Task.CompletedTask, _ => { });
-                TestAssert.True(await refresher.RefreshAsync(decision, [original], Anchor, CancellationToken.None) is null &&
-                    reviews == 1, "The paged sent reply did not reach pre-notification reassessment.");
-            }
+            var original = result.Thread.Messages.Single(message => SourceId(message) == "paged-request");
+            var decision = new AlertDecision(threadId, AlertTier.Attention, "Reply required",
+                "A pending request", "", [original.Id]);
+            var refresher = new AlertNotificationRefresher(Provider(), _ => { });
+            TestAssert.True(await refresher.RefreshAsync(decision, [original], Anchor, CancellationToken.None) is null,
+                "The paged sent reply did not suppress the notification without an LLM.");
         }
         SetCase("chat-overlap-paged", logPath);
         var overlap = await Provider().RefreshThreadForAlertAsync(ChatThread, Anchor);
@@ -219,9 +208,45 @@ internal static class AlertThreadRefreshProviderTests
             "A progressing overlapping page failed to deduplicate safely.");
         SetCase("chat-full-body", logPath);
         var full = await Provider().RefreshThreadForAlertAsync(ChatThread, Anchor);
-        TestAssert.True(full.IsComplete &&
-            full.Thread!.Messages.Single().FullText!.EndsWith("Still need the second answer.", StringComparison.Ordinal),
-            "Teams refresh lost the untruncated message body.");
+        TestAssert.True(full.IsComplete && full.Thread!.Messages.Single().Preview.Length == 0,
+            "Reply-only Teams refresh incorrectly retained or interpreted body text.");
+    }
+
+    private static async Task TestAcknowledgmentMetadataAsync(string logPath)
+    {
+        foreach (var name in new[] { "email-missing-body", "email-large-body", "email-unknown-body-type",
+                     "chat-large-body", "chat-empty-body" })
+        {
+            SetCase(name, logPath);
+            var threadId = name.StartsWith("email-", StringComparison.Ordinal) ? EmailThread : ChatThread;
+            var result = await Provider().RefreshThreadForAlertAsync(threadId, Anchor);
+            TestAssert.True(result.IsComplete, "Body availability or size blocked metadata-only acknowledgment.");
+        }
+        foreach (var prefix in new[] { "chat", "channel" })
+        foreach (var suffix in new[] { "like", "thumbs-up", "skin-tone", "other-person", "heart", "removed", "no-user" })
+        {
+            SetCase($"{prefix}-reaction-{suffix}", logPath);
+            var threadId = prefix == "chat" ? ChatThread : ChannelThread;
+            var result = await Provider().RefreshThreadForAlertAsync(threadId, Anchor);
+            var expected = suffix is "like" or "thumbs-up" or "skin-tone";
+            var request = result.Thread!.Messages.Single(message => SourceId(message) == "reaction-request");
+            TestAssert.True(result.IsComplete && request.IsLikedByMe == expected,
+                $"Reaction ownership/type was not checked for {prefix}/{suffix}.");
+            var decision = new AlertDecision(threadId, AlertTier.Attention, "JIT request", "Reply requested", "", [request.Id]);
+            var suppressed = await new AlertNotificationRefresher(Provider(), _ => { }).RefreshAsync(
+                decision, [request], Anchor, CancellationToken.None);
+            TestAssert.Equal(expected, suppressed is null, "The provider's exact triggering-message like was not applied.");
+        }
+        SetCase("email-sent-before-received", logPath);
+        var sent = await Provider().RefreshThreadForAlertAsync(EmailThread, Anchor);
+        var own = sent.Thread!.Messages.Single(message => message.IsFromMe);
+        TestAssert.True(own.SentAtUtc == Anchor.AddMinutes(-1) && own.ReceivedAt == Anchor.AddMinutes(1),
+            "Reply detection must use sent time, not a later received timestamp for outgoing mail.");
+        var incoming = sent.Thread.Messages.Single(message => !message.IsFromMe);
+        var candidate = new AlertDecision(EmailThread, AlertTier.Attention, "Request", "Pending", "", [incoming.Id]);
+        TestAssert.True(await new AlertNotificationRefresher(Provider(), _ => { })
+            .RefreshAsync(candidate, [incoming], Anchor, CancellationToken.None) is not null,
+            "An outgoing email sent before the trigger suppressed it based on delivery time.");
     }
 
     private static async Task TestIncompleteReadsAsync(string logPath)
@@ -232,12 +257,10 @@ internal static class AlertThreadRefreshProviderTests
                      "email-missing-folder", "email-missing-time", "email-unsafe-link",
                      "email-wrong-link", "email-repeated", "email-limit", "email-page-limit",
                      "email-deleted-unavailable", "chat-empty", "chat-wrong",
-                     "email-missing-body", "email-large-body", "email-unknown-body-type",
-                     "chat-large-body",
                      "chat-unsafe-paged", "chat-wrong-paged", "channel-wrong-paged",
                      "chat-repeated-paged", "chat-replayed-final-paged", "chat-limit-paged",
                      "chat-page-limit-paged", "channel-page-limit-paged",
-                     "chat-wrong-message", "chat-missing-type", "chat-empty-body", "channel-wrong-root",
+                     "chat-wrong-message", "chat-missing-type", "channel-wrong-root",
                      "channel-deleted-root", "channel-wrong-reply", "channel-wrong-identity"
                  })
         {
@@ -339,6 +362,11 @@ internal static class AlertThreadRefreshProviderTests
         }
         else if (path == $"/me/chats/{ChatId}/messages")
         {
+            if (name.Contains("-reaction-", StringComparison.Ordinal))
+            {
+                Console.WriteLine(JsonSerializer.Serialize(Page([ReactionMessage(name, false)])));
+                return;
+            }
             if (name.Contains("paged", StringComparison.Ordinal))
             {
                 Console.WriteLine(JsonSerializer.Serialize(TeamsPagedResponse(name, url, false)));
@@ -367,6 +395,11 @@ internal static class AlertThreadRefreshProviderTests
         }
         else if (path == $"/teams/{TeamId}/channels/{ChannelId}/messages/{RootId}/replies")
         {
+            if (name.Contains("-reaction-", StringComparison.Ordinal))
+            {
+                Console.WriteLine(JsonSerializer.Serialize(Page([ReactionMessage(name, true)])));
+                return;
+            }
             if (name.Contains("paged", StringComparison.Ordinal))
             {
                 Console.WriteLine(JsonSerializer.Serialize(TeamsPagedResponse(name, url, true)));
@@ -427,6 +460,9 @@ internal static class AlertThreadRefreshProviderTests
 
     private static object EmailResponse(string name, string url)
     {
+        if (name == "email-sent-before-received")
+            return Page([Email("trigger", "Please reply", Anchor),
+                Email("early-reply", "Old reply", Anchor.AddMinutes(1), address: Account, sent: Anchor.AddMinutes(-1))]);
         if (name == "email-cancel")
         {
             Thread.Sleep(TimeSpan.FromSeconds(15));
@@ -520,11 +556,24 @@ internal static class AlertThreadRefreshProviderTests
         ];
     }
 
+    private static object ReactionMessage(string name, bool isChannel)
+    {
+        var type = name.EndsWith("thumbs-up", StringComparison.Ordinal) ? "\U0001F44D"
+            : name.EndsWith("skin-tone", StringComparison.Ordinal) ? "\U0001F44D\U0001F3FD"
+            : name.EndsWith("heart", StringComparison.Ordinal) ? "heart" : "like";
+        var user = name.EndsWith("no-user", StringComparison.Ordinal) ? null
+            : (object)new { user = new { id = name.EndsWith("other-person", StringComparison.Ordinal) ? "other-user" : "user-me" } };
+        var reactions = name.EndsWith("removed", StringComparison.Ordinal) ? Array.Empty<object>()
+            : [new { reactionType = type, user, createdDateTime = Anchor.AddMinutes(1) }];
+        return TeamsMessage("reaction-request", "Please acknowledge", replyToId: isChannel ? RootId : null,
+            reactions: reactions);
+    }
+
     private static object TeamsMessage(
         string id, string content, string senderId = "other-user", string? replyToId = null,
         string? type = "message", bool deleted = false, DateTimeOffset? created = null,
         DateTimeOffset? edited = null, DateTimeOffset? modified = null,
-        string? emailSender = null, string? chatId = null, string? channelId = null)
+        string? emailSender = null, string? chatId = null, string? channelId = null, object[]? reactions = null)
         => new
         {
             id, replyToId, messageType = type, createdDateTime = created ?? Anchor,
@@ -535,7 +584,7 @@ internal static class AlertThreadRefreshProviderTests
                 ? (object)new { user = new { id = senderId, displayName = "Self Name" } }
                 : new { emailAddress = new { address = emailSender, name = "Email identity" } },
             body = new { contentType = "html", content = $"<div>{content}</div>" },
-            reactions = id == "reaction" ? new[] { new { reactionType = "like" } } : []
+            reactions = reactions ?? (id == "reaction" ? new object[] { new { reactionType = "like" } } : [])
         };
 
     private static object Email(
@@ -560,6 +609,14 @@ internal static class AlertThreadRefreshProviderTests
         };
 
     private static string EmailId(string id) => OpaqueIdentifier.Encode("email-message:", id);
+
+    private static string SourceId(Message message)
+    {
+        var encoded = message.Source == MessageSource.Email
+            ? message.Id["email-message:".Length..] : message.Id.Split(':')[^1];
+        TestAssert.True(OpaqueIdentifier.TryDecode(encoded, "", out var decoded), "Invalid message identity in fixture.");
+        return decoded.Split('\n')[0];
+    }
 
     private sealed class UnsupportedProvider : IMessageProvider
     {

@@ -21,7 +21,6 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     private const int MaxTeamsSearchPageSize = 200;
     private const int MaxAlertRefreshItems = 250;
     private const int MaxAlertRefreshPages = 10;
-    private const int MaxAlertRefreshBodyLength = 16_000;
     private const string DefaultActiveFolderPath = PeggyDefaults.ActiveCasesFolder;
     private static readonly TimeSpan CatalogCacheDuration = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan TeamsSearchOverlap = TimeSpan.FromMinutes(10);
@@ -367,7 +366,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         // newest or filtering on receivedDateTime (which can omit sent messages).
         var page = await ReadAlertPagesAsync<OutlookMessage>(
             $"/me/messages?$filter={filter}&$top=50" +
-            "&$select=id,conversationId,from,sender,subject,bodyPreview,body," +
+            "&$select=id,conversationId,from,sender," +
             "receivedDateTime,sentDateTime,isRead,isDraft,parentFolderId,webLink",
             budget);
         var complete = page.IsComplete;
@@ -392,12 +391,18 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 continue;
             }
             var message = ToEmailMessage(item);
-            if (message is null || !TryGetAlertBody(item.Body, out var fullText))
+            if (message is null)
             {
                 complete = false;
                 continue;
             }
-            messages[item.Id!] = message with { FullText = fullText };
+            messages[item.Id!] = message with
+            {
+                From = string.Empty,
+                Subject = string.Empty,
+                Preview = string.Empty,
+                SentAtUtc = item.SentDateTime
+            };
         }
         return BuildAlertRefreshResult(
             EncodeKey("email-thread:", conversationId),
@@ -479,9 +484,8 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             }
             AddAlertTeamsMessage(
                 messages, item,
-                () => ToTeamsMessage(
-                    chatId, NormalizeSubject(chat.Topic, "Teams chat"), item,
-                    chat.Viewpoint?.LastMessageReadDateTime ?? DateTimeOffset.MinValue),
+                () => (EncodeTeamsMessageKey(chatId, BuildVersionedChatItemId(item.Id!, GetChatActivityUtc(item))),
+                    EncodeKey("teams-thread:", chatId)),
                 ref complete);
         }
         return BuildAlertRefreshResult(
@@ -518,7 +522,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         var messages = new Dictionary<string, Message>(StringComparer.Ordinal);
         AddAlertTeamsMessage(
             messages, root,
-            () => ToChannelMessage(channel, root, rootId, false, false),
+            () => (EncodeChannelMessageKey(teamId, channelId, rootId,
+                    BuildVersionedChannelItemId(root.Id!, GetChatActivityUtc(root))),
+                EncodeChannelThreadKey(teamId, channelId, rootId)),
             ref complete);
         foreach (var item in page.Items)
         {
@@ -530,7 +536,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             }
             AddAlertTeamsMessage(
                 messages, item,
-                () => ToChannelMessage(channel, item, rootId, false, false),
+                () => (EncodeChannelMessageKey(teamId, channelId, rootId,
+                        BuildVersionedChannelItemId(item.Id!, GetChatActivityUtc(item))),
+                    EncodeChannelThreadKey(teamId, channelId, rootId)),
                 ref complete);
         }
         return BuildAlertRefreshResult(
@@ -545,10 +553,10 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             (string.Equals(item.ChannelIdentity.TeamId, teamId, StringComparison.Ordinal) &&
              string.Equals(item.ChannelIdentity.ChannelId, channelId, StringComparison.Ordinal)));
 
-    private static void AddAlertTeamsMessage(
+    private void AddAlertTeamsMessage(
         IDictionary<string, Message> destination,
         ChatMessage item,
-        Func<Message?> convert,
+        Func<(string Id, string ThreadId)> identifiers,
         ref bool complete)
     {
         if (item.Removed is not null || item.DeletedDateTime is not null ||
@@ -562,31 +570,35 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             }
             return;
         }
-        var message = string.IsNullOrWhiteSpace(item.MessageType) ? null : convert();
-        if (message is null || !TryGetAlertBody(item.Body, out var fullText))
+        if (string.IsNullOrWhiteSpace(item.MessageType) || string.IsNullOrWhiteSpace(item.Id) ||
+            item.CreatedDateTime is null)
         {
             complete = false;
             return;
         }
+        var (id, threadId) = identifiers();
+        var message = new Message(id, MessageSource.Teams, threadId,
+            string.Empty, string.Empty, string.Empty, GetChatActivityUtc(item), false)
+        {
+            IsFromMe = IsCurrentUserTeamsMessage(item),
+            SentAtUtc = item.CreatedDateTime,
+            IsLikedByMe = item.Reactions?.Any(reaction => reaction is not null &&
+                IsThumbsUp(reaction.ReactionType) && IsCurrentUserTeamsIdentity(reaction.User)) == true
+        };
         if (!destination.TryGetValue(item.Id!, out var previous) ||
             previous.ReceivedAt <= message.ReceivedAt)
         {
-            destination[item.Id!] = message with { FullText = fullText };
+            destination[item.Id!] = message;
         }
     }
 
-    private static bool TryGetAlertBody(ItemBody? body, out string text)
+    private static bool IsThumbsUp(string? reactionType)
     {
-        text = string.Empty;
-        if (body?.Content is null || body.Content.Length > 64_000 ||
-            !(string.Equals(body.ContentType, "html", StringComparison.OrdinalIgnoreCase) ||
-              string.Equals(body.ContentType, "text", StringComparison.OrdinalIgnoreCase)))
-        {
-            return false;
-        }
-        text = NormalizeContent(body.Content,
-            string.Equals(body.ContentType, "html", StringComparison.OrdinalIgnoreCase));
-        return text.Length is > 0 and <= MaxAlertRefreshBodyLength;
+        if (string.Equals(reactionType, "like", StringComparison.OrdinalIgnoreCase)) return true;
+        const string thumbsUp = "\U0001F44D";
+        return reactionType?.StartsWith(thumbsUp, StringComparison.Ordinal) == true &&
+            reactionType[thumbsUp.Length..] is "" or "\uFE0F" or "\U0001F3FB" or "\U0001F3FC" or
+                "\U0001F3FD" or "\U0001F3FE" or "\U0001F3FF";
     }
 
     private async Task<T> FetchAlertResourceAsync<T>(
@@ -3628,13 +3640,16 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                message.Sender?.EmailAddress?.Address);
 
     private bool IsCurrentUserTeamsMessage(ChatMessage message)
+        => IsCurrentUserTeamsIdentity(message.From);
+
+    private bool IsCurrentUserTeamsIdentity(IdentitySet? identity)
     {
-        var sender = message.From?.User;
+        var sender = identity?.User;
         return (!string.IsNullOrWhiteSpace(_currentUserId) &&
                 !string.IsNullOrWhiteSpace(sender?.Id) &&
                 string.Equals(sender.Id, _currentUserId, StringComparison.OrdinalIgnoreCase)) ||
                IsCurrentUserEmailAddress(sender?.Id) ||
-               IsCurrentUserEmailAddress(message.From?.EmailAddress?.Address);
+               IsCurrentUserEmailAddress(identity?.EmailAddress?.Address);
     }
 
     private bool IsCurrentUserEmailAddress(string? address)
@@ -5455,11 +5470,23 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         [JsonPropertyName("replies")]
         public List<ChatMessage> Replies { get; init; } = [];
 
+        [JsonPropertyName("reactions")]
+        public List<ChatMessageReaction?>? Reactions { get; init; }
+
         [JsonPropertyName("replies@odata.nextLink")]
         public string? RepliesNextLink { get; init; }
 
         [JsonIgnore]
         public bool HasUnpagedRecentReplies { get; set; }
+    }
+
+    private sealed class ChatMessageReaction
+    {
+        [JsonPropertyName("reactionType")]
+        public string? ReactionType { get; init; }
+
+        [JsonPropertyName("user")]
+        public IdentitySet? User { get; init; }
     }
 
     private sealed class ChannelIdentity

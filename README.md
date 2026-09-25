@@ -289,26 +289,30 @@ its old notification back unless it contains new activity today. This reset does
 not discard older messages that Peggy first discovers today.
 
 Before adding a new alert or re-notifying a due snoozed alert, Peggy refreshes
-that exact Outlook/Teams conversation, including sent replies. If relevant
-context changed, Copilot reassesses the pending request. Peggy suppresses it only
-when fresh evidence confirms that nothing remains actionable. Acknowledgments,
-partial replies, promises to follow up, read status and unrelated chat activity
-do not by themselves settle an alert.
+the exact Outlook/Teams conversation through WorkIQ and applies a local
+acknowledgment rule: a sent reply from the signed-in user after the triggering
+message suppresses its notification. For Teams, that user's own thumbs-up/like
+on the triggering message also counts. If an alert covers multiple messages,
+each must be covered by a later sent reply or its own like; acknowledging one
+does not hide a different unanswered request.
 
-Unavailable, incomplete, oversized or timed-out context, invalid reassessments,
-and uncertain conclusions preserve the original alert and are logged without
-message content. Refresh reads full message text rather than relying on short
-previews. Context is bounded to 100 messages and 64,000 characters; a source read
-has a 30-second limit and each batch has a 60-second refresh budget. Unreadable or
-oversized bodies or unverified continuation pages cannot justify suppression.
-Teams refresh follows same-conversation continuation pages, including when WorkIQ
-returns ten items despite a larger requested page size. Original requests and
-sent replies on later pages are included before reassessment. Repeated,
-non-progressing or wrong-resource pages retain the alert instead of treating
-partial context as complete. Reassessments use the configured Copilot model and appear in
-local credit usage. Refresh is a snapshot,
-not a guarantee against a reply arriving afterward. It does not continuously
-reconcile already-shown alerts or change messages, polling cursors or settings.
+Even "OK" or "I will investigate" counts as a sent reply. Peggy does not judge
+whether the work is finished, and a like is not approval of a JIT/access request.
+Read status, drafts, other people's reactions and edits to an older sent message
+do not count as a new reply. There is **no second Copilot/LLM evaluation** in this
+check; initial alert classification still uses Copilot. WorkIQ reads may incur
+their own service charges. This reply/like-only rule replaces beta.2's LLM
+reassessment in the next release.
+
+The check uses message identities, authors, original sent times and reactions,
+not message-body interpretation. Failed or incomplete reads preserve the original
+alert. Reads follow verified same-conversation continuation pages, bounded to ten
+pages, 250 items and a 30-second source timeout within a 60-second batch budget.
+Repeated, non-progressing or wrong-resource pages retain the alert. Logs record
+`already-replied`, `acknowledged-by-like`, `not-acknowledged` or a technical failure
+without message content. Refresh is a snapshot, not a guarantee against a later
+reply. It does not continuously clear already-shown alerts or change messages,
+polling cursors or settings.
 
 New or reactivated Critical/Attention alerts appear in Peggy's bubble without
 opening or focusing the Alert Center automatically. Click the bubble's body to

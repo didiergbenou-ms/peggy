@@ -16,7 +16,7 @@ public interface IMessageProvider
 
     Task<MessageThread?> GetThreadAsync(string threadId, CancellationToken ct = default);
 
-    /// <summary>Reads current thread messages, including own replies, since the supplied boundary.</summary>
+    /// <summary>Reads fresh thread metadata, including own sent times and likes, since the supplied boundary.</summary>
     Task<AlertThreadRefreshResult> RefreshThreadForAlertAsync(
         string threadId,
         DateTimeOffset sinceUtc,
