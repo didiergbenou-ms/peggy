@@ -1136,6 +1136,17 @@ Restoring files without restoring the previous product's fully installed
 registration is a failure, not a successful rollback; failure logs and fixture
 recovery information are retained for diagnosis.
 
+Historical-baseline extraction gets up to three sequential attempts, with short
+backoff and a fresh output/intermediate directory each time. The exact EXE hash
+is rechecked before each attempt and after success; no partial files are reused.
+Verbose WiX output and native exit codes are retained, and incomplete attached
+container warning `WIX8503` is treated as an error. A successful extraction must
+still pass the unchanged MSI identity/version checks. Hash mismatches, invalid
+MSI identity and actual upgrade/rollback failures are not retried by this wrapper.
+The workflow retains extraction and isolated-installer diagnostics as private
+Actions artifacts for fourteen days, even when a later extraction attempt
+recovers. Persistent failures still stop release publication and report failure.
+
 The setup bundle uses a self-contained .NET/WPF bootstrapper and the shared Peggy
 setup view. Only the MSI is in the Burn package chain; the old separate prerequisite
 and application-launch packages are not used. `Test-PeggyBootstrapperPayload.ps1`

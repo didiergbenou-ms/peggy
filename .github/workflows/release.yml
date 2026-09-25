@@ -36,6 +36,7 @@ jobs:
         run: |
           .\scripts\Test-PeggyReleaseAssets.ps1
           .\scripts\Test-PeggyBootstrapperPayload.ps1
+          .\scripts\Test-PeggyBundleExtraction.ps1
           .\scripts\Build-WindowsRelease.ps1 `
             -Version $env:TAG `
             -OutputDirectory $env:RUNNER_TEMP `
@@ -126,6 +127,21 @@ jobs:
               -PayloadDirectory (Join-Path $env:RUNNER_TEMP "peggy-win-x64") `
               -OutputDirectory (Join-Path $env:RUNNER_TEMP "peggy-upgrade-$baselineTag")
           }
+
+      - name: Retain installer diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: installer-diagnostics-${{ github.ref_name }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/peggy-upgrade-baseline-*/bundle-*/**/extract.log
+            ${{ runner.temp }}/peggy-upgrade-baseline-*/bundle-*/**/attempt.json
+            ${{ runner.temp }}/peggy-bundle-msi-tests/**/extract.log
+            ${{ runner.temp }}/peggy-bundle-msi-tests/**/attempt.json
+            ${{ runner.temp }}/peggy-upgrade-*/**/*.log
+            ${{ runner.temp }}/peggy-upgrade-*/**/manifest.json
 
       - name: Create GitHub release
         shell: pwsh

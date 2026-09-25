@@ -15,6 +15,72 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function Invoke-PeggyBundleExtraction {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$WixPath,
+        [Parameter(Mandatory)][string]$Bundle,
+        [Parameter(Mandatory)][string]$Destination,
+        [Parameter(Mandatory)][string]$ExpectedHash,
+        [ValidateRange(1, 3)][int]$MaximumAttempts = 3
+    )
+
+    # Handle native exit status here, even when the calling shell promotes it to an error.
+    $PSNativeCommandUseErrorActionPreference = $false
+    $operationId = [Guid]::NewGuid().ToString('N')
+    for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
+        if ((Get-FileHash -LiteralPath $Bundle -Algorithm SHA256).Hash -ine $ExpectedHash) {
+            throw 'Setup checksum changed before extraction; refusing to retry.'
+        }
+        # Failed attempts may leave partial files; none may satisfy the next attempt.
+        $attemptRoot = (New-Item -ItemType Directory -Path (
+            Join-Path $Destination "bundle-$([Guid]::NewGuid().ToString('N'))"
+        )).FullName
+        $payloads = Join-Path $attemptRoot 'payloads'
+        $work = Join-Path $attemptRoot 'work'
+        New-Item -ItemType Directory -Path $work | Out-Null
+        $log = Join-Path $attemptRoot 'extract.log'
+        $started = [DateTimeOffset]::UtcNow
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        & dotnet $WixPath burn extract -v -wx8503 -intermediateFolder $work $Bundle `
+            -o $payloads -oba (Join-Path $attemptRoot 'ba') *> $log
+        $exitCode = $LASTEXITCODE
+        $watch.Stop()
+        [ordered]@{
+            OperationId = $operationId
+            Attempt = $attempt
+            StartedUtc = $started.ToString('O')
+            ElapsedMilliseconds = $watch.ElapsedMilliseconds
+            ExitCode = $exitCode
+            ExitCodeHex = '0x{0:X8}' -f $exitCode
+            BundleName = [IO.Path]::GetFileName($Bundle)
+            BundleBytes = (Get-Item -LiteralPath $Bundle).Length
+            ExpectedSha256 = $ExpectedHash.ToLowerInvariant()
+            WixVersion = '6.0.2'
+            RunnerImage = $env:ImageOS
+            RunnerImageVersion = $env:ImageVersion
+        } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $attemptRoot 'attempt.json') -Encoding utf8
+        if ($exitCode -eq 0) {
+            if ((Get-FileHash -LiteralPath $Bundle -Algorithm SHA256).Hash -ine $ExpectedHash) {
+                throw 'Setup checksum changed during extraction; refusing extracted files.'
+            }
+            Write-Host "WiX extraction passed: $([IO.Path]::GetFileName($Bundle)), attempt $attempt/$MaximumAttempts."
+            return $payloads
+        }
+
+        Write-Warning "WiX extraction failed: $([IO.Path]::GetFileName($Bundle)), attempt $attempt/$MaximumAttempts, exit $exitCode. Log: $log"
+        foreach ($line in @(Get-Content -LiteralPath $log -Tail 40)) {
+            # Prefix tool output so an embedded workflow command cannot be executed.
+            Write-Host "WiX diagnostic: $line"
+        }
+        if ($attempt -eq $MaximumAttempts) {
+            throw "WiX bundle extraction failed after $MaximumAttempts attempts (exit $exitCode); diagnostics under '$Destination', operation $operationId."
+        }
+        Start-Sleep -Seconds (2 * $attempt)
+    }
+}
+
 if (-not $IsWindows) { throw 'Bundle inspection requires Windows and Windows Installer.' }
 . (Join-Path $PSScriptRoot 'PeggyInstallerVersion.ps1')
 $versionInfo = ConvertTo-PeggyInstallerVersion -Version $Version
@@ -39,17 +105,8 @@ $wix = Join-Path $nugetRoot 'wixtoolset.sdk\6.0.2\tools\net6.0\wix.dll'
 if (-not (Test-Path -LiteralPath $wix -PathType Leaf)) {
     throw 'The pinned WiX 6.0.2 inspection command was not restored.'
 }
-# Never reuse an extraction tree: an old MSI must not satisfy a failed extraction.
-$root = (New-Item -ItemType Directory -Path (
-    Join-Path $OutputDirectory "bundle-$([Guid]::NewGuid().ToString('N'))"
-)).FullName
-$payloads = Join-Path $root 'payloads'
-$work = Join-Path $root 'work'
-New-Item -ItemType Directory -Path $work | Out-Null
-$log = Join-Path $root 'extract.log'
-& dotnet $wix burn extract -intermediateFolder $work $bundle.FullName `
-    -o $payloads -oba (Join-Path $root 'ba') *> $log
-if ($LASTEXITCODE -ne 0) { throw "WiX bundle extraction failed; see '$log'." }
+$payloads = Invoke-PeggyBundleExtraction -WixPath $wix -Bundle $bundle.FullName `
+    -Destination $OutputDirectory -ExpectedHash $expectedHash
 $msis = @(Get-ChildItem -LiteralPath $payloads -Recurse -File -Force -Filter '*.msi')
 if ($msis.Count -ne 1 -or $msis[0].Name -cne 'peggy-win-x64.msi') {
     throw 'The setup bundle must contain exactly one MSI named peggy-win-x64.msi.'
