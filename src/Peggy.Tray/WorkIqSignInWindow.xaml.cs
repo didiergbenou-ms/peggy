@@ -126,12 +126,13 @@ public partial class WorkIqSignInWindow : Window
     public bool VoiceModelsReady { get; private set; }
 
     internal bool CanFinish =>
-        InstallerAllowsOnboarding && !_busy && _candidateIdentity is not null &&
+        !_closed && !_installerFinished && InstallerAllowsOnboarding && !_busy &&
+        (_installerSetupSaved || (_candidateIdentity is not null &&
         (!_requireMailAccess || _mailReady) &&
         _local?.WorkIq.IsReady == true &&
         string.Equals(_candidateIdentity.EulaAcceptedVersion,
             _local.WorkIq.Version, StringComparison.Ordinal) &&
-        (!_firstRun || (_local.IsReady && _copilotAccess?.IsReady == true));
+        (!_firstRun || (_local.IsReady && _copilotAccess?.IsReady == true))));
 
     internal void SetPreviewInstallationState(string installationStatus, string operationStatus)
     {
@@ -140,7 +141,7 @@ public partial class WorkIqSignInWindow : Window
         InstallButton.Visibility = Visibility.Collapsed;
     }
 
-    internal Task CheckLocalAsync()
+    internal Task<bool> CheckLocalAsync()
         => RunOperationAsync(async ct =>
         {
             var previousVersion = _local?.WorkIq.Version;
@@ -384,11 +385,19 @@ public partial class WorkIqSignInWindow : Window
     }
 
     private async void Finish_Click(object sender, RoutedEventArgs e)
+        => await FinishAsync();
+
+    internal async Task FinishAsync()
     {
         if (FinishInstallerWithoutOnboarding()) return;
         if (!CanFinish) return;
         await RunOperationAsync(async ct =>
         {
+            if (_installerSetupSaved)
+            {
+                await LaunchInstallerAsync(ct);
+                return;
+            }
             var candidate = _candidateIdentity!;
             SetStep(AccountVerifiedIndicator, AccountVerifiedStatus, SetupStepState.Running,
                 "Checking — Confirming the connected account before Finish.");
@@ -460,11 +469,28 @@ public partial class WorkIqSignInWindow : Window
                 var voiceReady = _installer.Diagnostics.Run("finish.check-voice-files", RevalidateVoiceModels);
                 await TraceSetupStepAsync("finish.save-setup",
                     () => _installer.CompleteAsync(candidate, voiceReady, ct));
-                _installer.Diagnostics.Run("finish.launch", () => _installer.Close(launch: true));
-                _installerFinished = true;
-                Close();
+                _installerSetupSaved = true;
+                ct.ThrowIfCancellationRequested();
+                await LaunchInstallerAsync(ct);
             }
-        }, "Confirming the verified account before finishing...", "Finish cancelled. Peggy's saved account has not changed.");
+        }, "Confirming the verified account before finishing...",
+            _installer is null ? "Finish cancelled. Peggy's saved account has not changed."
+                : "Finish cancelled. Peggy remains installed; any saved setup is kept. Choose Finish / Retry launch when ready.",
+            stage: nameof(Finish_Click));
+        if (_installer is not null && !_closed) InstallerStatus.Text = OperationStatus.Text;
+    }
+
+    private async Task LaunchInstallerAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        InstallerStatus.Text = OperationStatus.Text =
+            "Setup is saved. Starting Peggy and checking for an immediate startup exit...";
+        UpdateControls();
+        await TraceSetupStepAsync("finish.launch", () => _installer!.LaunchAsync(ct));
+        ct.ThrowIfCancellationRequested();
+        _installer!.Close(launch: true);
+        _installerFinished = true;
+        Close();
     }
 
     private bool IsDifferentAccount(WorkIqAccountIdentity identity)
@@ -581,11 +607,11 @@ public partial class WorkIqSignInWindow : Window
         UpdateInstallerControls();
     }
 
-    private async Task RunOperationAsync(
+    private async Task<bool> RunOperationAsync(
         Func<CancellationToken, Task> action, string status, string cancelled, bool hideFailureDetails = false,
         [System.Runtime.CompilerServices.CallerMemberName] string stage = "")
     {
-        if (_busy || _closed || !InstallerAllowsOnboarding) return;
+        if (_busy || _closed || !InstallerAllowsOnboarding) return false;
         _busy = true;
         _operationGeneration++;
         _cancelledStatus = cancelled;
@@ -599,6 +625,7 @@ public partial class WorkIqSignInWindow : Window
             if (_installer is null) await action(operation.Token);
             else await _installer.Diagnostics.RunAsync($"ui.{stage}",
                 () => action(operation.Token), includeExceptionMessages: !hideFailureDetails);
+            return !operation.IsCancellationRequested;
         }
         catch (OperationCanceledException) when (operation.IsCancellationRequested)
         {
@@ -635,6 +662,7 @@ public partial class WorkIqSignInWindow : Window
             _busy = false;
             UpdateControls();
         }
+        return false;
     }
 
     private Task<T> TraceSetupStepAsync<T>(string stage, Func<Task<T>> action)
@@ -850,6 +878,7 @@ public partial class WorkIqSignInWindow : Window
 
     internal void CancelActiveOperation()
     {
+        _installerHandoffCancelled = true;
         _operationGeneration++;
         _activeOperationCancellation?.Cancel();
         ClearGitHubChallenge();

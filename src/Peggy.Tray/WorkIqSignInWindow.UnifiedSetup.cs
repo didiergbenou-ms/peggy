@@ -18,6 +18,8 @@ public partial class WorkIqSignInWindow
     private bool _installerCommitted;
     private bool _installerRestart;
     private bool _installerFinished;
+    private bool _installerSetupSaved;
+    private bool _installerHandoffCancelled;
     private bool _requirementsReady;
     private CancellationTokenSource? _installerCancellation;
 
@@ -72,10 +74,15 @@ public partial class WorkIqSignInWindow
         var requirements = await _installer!.PrepareAsync(ct);
         InstallerApplyButton.Content = _installer.ActionLabel;
         InstallerGroup.Header = $"2. {_installer.ActionLabel}";
+        SetupSubtitle.Text = _installer.IsUpgrade
+            ? "Update Peggy, verify your saved connection, and reopen Peggy automatically."
+            : "Check this PC, connect your accounts, then choose Finish.";
         ShowInstallerRequirements(requirements);
         _requirementsReady = requirements.All(requirement => requirement.Ready);
         InstallerStatus.Text = _requirementsReady
-            ? $"Ready — Choose {_installer.ActionLabel}. Account setup starts only after installation completes."
+            ? _installer.IsUpgrade
+                ? $"Ready — Choose {_installer.ActionLabel}. Peggy will reopen after your saved account and current requirements are verified. Cancel stops automatic reopening."
+                : $"Ready — Choose {_installer.ActionLabel}. Account setup starts only after installation completes."
             : "Action required — Install or repair the missing requirements above, then continue. Vendor prompts may open.";
     }, "Checking requirements. Peggy will remain running until you choose Install / update.");
 
@@ -121,7 +128,9 @@ public partial class WorkIqSignInWindow
 
     internal async Task ApplyInstallerAsync()
     {
-        if (!_requirementsReady || _installerCommitted) return;
+        if (!_requirementsReady || _installerCommitted || _installerBusy || _busy || _closed) return;
+        _installerHandoffCancelled = false;
+        var continueOnboarding = false;
         await RunInstallerOperationAsync(async ct =>
         {
             var result = await _installer!.ApplyAsync(new WindowInteropHelper(this).Handle, ct);
@@ -131,12 +140,23 @@ public partial class WorkIqSignInWindow
             InstallerStatus.Text = result.Message;
             InstallerProgress.Value = result.Succeeded ? 100 : 0;
             OperationStatus.Text = result.Message;
+            if (result.Cancelled || ct.IsCancellationRequested)
+            {
+                _installerHandoffCancelled = true;
+                if (result.Succeeded)
+                    InstallerStatus.Text = OperationStatus.Text =
+                        "Installation completed, but cancellation was requested. Peggy will not reopen automatically. Finish account setup below when ready.";
+                return;
+            }
+            continueOnboarding = result.Succeeded;
         }, "Preparing installation. If Peggy is running, setup will ask it to close safely before updating files.");
-        if (!InstallerAllowsOnboarding) return;
-        await CheckLocalAsync();
-        await RunOperationAsync(async ct =>
+        if (!continueOnboarding || !InstallerAllowsOnboarding || _installerHandoffCancelled) return;
+        if (!await CheckLocalAsync() || _installerHandoffCancelled) return;
+        var reuseVerified = false;
+        var verified = await RunOperationAsync(async ct =>
         {
             var identity = await _installer!.VerifySavedIdentityAsync(ct);
+            ct.ThrowIfCancellationRequested();
             if (identity is null)
             {
                 OperationStatus.Text = "Peggy is installed. Check GitHub Copilot access and connect Microsoft 365 below, then choose Finish.";
@@ -157,9 +177,26 @@ public partial class WorkIqSignInWindow
             SetStep(MicrosoftConsentIndicator, MicrosoftConsentStatus, SetupStepState.Succeeded, "Ready — Existing permission consent");
             SetStep(AccountVerifiedIndicator, AccountVerifiedStatus, SetupStepState.Succeeded, "Ready — Saved account verified");
             if (_requireMailAccess) await ProbeMailAsync(ct);
-            OperationStatus.Text = "Peggy was updated. Your account and settings are kept. Choose Finish to launch.";
+            ct.ThrowIfCancellationRequested();
+            reuseVerified = _installer.IsUpgrade && !_firstRun &&
+                !string.IsNullOrWhiteSpace(_expectedPrincipalId) &&
+                !string.IsNullOrWhiteSpace(identity.PrincipalId) &&
+                !string.IsNullOrWhiteSpace(_installer.InitialState.WorkIqEulaAcceptedVersion) &&
+                string.Equals(_installer.InitialState.WorkIqEulaAcceptedVersion,
+                    identity.EulaAcceptedVersion, StringComparison.Ordinal) && !IsDifferentAccount(identity);
+            OperationStatus.Text = reuseVerified
+                ? "Your saved account is verified. Saving setup and reopening Peggy..."
+                : "Peggy is installed. Review your account and settings, then choose Finish to launch.";
         }, "Checking the saved Microsoft 365 connection without signing in again.",
             "Saved account verification cancelled. You can reconnect above.");
+        // Await the operation's finally block before entering Finish: it owns
+        // the busy flag and cancellation source until verification is settled.
+        if (verified && reuseVerified && !_installerHandoffCancelled && CanFinish)
+        {
+            _installer!.Diagnostics.Event("finish.automatic-upgrade", "requested",
+                "reason=verified-same-account-upgrade");
+            await FinishAsync();
+        }
     }
 
     private void RefreshInstallerState()
@@ -197,7 +234,9 @@ public partial class WorkIqSignInWindow
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
-            InstallerStatus.Text = OperationStatus.Text = "Cancelled — No account was saved. Retry when ready.";
+            InstallerStatus.Text = OperationStatus.Text = _installerCommitted
+                ? "Cancelled — Peggy remains installed and will not reopen automatically. Continue setup when ready."
+                : "Cancelled — No account was saved. Retry when ready.";
         }
         catch (Exception ex) when (SetupReadinessService.IsExpectedFailure(ex))
         {
@@ -220,7 +259,8 @@ public partial class WorkIqSignInWindow
             _candidateIdentity is not null && IsDifferentAccount(_candidateIdentity)
                 ? Visibility.Visible : Visibility.Collapsed;
         WorkIqLocalControls.IsEnabled = CopilotAccessGroup.IsEnabled =
-            MicrosoftConnectionGroup.IsEnabled = VoiceSetupGroup.IsEnabled = InstallerAllowsOnboarding;
+            MicrosoftConnectionGroup.IsEnabled = VoiceSetupGroup.IsEnabled =
+                InstallerAllowsOnboarding && !_installerSetupSaved;
         WorkIqLocalControls.Visibility = _installerCommitted ? Visibility.Visible : Visibility.Collapsed;
         InstallerRequirements.IsEnabled = !_installerBusy && !_installerCommitted;
         InstallerRetryButton.IsEnabled = !_installerBusy && !_installerCommitted;
@@ -230,14 +270,15 @@ public partial class WorkIqSignInWindow
             FinishButton.IsEnabled = !_installerBusy;
             FinishButton.Content = "Finish";
         }
-        else FinishButton.Content = "Finish and launch";
-        if (_installerBusy) CancelButton.Content = "Cancel operation";
+        else FinishButton.Content = _installerSetupSaved ? "Retry launch" : "Finish and launch";
+        if (_installerBusy || _busy) CancelButton.Content = "Cancel operation";
         else if (_installerCommitted) CancelButton.Content = "Close setup";
     }
 
     private bool FinishInstallerWithoutOnboarding()
     {
-        if (_installer is null || !_installerCommitted ||
+        if (_closed || _installerFinished || _installerBusy || _busy ||
+            _installer is null || !_installerCommitted ||
             (!_installerRestart && _installer.RequiresOnboarding)) return false;
         _installerFinished = true;
         _installer.Close(launch: false);
@@ -247,6 +288,7 @@ public partial class WorkIqSignInWindow
 
     private bool HandleInstallerCancel()
     {
+        _installerHandoffCancelled = true;
         if (_installerBusy)
         {
             _installerCancellation?.Cancel();

@@ -15,6 +15,7 @@ internal interface IUnifiedSetupHost
     PeggyStateDocument InitialState { get; }
     SetupDiagnostics Diagnostics { get; }
     bool RequiresOnboarding { get; }
+    bool IsUpgrade { get; }
     string ActionLabel { get; }
     event Action<SetupInstallProgress>? Progress;
     Task<IReadOnlyList<SetupRequirement>> PrepareAsync(CancellationToken ct);
@@ -22,6 +23,7 @@ internal interface IUnifiedSetupHost
     Task<SetupInstallResult> ApplyAsync(IntPtr owner, CancellationToken ct);
     Task<WorkIqAccountIdentity?> VerifySavedIdentityAsync(CancellationToken ct);
     Task CompleteAsync(WorkIqAccountIdentity identity, bool voiceReady, CancellationToken ct);
+    Task LaunchAsync(CancellationToken ct);
     void Cancel();
     void Close(bool launch);
     void ReportFailure(Exception exception, bool includeExceptionMessages = true);

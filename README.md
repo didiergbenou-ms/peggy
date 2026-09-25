@@ -555,6 +555,20 @@ do not launch Peggy. Unattended
 setup checks prerequisites but never installs them; use the interactive
 setup executable for guided prerequisite installation.
 
+**Next-release upgrade handoff:** a detected older-version upgrade in full UI
+automatically completes and reopens Peggy once its existing saved account is
+verified as the same principal, the current WorkIQ EULA version and required
+mail access are checked, and setup is saved successfully. The setup window
+explains this before installation and displays progress during handoff. Fresh
+installs, missing or changed saved identities, cancellation, failures and
+restart-required installs still require deliberate completion; closing setup
+does not launch Peggy.
+
+Process-start errors and exits during the first 1.5 seconds leave setup open
+with **Retry launch** and detailed diagnostics. Retrying launch reuses a process
+already started and does not repeat committed setup saves. This short observation
+detects immediate exits; it is not a guarantee of full UI or service readiness.
+
 To upgrade, run the newer installer without uninstalling Peggy first. The
 installer replaces the previous application payload inside the Windows Installer
 rollback transaction, including files from older builds that reused a file

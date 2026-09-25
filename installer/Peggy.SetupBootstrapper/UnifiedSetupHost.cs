@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.IO;
 using Peggy.Core;
 using Peggy.PrerequisiteCheck;
@@ -14,16 +13,19 @@ internal sealed class UnifiedSetupHost : IUnifiedSetupHost
     private SingleInstanceGuard? _guard;
     private IReadOnlyList<PrerequisiteResult> _requirements = [];
     private readonly SetupStateBaseline _baseline;
+    private readonly SetupAppLauncher _launcher;
     private bool _prepared;
     private bool _committed;
     private bool _restart;
     private bool _onboard;
     private bool _completed;
     private bool _closed;
+    private bool _launchObserved;
 
     internal UnifiedSetupHost(BurnInstaller burn)
     {
         _burn = burn;
+        _launcher = new(Diagnostics);
         _baseline = new(_store);
         if (burn.MayOnboard && InteractiveIdentity.CanInstallDependencies)
         {
@@ -46,6 +48,7 @@ internal sealed class UnifiedSetupHost : IUnifiedSetupHost
     public PeggyStateDocument InitialState => _baseline.State;
     public SetupDiagnostics Diagnostics => _burn.Diagnostics;
     public bool RequiresOnboarding => _onboard;
+    public bool IsUpgrade => _burn.IsUpgrade;
     public string ActionLabel => _burn.ActionLabel;
     public event Action<SetupInstallProgress>? Progress
     {
@@ -193,6 +196,22 @@ internal sealed class UnifiedSetupHost : IUnifiedSetupHost
         _burn.LogFailure(exception, preserveExitCode: _committed, includeExceptionMessages);
     }
 
+    public async Task LaunchAsync(CancellationToken ct)
+    {
+        if (_closed) throw new InvalidOperationException("Setup has already closed.");
+        EnsureOnboarding();
+        if (!_completed) throw new InvalidOperationException("Verified account setup must be saved before Peggy can start.");
+        _launchObserved = false;
+        await _launcher.LaunchAsync(ReleaseGuard, ct);
+        _launchObserved = true;
+    }
+
+    private void ReleaseGuard()
+    {
+        Diagnostics.Run("guard.release", () => _guard?.Dispose());
+        _guard = null;
+    }
+
     public void Close(bool launch)
     {
         if (_closed) return;
@@ -200,27 +219,12 @@ internal sealed class UnifiedSetupHost : IUnifiedSetupHost
         if (launch)
         {
             EnsureOnboarding();
-            if (!_completed) throw new InvalidOperationException("Verified account setup must be saved before Peggy can start.");
+            if (!_completed || !_launchObserved)
+                throw new InvalidOperationException("Save setup and retry launching Peggy before finishing.");
         }
         // The mutex was acquired on the WPF thread and must be released there, before launch.
-        Diagnostics.Run("guard.release", () => _guard?.Dispose());
-        _guard = null;
-        if (launch)
-        {
-            var target = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Programs", "Peggy", "peggy-tray.exe");
-            Diagnostics.Run("finish.start-process", () =>
-            {
-                if (!File.Exists(target))
-                    throw new InvalidOperationException("Peggy is installed, but its executable is unavailable. Open Peggy from Start after repairing the installation.");
-                using var process = Process.Start(new ProcessStartInfo(target)
-                {
-                    UseShellExecute = false,
-                    WorkingDirectory = Path.GetDirectoryName(target)!
-                }) ?? throw new InvalidOperationException("Setup is saved, but Peggy could not start. Open Peggy from the Start menu.");
-                Diagnostics.Event("finish.child-process", "started", $"pid={process.Id}");
-            });
-        }
+        ReleaseGuard();
+        _launcher.Dispose();
         _closed = true;
         Diagnostics.Event("setup.close", "completed", $"launchRequested={launch}");
     }

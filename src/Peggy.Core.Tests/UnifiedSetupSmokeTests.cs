@@ -70,20 +70,24 @@ internal static class UnifiedSetupSmokeTests
         await SetupLogCollectorSmokeTests.RunAsync(directory);
         foreach (var display in new[] { Display.None, Display.Passive, Display.Embedded })
             TestAssert.True(!SetupPolicy.ShowWindow(display, RelationType.None) &&
-                !SetupPolicy.ShouldOnboard(LaunchAction.Install, display, RelationType.None, false),
+                !SetupPolicy.ShouldOnboard(LaunchAction.Install, display, RelationType.None, false) &&
+                !SetupPolicy.IsUpgrade(LaunchAction.Install, display, RelationType.None, false, true),
                 "Quiet/passive setup enabled onboarding UI.");
         foreach (var relation in new[] { RelationType.Upgrade, RelationType.ChainPackage, RelationType.Update })
             TestAssert.True(!SetupPolicy.ShowWindow(Display.Full, relation) &&
-                !SetupPolicy.ShouldOnboard(LaunchAction.Install, Display.Full, relation, false),
+                !SetupPolicy.ShouldOnboard(LaunchAction.Install, Display.Full, relation, false) &&
+                !SetupPolicy.IsUpgrade(LaunchAction.Install, Display.Full, relation, false, true),
                 "Related bundle execution enabled UI or authentication.");
-        foreach (var action in new[] { LaunchAction.Uninstall, LaunchAction.Repair, LaunchAction.Layout, LaunchAction.Modify })
-            TestAssert.True(!SetupPolicy.ShouldOnboard(action, Display.Full, RelationType.None, false),
+        foreach (var action in new[] { LaunchAction.Uninstall, LaunchAction.UnsafeUninstall, LaunchAction.Repair, LaunchAction.Layout, LaunchAction.Modify })
+            TestAssert.True(!SetupPolicy.ShouldOnboard(action, Display.Full, RelationType.None, false) &&
+                !SetupPolicy.IsUpgrade(action, Display.Full, RelationType.None, false, true),
                 "Maintenance enabled onboarding.");
         TestAssert.True(SetupPolicy.ShouldOnboard(LaunchAction.Install, Display.Full, RelationType.None, false) &&
             !SetupPolicy.ShouldOnboard(LaunchAction.Install, Display.Full, RelationType.None, true),
             "Fresh install/upgrade and same-product maintenance were not distinguished.");
         await TestBurnBridgeAsync();
         await SetupShutdownSmokeTests.RunAsync(directory);
+        await SetupAppLauncherSmokeTests.RunAsync();
         await TestStateCompletionAsync(directory);
     }
 
@@ -108,6 +112,18 @@ internal static class UnifiedSetupSmokeTests
         catch (InvalidOperationException ex) { TestAssert.True(ex.Message.Contains("Downgrade", StringComparison.OrdinalIgnoreCase), "Wrong downgrade failure."); }
         TestAssert.True(fake.Plans == 0 && fake.Applies == 0, "Downgrade reached Plan/Apply.");
         fake.Downgrade = false;
+        foreach (var (version, present, upgrade) in new (string?, bool, bool)[]
+        {
+            ("0.9.0", false, true), ("1.0.0", false, false),
+            ("0.9.0", true, false), (null, false, false)
+        })
+        {
+            fake.RelatedVersion = version;
+            fake.CurrentMsiPresent = present;
+            await burn.DetectAsync();
+            TestAssert.True(burn.IsUpgrade == upgrade,
+                "Only a detected older bundle, without the current MSI, may enable automatic upgrade handoff.");
+        }
         using var cancellation = new CancellationTokenSource();
         var first = burn.ApplyAsync(owner, cancellation.Token);
         await fake.ApplyStarted.Task;
@@ -223,6 +239,11 @@ internal static class UnifiedSetupSmokeTests
         TestFreshInstallAndFinish();
         TestCancelAndRestart();
         TestUpgradeAndPersistenceFailure();
+        TestVerifiedUpgradeAutoFinish();
+        TestUpgradeHandoffExclusions();
+        TestUpgradeCancellation();
+        TestUpgradeVerificationRetry();
+        TestLaunchFailureRetry();
         TestFinishStageDiagnostics();
         TestAuthenticationDiagnostics();
         TestRefreshedAccountAndMaintenance();
@@ -309,26 +330,17 @@ internal static class UnifiedSetupSmokeTests
 
     private static void TestUpgradeAndPersistenceFailure()
     {
-        var host = new FakeHost
-        {
-            InitialState = new PeggyStateDocument
-            {
-                PinnedAccount = Identity.Account, PinnedMailbox = Identity.Mail!,
-                PinnedUserPrincipalName = Identity.UserPrincipalName!, PinnedPrincipalId = Identity.PrincipalId,
-                WorkIqEulaAcceptedVersion = Identity.EulaAcceptedVersion
-            },
-            SavedIdentity = Identity,
-            FailCompletion = true
-        };
+        var host = UpgradeHost();
+        host.FailCompletion = true;
         var setup = new FakeWorkIq();
         var window = CreateWindow(host, setup);
         try
         {
-            Complete(window.PrepareInstallerAsync());
+            window.Show();
+            SetupStepIndicatorTests.DrainDispatcher();
             Complete(window.ApplyInstallerAsync());
             TestAssert.True(window.CanFinish && setup.SignIns == 0, "A valid upgraded account required another sign-in.");
-            Click(window, "FinishButton");
-            TestAssert.True(!host.Launched && host.Completions == 0 &&
+            TestAssert.True(window.IsVisible && !host.Launched && host.Completions == 0 &&
                 Find<TextBlock>(window, "OperationStatus").Text.Contains("persist"),
                 "Persistence failure launched Peggy or claimed setup was complete.");
             host.FailCompletion = false;
@@ -342,6 +354,200 @@ internal static class UnifiedSetupSmokeTests
                 entries.Any(entry => entry.GetProperty("stage").GetString() == "finish.launch" &&
                     entry.GetProperty("outcome").GetString() == "completed"),
                 "Finish persistence failure/retry and launch were not retained in diagnostics.");
+        }
+        finally { window.Close(); }
+    }
+
+    private static FakeHost UpgradeHost() => new()
+    {
+        IsUpgrade = true,
+        InitialState = new PeggyStateDocument
+        {
+            PinnedAccount = Identity.Account, PinnedMailbox = Identity.Mail!,
+            PinnedUserPrincipalName = Identity.UserPrincipalName!, PinnedPrincipalId = Identity.PrincipalId,
+            WorkIqEulaAcceptedVersion = Identity.EulaAcceptedVersion
+        },
+        SavedIdentity = Identity
+    };
+
+    private static void TestVerifiedUpgradeAutoFinish()
+    {
+        var host = UpgradeHost();
+        var verified = new TaskCompletionSource<WorkIqAccountIdentity?>();
+        host.VerifySavedOperation = _ => verified.Task;
+        var setup = new FakeWorkIq();
+        var window = CreateWindow(host, setup);
+        try
+        {
+            window.Show();
+            SetupStepIndicatorTests.DrainDispatcher();
+            var apply = window.ApplyInstallerAsync();
+            Complete(window.ApplyInstallerAsync());
+            Complete(window.FinishAsync());
+            TestAssert.True(host.Completions == 0 && !host.Launched && window.IsVisible,
+                "Upgrade completed before pending saved-account verification.");
+            verified.SetResult(Identity);
+            Complete(apply);
+            Complete(window.FinishAsync());
+            Complete(window.ApplyInstallerAsync());
+            TestAssert.True(host.Completions == 1 && host.Launches == 1 && host.LaunchCloses == 1 &&
+                !window.IsVisible && setup.SignIns == 0 && setup.MailProbes == 1 && setup.Verifications == 1,
+                "Verified upgrade did not await checks and persist/launch exactly once without another click.");
+            TestAssert.True(host.Logs.Any(line => line.Contains("finish.automatic-upgrade")),
+                "Automatic handoff was missing from diagnostics.");
+        }
+        finally { window.Close(); }
+
+        var mailOff = UpgradeHost();
+        mailOff.InitialState.Settings.OutlookScope = OutlookMonitoringScope.Off;
+        var mailOffSetup = new FakeWorkIq();
+        var mailOffWindow = CreateWindow(mailOff, mailOffSetup);
+        try
+        {
+            Complete(mailOffWindow.PrepareInstallerAsync());
+            Complete(mailOffWindow.ApplyInstallerAsync());
+            TestAssert.True(mailOff.Launched && mailOffSetup.MailProbes == 0,
+                "Upgrade required Inbox permission despite Outlook monitoring being Off.");
+        }
+        finally { mailOffWindow.Close(); }
+    }
+
+    private static void TestUpgradeHandoffExclusions()
+    {
+        foreach (var reason in new[] { "fresh", "unknown", "unknown-verified", "eula", "changed-eula",
+            "different", "restart", "maintenance", "missing-saved", "cancelled-result" })
+        {
+            var host = UpgradeHost();
+            if (reason == "fresh") host.IsUpgrade = false;
+            if (reason == "unknown") host.InitialState.PinnedPrincipalId = "";
+            if (reason == "unknown-verified") host.SavedIdentity = Identity with { PrincipalId = "" };
+            if (reason == "eula") host.InitialState.WorkIqEulaAcceptedVersion = "";
+            if (reason == "changed-eula") host.SavedIdentity = Identity with { EulaAcceptedVersion = "2.0.0" };
+            if (reason == "different") host.InitialState.PinnedPrincipalId = "different-person";
+            if (reason == "restart") host.Result = new(true, false, true, "Restart required");
+            if (reason == "maintenance") host.Onboard = false;
+            if (reason == "missing-saved") host.SavedIdentity = null;
+            if (reason == "cancelled-result") host.Result = new(true, true, false, "Committed with cancellation");
+            var window = CreateWindow(host, new FakeWorkIq());
+            try
+            {
+                window.Show();
+                SetupStepIndicatorTests.DrainDispatcher();
+                Complete(window.ApplyInstallerAsync());
+                TestAssert.True(window.IsVisible && host.Completions == 0 && host.Launches == 0,
+                    $"Automatic handoff ran for {reason}.");
+                window.Close();
+                TestAssert.True(host.Launches == 0 && host.LaunchCloses == 0,
+                    $"Closing setup launched Peggy for {reason}.");
+            }
+            finally { window.Close(); }
+        }
+    }
+
+    private static void TestUpgradeCancellation()
+    {
+        foreach (var phase in new[] { "apply", "local", "saved-verification", "mail", "final-verification", "save", "launch" })
+        {
+            var host = UpgradeHost();
+            var setup = new FakeWorkIq();
+            var readiness = new FakeReadiness();
+            var pending = new TaskCompletionSource();
+            var window = new WorkIqSignInWindow(host, setup, readiness,
+                installVoice: (_, _, _) => Task.CompletedTask, voiceInstalled: _ => false);
+            if (phase == "apply")
+                host.ApplyOperation = async _ => { await pending.Task; return new(true, false, false, "Committed"); };
+            if (phase == "local") readiness.LocalOperation = async _ => await pending.Task;
+            if (phase == "saved-verification")
+                host.VerifySavedOperation = async _ => { await pending.Task; return Identity; };
+            if (phase == "mail") setup.MailOperation = async _ => await pending.Task;
+            if (phase == "final-verification")
+                setup.VerifyOperation = async _ => { await pending.Task; return Identity; };
+            if (phase == "save") host.CompleteOperation = async _ => await pending.Task;
+            if (phase == "launch") host.LaunchOperation = async _ => await pending.Task;
+            try
+            {
+                window.Show();
+                SetupStepIndicatorTests.DrainDispatcher();
+                var apply = window.ApplyInstallerAsync();
+                TestAssert.True((string)Find<Button>(window, "CancelButton").Content == "Cancel operation",
+                    $"The pending {phase} operation did not offer cancellation.");
+                window.Close();
+                TestAssert.True(window.IsVisible && !apply.IsCompleted,
+                    $"Closing interrupted the in-flight {phase} operation.");
+                pending.SetResult();
+                Complete(apply);
+                TestAssert.True(window.IsVisible && host.LaunchCloses == 0 &&
+                    (phase == "launch" || host.Launches == 0) &&
+                    (phase is "save" or "launch" || host.Completions == 0),
+                    $"Cancellation at {phase} completed automatic handoff.");
+                if (phase == "save")
+                {
+                    Complete(window.FinishAsync());
+                    TestAssert.True(host.Completions == 1 && host.Launches == 1 && host.LaunchCloses == 1,
+                        "Retry after committed save rewrote state or could not launch.");
+                }
+            }
+            finally { window.Close(); }
+        }
+    }
+
+    private static void TestUpgradeVerificationRetry()
+    {
+        foreach (var phase in new[] { "local", "saved", "mail", "final-account", "final-version" })
+        {
+            var host = UpgradeHost();
+            var setup = new FakeWorkIq();
+            var readiness = new FakeReadiness();
+            if (phase == "local") readiness.LocalOperation = _ => throw new InvalidOperationException("Synthetic local failure.");
+            if (phase == "saved") host.VerifySavedOperation = _ => throw new WorkIqSetupException("Synthetic saved verification failure.");
+            if (phase == "mail") setup.MailOperation = _ => throw new WorkIqSetupException("Synthetic mail failure.");
+            if (phase == "final-account") setup.FailVerification = true;
+            if (phase == "final-version") setup.FailVersion = true;
+            var window = new WorkIqSignInWindow(host, setup, readiness,
+                installVoice: (_, _, _) => Task.CompletedTask, voiceInstalled: _ => false);
+            try
+            {
+                window.Show();
+                SetupStepIndicatorTests.DrainDispatcher();
+                Complete(window.ApplyInstallerAsync());
+                TestAssert.True(window.IsVisible && host.Completions == 0 && host.Launches == 0 &&
+                    Find<TextBlock>(window, "OperationStatus").Text.StartsWith("Failed"),
+                    $"Failure at {phase} launched Peggy or was not visible.");
+                readiness.LocalOperation = null;
+                host.VerifySavedOperation = null;
+                setup.MailOperation = null;
+                setup.FailVerification = setup.FailVersion = false;
+                Complete(window.CheckLocalAsync());
+                if (phase == "mail") Complete(window.RetryMailAsync());
+                else Connect(window);
+                TestAssert.True(host.Launches == 0, "Retry checks unexpectedly resumed automatic completion.");
+                Complete(window.FinishAsync());
+                TestAssert.True(host.Launches == 1 && host.Completions == 1,
+                    $"Deliberate Finish could not recover from {phase} failure.");
+            }
+            finally { window.Close(); }
+        }
+    }
+
+    private static void TestLaunchFailureRetry()
+    {
+        var host = UpgradeHost();
+        host.FailLaunch = true;
+        var window = CreateWindow(host, new FakeWorkIq());
+        try
+        {
+            window.Show();
+            SetupStepIndicatorTests.DrainDispatcher();
+            Complete(window.ApplyInstallerAsync());
+            TestAssert.True(window.IsVisible && host.Completions == 1 && host.LaunchCloses == 0 &&
+                Find<TextBlock>(window, "OperationStatus").Text.Contains("Synthetic missing") &&
+                (string)Find<Button>(window, "FinishButton").Content == "Retry launch" &&
+                !Find<GroupBox>(window, "MicrosoftConnectionGroup").IsEnabled,
+                "Launch failure closed setup, hid the retry, or allowed editing already-committed setup.");
+            host.FailLaunch = false;
+            Complete(window.FinishAsync());
+            TestAssert.True(host.Completions == 1 && host.Launches == 2 && host.LaunchCloses == 1 && !window.IsVisible,
+                "Launch retry rewrote saved state or failed to close after launch.");
         }
         finally { window.Close(); }
     }
@@ -448,17 +654,21 @@ internal static class UnifiedSetupSmokeTests
         public SetupDiagnostics Diagnostics { get; }
         public FakeHost() => Diagnostics = new(Logs.Add, "synthetic-beta");
         public PeggyStateDocument InitialState { get; set; } = new();
-        public bool Onboard { get; init; } = true;
+        public bool Onboard { get; set; } = true;
         public bool RequiresOnboarding => Onboard;
+        public bool IsUpgrade { get; set; }
         public string ActionLabel => "Install / update Peggy";
         public bool Ready { get; set; } = true;
         public bool FailCompletion { get; set; }
         public bool FailLaunch { get; set; }
         public bool Launched { get; private set; }
-        public int RequirementInstalls, Applies, Completions, Cancels;
-        public WorkIqAccountIdentity? SavedIdentity { get; init; }
+        public int RequirementInstalls, Applies, Completions, Cancels, Launches, LaunchCloses;
+        public WorkIqAccountIdentity? SavedIdentity { get; set; }
         public SetupInstallResult Result { get; set; } = new(true, false, false, "Installed");
         public Func<CancellationToken, Task<SetupInstallResult>>? ApplyOperation { get; set; }
+        public Func<CancellationToken, Task<WorkIqAccountIdentity?>>? VerifySavedOperation { get; set; }
+        public Func<CancellationToken, Task>? CompleteOperation { get; set; }
+        public Func<CancellationToken, Task>? LaunchOperation { get; set; }
         public event Action<SetupInstallProgress>? Progress;
         public void Report(string message, int percentage) => Progress?.Invoke(new(message, percentage));
         public Task<IReadOnlyList<SetupRequirement>> PrepareAsync(CancellationToken ct) =>
@@ -467,17 +677,26 @@ internal static class UnifiedSetupSmokeTests
         { RequirementInstalls++; Ready = true; return Task.CompletedTask; }
         public Task<SetupInstallResult> ApplyAsync(IntPtr owner, CancellationToken ct)
         { Applies++; return ApplyOperation?.Invoke(ct) ?? Task.FromResult(Result); }
-        public Task<WorkIqAccountIdentity?> VerifySavedIdentityAsync(CancellationToken ct) => Task.FromResult(SavedIdentity);
-        public Task CompleteAsync(WorkIqAccountIdentity identity, bool voiceReady, CancellationToken ct)
+        public Task<WorkIqAccountIdentity?> VerifySavedIdentityAsync(CancellationToken ct) =>
+            VerifySavedOperation?.Invoke(ct) ?? Task.FromResult(SavedIdentity);
+        public async Task CompleteAsync(WorkIqAccountIdentity identity, bool voiceReady, CancellationToken ct)
         {
             if (FailCompletion) throw new InvalidOperationException("Could not persist verified setup.");
-            Completions++; return Task.CompletedTask;
+            if (CompleteOperation is not null) await CompleteOperation(ct);
+            Completions++;
+        }
+        public async Task LaunchAsync(CancellationToken ct)
+        {
+            Launches++;
+            if (FailLaunch) throw new InvalidOperationException("Synthetic missing installed executable.");
+            if (LaunchOperation is not null) await LaunchOperation(ct);
+            ct.ThrowIfCancellationRequested();
+            Launched = true;
         }
         public void Cancel() => Cancels++;
         public void Close(bool launch)
         {
-            if (launch && FailLaunch) throw new InvalidOperationException("Synthetic missing installed executable.");
-            Launched |= launch;
+            if (launch) LaunchCloses++;
         }
         public void ReportFailure(Exception exception, bool includeExceptionMessages = true)
             => Diagnostics.Failure("setup.operation", exception, includeExceptionMessages: includeExceptionMessages);
@@ -485,8 +704,10 @@ internal static class UnifiedSetupSmokeTests
 
     private sealed class FakeWorkIq : IWorkIqSetupService
     {
-        public int VersionChecks, SignIns;
+        public int VersionChecks, SignIns, MailProbes, Verifications;
         public bool FailVerification, FailVersion;
+        public Func<CancellationToken, Task<WorkIqAccountIdentity>>? VerifyOperation;
+        public Func<CancellationToken, Task>? MailOperation;
         public WorkIqAccountIdentity VerifiedIdentity = Identity;
         public bool TryGetExecutablePath(out string executablePath) { executablePath = "fake-workiq"; return true; }
         public Task<string> GetVersionAsync(CancellationToken ct = default)
@@ -499,18 +720,27 @@ internal static class UnifiedSetupSmokeTests
         public Task<WorkIqAccountIdentity> SignInAsync(string account, string version, CancellationToken ct = default,
             IProgress<WorkIqSignInStage>? progress = null) { SignIns++; return Task.FromResult(Identity); }
         public Task<WorkIqAccountIdentity> VerifyAccountAsync(string account, CancellationToken ct = default)
-            => FailVerification ? throw new WorkIqSetupException("Synthetic identity failure.")
-                : Task.FromResult(VerifiedIdentity);
-        public Task ProbeInboxAccessAsync(WorkIqAccountIdentity identity, CancellationToken ct = default) => Task.CompletedTask;
+        {
+            Verifications++;
+            return FailVerification ? throw new WorkIqSetupException("Synthetic identity failure.")
+                : VerifyOperation?.Invoke(ct) ?? Task.FromResult(VerifiedIdentity);
+        }
+        public Task ProbeInboxAccessAsync(WorkIqAccountIdentity identity, CancellationToken ct = default)
+        {
+            MailProbes++;
+            return MailOperation?.Invoke(ct) ?? Task.CompletedTask;
+        }
     }
 
     private sealed class FakeReadiness : ISetupReadinessService
     {
         public bool FailSignIn { get; init; }
-        public Task<SetupLocalReadiness> CheckLocalAsync(CancellationToken ct, IProgress<SetupLocalCheckUpdate>? progress = null)
+        public Func<CancellationToken, Task>? LocalOperation;
+        public async Task<SetupLocalReadiness> CheckLocalAsync(CancellationToken ct, IProgress<SetupLocalCheckUpdate>? progress = null)
         {
+            if (LocalOperation is not null) await LocalOperation(ct);
             var ready = new SetupCheck(SetupCheckState.Ready, "Ready (simulated)", Version: "1.0.0");
-            return Task.FromResult(new SetupLocalReadiness(ready, ready, ready, ready, ready));
+            return new SetupLocalReadiness(ready, ready, ready, ready, ready);
         }
         public Task<SetupCheck> CheckCopilotAccessAsync(CancellationToken ct) => Task.FromResult(new SetupCheck(SetupCheckState.Ready, "Available (simulated)"));
         public Task SignInCopilotAsync(CancellationToken ct, IProgress<CopilotDeviceCodeChallenge>? progress = null)
@@ -520,10 +750,12 @@ internal static class UnifiedSetupSmokeTests
     internal sealed class FakeApplication : BootstrapperApplication
     {
         protected override void Run() { }
-        public void Detect(bool downgrade, bool present = false)
+        public void Detect(bool downgrade, bool present = false, string? relatedVersion = null)
         {
             OnDetectBegin(new(false, RegistrationType.None, 1, false));
             if (downgrade) OnDetectRelatedBundle(new("newer", RelationType.Upgrade, "", false, "9.0.0", false, false));
+            if (relatedVersion is not null)
+                OnDetectRelatedBundle(new("related", RelationType.Upgrade, "", false, relatedVersion, false, false));
             OnDetectPackageComplete(new("PeggyMsi", 0, present ? PackageState.Present : PackageState.Absent, false));
             OnDetectComplete(new(0, false));
         }
@@ -585,6 +817,7 @@ internal static class UnifiedSetupSmokeTests
         internal object Application { set => _application = (FakeApplication)value; }
         public bool Downgrade;
         public bool CurrentMsiPresent;
+        public string? RelatedVersion;
         public bool ThrowApply;
         public int PlanStatus;
         public int Plans, Applies;
@@ -597,7 +830,7 @@ internal static class UnifiedSetupSmokeTests
             switch (method!.Name)
             {
                 case "Log": Logs.Add((string)args![1]!); break;
-                case "Detect": _application!.Detect(Downgrade, CurrentMsiPresent); break;
+                case "Detect": _application!.Detect(Downgrade, CurrentMsiPresent, RelatedVersion); break;
                 case "Plan": Plans++; LastAction = (LaunchAction)args![0]!; _application!.Plan(PlanStatus); break;
                 case "SetVariableString": VariableWrites++; break;
                 case "Apply":
@@ -607,7 +840,7 @@ internal static class UnifiedSetupSmokeTests
                     if (ThrowApply) throw new InvalidOperationException("Synthetic in-flight Apply failure.");
                     ApplyStarted.TrySetResult();
                     break;
-                case "CompareVersions": return 1;
+                case "CompareVersions": return Version.Parse((string)args![0]!).CompareTo(Version.Parse((string)args[1]!));
                 case "GetVariableVersion": return "1.0.0";
             }
             return method.ReturnType.IsValueType && method.ReturnType != typeof(void)

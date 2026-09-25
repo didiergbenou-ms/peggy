@@ -14,6 +14,7 @@ internal sealed class BurnInstaller
     private volatile bool _cancel;
     private volatile bool _rollback;
     private bool _downgrade;
+    private bool _olderBundleDetected;
     private int _inFlight;
     private bool _applyStarted;
     private bool _applyCompleted;
@@ -33,6 +34,7 @@ internal sealed class BurnInstaller
         {
             CurrentMsiPresent = false;
             _downgrade = false;
+            _olderBundleDetected = false;
             Diagnostics.Event("burn.detect", "started");
         };
         application.DetectPackageComplete += (_, e) =>
@@ -43,9 +45,12 @@ internal sealed class BurnInstaller
         application.DetectRelatedBundle += (_, e) =>
         {
             Diagnostics.Event("burn.related-bundle", "detected", $"relation={e.RelationType}; version={e.Version}");
-            if (e.RelationType == RelationType.Upgrade &&
-                engine.CompareVersions(e.Version, engine.GetVariableVersion("WixBundleVersion")) > 0)
-                _downgrade = true;
+            if (e.RelationType == RelationType.Upgrade)
+            {
+                var comparison = engine.CompareVersions(e.Version, engine.GetVariableVersion("WixBundleVersion"));
+                _downgrade |= comparison > 0;
+                _olderBundleDetected |= comparison < 0;
+            }
         };
         application.DetectComplete += (_, e) =>
         {
@@ -138,6 +143,8 @@ internal sealed class BurnInstaller
     internal int ExitCode { get; private set; } = 1602;
     internal bool RequiresOnboarding => SetupPolicy.ShouldOnboard(_command.Action, _command.Display,
         _command.Relation, CurrentMsiPresent);
+    internal bool IsUpgrade => SetupPolicy.IsUpgrade(_command.Action, _command.Display,
+        _command.Relation, CurrentMsiPresent, _olderBundleDetected);
     internal bool IsLayout => _command.Action == LaunchAction.Layout;
     internal bool RequiresWindow => !IsLayout && SetupPolicy.ShowWindow(_command.Display, _command.Relation);
     internal bool MayOnboard => RequiresWindow && _command.Action == LaunchAction.Install;
@@ -248,4 +255,8 @@ internal static class SetupPolicy
 
     internal static bool ShouldOnboard(LaunchAction action, Display display, RelationType relation, bool currentMsiPresent) =>
         ShowWindow(display, relation) && action == LaunchAction.Install && !currentMsiPresent;
+
+    internal static bool IsUpgrade(LaunchAction action, Display display, RelationType relation,
+        bool currentMsiPresent, bool olderBundleDetected) =>
+        ShouldOnboard(action, display, relation, currentMsiPresent) && olderBundleDetected;
 }

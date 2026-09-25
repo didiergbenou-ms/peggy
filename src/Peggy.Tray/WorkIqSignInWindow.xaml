@@ -35,7 +35,7 @@
         </Border>
         <StackPanel VerticalAlignment="Center">
           <TextBlock Text="Set up Peggy" FontSize="23" FontWeight="SemiBold" Foreground="White"/>
-          <TextBlock Text="Check this PC, connect your accounts, then choose Finish."
+          <TextBlock x:Name="SetupSubtitle" Text="Check this PC, connect your accounts, then choose Finish."
                      Foreground="#EADFD8" FontSize="12" Margin="0,3,0,0"/>
         </StackPanel>
       </StackPanel>
@@ -235,7 +235,7 @@
             BorderBrush="{StaticResource PeggyBorderBrush}" BorderThickness="0,1,0,0" Padding="18,13">
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
         <Button x:Name="CancelButton" Content="Cancel" MinWidth="105" Margin="0,0,9,0" Click="Cancel_Click"/>
-        <Button x:Name="FinishButton" Content="Finish" Width="125"
+        <Button x:Name="FinishButton" Content="Finish" MinWidth="125"
                 Style="{StaticResource PeggyPrimaryButtonStyle}"
                 IsDefault="True" IsEnabled="False" Click="Finish_Click"/>
       </StackPanel>
