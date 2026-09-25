@@ -19,12 +19,13 @@ remain in a separate local process.
 Peggy v0.1.13 uses one **Peggy setup** window for prerequisites, installation,
 account connection, and optional voice.
 
-**Beta preview: [v0.1.14-beta.2](https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.14-beta.2).**
-This beta adds an Awareness-alert preference, detailed setup diagnostics, Teams
-refresh pagination, and safer upgrades with automatic closing of compatible
-running Peggy versions. It retains beta.1's bubble actions, daily clearing and
-refresh-before-notifying behavior. To try it, download
-`peggy-v0.1.14-beta.2-win-x64-setup.exe` from the beta release page.
+**Beta preview: [v0.1.14-beta.3](https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.14-beta.3).**
+This beta replaces the second LLM notification review with a reply/like check,
+reopens Peggy automatically after a verified same-account upgrade, and hardens
+release extraction with bounded recovery and retained diagnostics. It retains
+beta.2's Awareness preference, setup logging, Teams pagination and safe upgrade
+protections. To try it, download
+`peggy-v0.1.14-beta.3-win-x64-setup.exe` from the beta release page.
 The latest stable release and the installation examples below remain v0.1.13.
 
 1. **Check access and prerequisites.** You need Windows x64, GitHub Copilot
@@ -302,7 +303,7 @@ Read status, drafts, other people's reactions and edits to an older sent message
 do not count as a new reply. There is **no second Copilot/LLM evaluation** in this
 check; initial alert classification still uses Copilot. WorkIQ reads may incur
 their own service charges. This reply/like-only rule replaces beta.2's LLM
-reassessment in the next release.
+reassessment in v0.1.14-beta.3.
 
 The check uses message identities, authors, original sent times and reactions,
 not message-body interpretation. Failed or incomplete reads preserve the original
@@ -555,7 +556,7 @@ do not launch Peggy. Unattended
 setup checks prerequisites but never installs them; use the interactive
 setup executable for guided prerequisite installation.
 
-**Next-release upgrade handoff:** a detected older-version upgrade in full UI
+**Beta.3 upgrade handoff:** a detected older-version upgrade in full UI
 automatically completes and reopens Peggy once its existing saved account is
 verified as the same principal, the current WorkIQ EULA version and required
 mail access are checked, and setup is saved successfully. The setup window
@@ -1103,9 +1104,9 @@ For example, `v0.1.11-beta.1` uses MSI `0.1.1130` and file version
 For `v0.1.13`, MSI uses `0.1.1399` and binaries use `0.1.1399.0`, above
 beta.1's `0.1.1330.0`; the Alerts header and About dialog still display the
 semantic version `v0.1.13`.
-The `v0.1.14-beta.2` preview uses MSI `0.1.1431` and binary file version
-`0.1.1431.0`, above beta.1's `0.1.1430.0` and stable v0.1.13; its user-facing
-version retains `-beta.2`.
+The `v0.1.14-beta.3` preview uses MSI `0.1.1432` and binary file version
+`0.1.1432.0`, above beta.2's `0.1.1431.0` and stable v0.1.13; its user-facing
+version retains `-beta.3`.
 Semantic prerelease labels alone do not change .NET's default file version.
 
 WiX ICE custom actions can be blocked by policy in non-elevated build
@@ -1125,9 +1126,9 @@ identities, directories, registry entries, and shortcuts. Executable custom acti
 become inert markers so the regression cannot launch Peggy or use real account
 data. It checks exact installed hashes, product replacement, unchanged test
 settings/model/account sentinels, same-version maintenance, and a forced-failure
-rollback to the previous payload and registration. CI uses seven checksum-verified
+rollback to the previous payload and registration. CI uses eight checksum-verified
 pinned baselines: the setup EXEs from `v0.1.10`, `v0.1.11-beta.1`, `v0.1.11`,
-`v0.1.12`, `v0.1.13-beta.1`, `v0.1.13`, and `v0.1.14-beta.1`.
+`v0.1.12`, `v0.1.13-beta.1`, `v0.1.13`, `v0.1.14-beta.1`, and `v0.1.14-beta.2`.
 The pinned WiX extraction tool reads each checksum-verified EXE without running
 it and supplies its embedded MSI. Every baseline must pass the strict upgrade
 and rollback checks. Restart Manager, real application startup, and interactive authentication
