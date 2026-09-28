@@ -767,8 +767,6 @@ public partial class App : Application
     {
         var reviewed = new List<AlertDecision>();
         foreach (var decision in decisions
-                     .GroupBy(item => item.ThreadId, StringComparer.Ordinal)
-                     .Select(group => group.OrderBy(item => item.Tier).First())
                      .OrderBy(item => item.Tier))
         {
             if (_quitting || _accountSwitching || generation != _monitoringGeneration)

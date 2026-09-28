@@ -16,6 +16,8 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 {
     private const int MaxPageSize = 50;
     private const int MaxPreviewLength = 700;
+    private const int MaxRecipientMentions = 64;
+    private const int MaxRecipientDisplayNameLength = 160;
     private const int MaxChannelsPerBatch = 8;
     private const int MaxChannelConcurrency = 4;
     private const int MaxTeamsSearchPageSize = 200;
@@ -34,6 +36,13 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     private static readonly Regex WhitespaceRegex = new(
         @"\s+",
         RegexOptions.Compiled);
+    private static readonly Regex MentionTagRegex = new(
+        """<at\b[^>]*\bid\s*=\s*["'](?<id>\d+)["'][^>]*>""",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex RecipientIdentifierRegex = new(
+        @"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|" +
+        @"[^\s<>(),;]*@[^\s<>(),;]+|(?:https?://|mailto:|sip:)[^\s]+",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex ChannelMessagePathRegex = new(
         @"^/teams/(?<team>[^/]+)/channels/(?<channel>[^/]+)/messages/" +
         @"(?<root>[^/?]+)(?:/replies/(?<message>[^/?]+))?",
@@ -54,6 +63,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     private readonly HashSet<string> _currentUserEmailAddresses =
         new(StringComparer.OrdinalIgnoreCase);
     private string? _currentUserId;
+    private string _currentUserDisplayName = string.Empty;
     private string _outlookAccount;
     private IReadOnlyList<MailFolder>? _monitoredMailFolders;
     private DateTimeOffset? _monitoredMailFoldersLoadedUtc;
@@ -2379,7 +2389,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             ct);
 
         var messages = chatMessages
-            .Select(message => ToTeamsMessage(chat.Id!, subject, message, readAt))
+            .Select(message => ToTeamsMessage(chat.Id!, subject, message, readAt, chat.ChatType))
             .Where(message => message is not null)
             .Cast<Message>()
             .OrderByDescending(message => message.ReceivedAt)
@@ -2395,7 +2405,8 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 chat.Id!,
                 subject,
                 preview,
-                readAt);
+                readAt,
+                chat.ChatType);
             if (fallback is not null && !fallback.IsRead)
             {
                 messages.Add(fallback);
@@ -2759,7 +2770,8 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                chat.Id!,
                subject,
                message,
-               readAt))
+               readAt,
+               chat.ChatType))
             .Where(message => message is not null)
             .Cast<Message>()
             .ToList();
@@ -3401,6 +3413,11 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         var subject = NormalizeSubject(
             FirstNonBlank(item.Subject, searchItem.Subject),
             isChannel ? "Teams channel" : "Teams chat");
+        var recipientContext = CreateRecipientContext(
+            item,
+            isChannel ? "channel" : FirstNonBlank(item.ChatType, searchItem.ChatType),
+            sourceVerified: verification.Resource is not null,
+            fallback: searchItem);
         var message = new Message(
             key,
             MessageSource.Teams,
@@ -3417,7 +3434,8 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             TeamId = isChannel ? teamId : null,
             ChannelId = isChannel ? channelId : null,
             RootMessageId = rootMessageId,
-            IsMention = IsMentioned(item, currentUserId),
+            IsMention = recipientContext.Mentions.Any(mention => mention.IsCurrentUser),
+            RecipientContext = recipientContext,
             IsWatchlistedChannel = isChannel &&
                 IsWatchlisted(new TeamsChannel
                 {
@@ -3996,7 +4014,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 {
                     var rootEligible =
                         isWatchlisted ||
-                        IsMentioned(entity.Root, currentUserId) ||
+                        IsMentioned(entity.Root) ||
                         HasParticipatedThread(
                             cursor,
                             channel.TeamId!,
@@ -4039,7 +4057,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                     continue;
                 }
 
-                var mentioned = IsMentioned(item, currentUserId);
+                var mentioned = IsMentioned(item);
                 var participated = HasParticipatedThread(
                     cursor,
                     channel.TeamId!,
@@ -4073,7 +4091,6 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                     channel,
                     item,
                     rootMessageId!,
-                    mentioned,
                     isWatchlisted);
                 if (message is not null)
                 {
@@ -4567,11 +4584,157 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 StringComparison.Ordinal));
     }
 
-    private static bool IsMentioned(ChatMessage message, string currentUserId)
-        => message.Mentions.Any(mention => string.Equals(
-            mention.Mentioned?.User?.Id,
-            currentUserId,
-            StringComparison.OrdinalIgnoreCase));
+    private bool IsMentioned(ChatMessage message)
+        => CreateRecipientContext(message, null).Mentions.Any(mention => mention.IsCurrentUser);
+
+    private TeamsRecipientContext CreateRecipientContext(
+        ChatMessage message,
+        string? conversationType,
+        bool sourceVerified = true,
+        ChatMessage? fallback = null)
+    {
+        // Search summaries and last-message previews may omit mention metadata.
+        // Keep any available hints, but never interpret missing data as "other users only".
+        if (message.Mentions.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null &&
+            fallback is not null && !ReferenceEquals(message, fallback))
+        {
+            message = fallback;
+            sourceVerified = false;
+        }
+
+        var mentions = new List<TeamsMention>();
+        var complete = sourceVerified && !string.IsNullOrWhiteSpace(_currentUserId) &&
+            message.Mentions.ValueKind == JsonValueKind.Array;
+        var mentionIds = new HashSet<int>();
+        if (message.Mentions.ValueKind == JsonValueKind.Array)
+        {
+            var length = message.Mentions.GetArrayLength();
+            complete &= length <= MaxRecipientMentions;
+            foreach (var mention in message.Mentions.EnumerateArray())
+            {
+                var id = RecipientProperty(mention, "id");
+                if (id.ValueKind != JsonValueKind.Number || !id.TryGetInt32(out var index) ||
+                    index < 0 || !mentionIds.Add(index))
+                {
+                    complete = false;
+                }
+
+                var mentioned = RecipientProperty(mention, "mentioned");
+                var identities = mentioned.ValueKind == JsonValueKind.Object
+                    ? mentioned.EnumerateObject().Where(property =>
+                        !property.Name.StartsWith('@') &&
+                        property.Value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
+                        .ToList()
+                    : [];
+                var identity = identities.Count == 1 ? identities[0] : default;
+                var identityId = RecipientString(identity.Value, "id");
+                var kind = identity.Value.ValueKind == JsonValueKind.Object
+                    ? identity.Name switch
+                    {
+                        "user" => "user",
+                        "tag" => "tag",
+                        "conversation" => RecipientString(identity.Value, "conversationIdentityType")
+                            ?.ToLowerInvariant() switch
+                            {
+                                "team" => "team",
+                                "channel" => "channel",
+                                _ => "unknown"
+                            },
+                        _ => "unknown"
+                    }
+                    : "unknown";
+                var isCurrentUser = kind == "user" &&
+                    !string.IsNullOrWhiteSpace(_currentUserId) &&
+                    !string.IsNullOrWhiteSpace(identityId) &&
+                    (string.Equals(identityId, _currentUserId, StringComparison.OrdinalIgnoreCase) ||
+                     IsCurrentUserEmailAddress(identityId));
+                var identityKnown = kind != "unknown" && !string.IsNullOrWhiteSpace(identityId);
+                if (kind == "user")
+                {
+                    identityKnown &= isCurrentUser || Guid.TryParse(identityId, out _) ||
+                        (System.Net.Mail.MailAddress.TryCreate(identityId, out var address) &&
+                         address.Address.Contains('@'));
+                }
+                var displayName = SafeRecipientDisplayName(
+                    RecipientString(identity.Value, "displayName"), identityId);
+                if (displayName.Length == 0)
+                {
+                    displayName = SafeRecipientDisplayName(
+                        RecipientString(mention, "mentionText"), identityId);
+                }
+                complete &= identityKnown && displayName.Length > 0;
+                var contextMention = new TeamsMention(displayName, isCurrentUser, kind);
+                if (mentions.Count < MaxRecipientMentions)
+                {
+                    mentions.Add(contextMention);
+                }
+                else if (isCurrentUser && !mentions.Any(retained => retained.IsCurrentUser))
+                {
+                    mentions[^1] = contextMention;
+                }
+            }
+
+            var count = message.MentionsCount;
+            if (count.ValueKind != JsonValueKind.Undefined &&
+                (count.ValueKind != JsonValueKind.Number || !count.TryGetInt32(out var total) || total != length))
+            {
+                complete = false;
+            }
+        }
+        if (message.MentionsNextLink.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null))
+        {
+            complete = false;
+        }
+        var body = message.Body?.Content ?? string.Empty;
+        var tags = MentionTagRegex.Matches(body);
+        if (Regex.Matches(body, @"<at\b", RegexOptions.IgnoreCase).Count != tags.Count ||
+            tags.Any(tag => !int.TryParse(tag.Groups["id"].Value, out var index) ||
+                !mentionIds.Contains(index)))
+        {
+            complete = false;
+        }
+
+        return new TeamsRecipientContext(
+            NormalizeConversationType(conversationType),
+            _currentUserDisplayName,
+            mentions,
+            complete);
+    }
+
+    private static JsonElement RecipientProperty(JsonElement item, string name)
+        => item.ValueKind == JsonValueKind.Object && item.TryGetProperty(name, out var value)
+            ? value
+            : default;
+
+    private static string? RecipientString(JsonElement item, string name)
+    {
+        var value = RecipientProperty(item, name);
+        return value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+    }
+
+    private static string NormalizeConversationType(string? value)
+        => value?.Trim().ToLowerInvariant() switch
+        {
+            "oneonone" => "oneOnOne",
+            "group" => "group",
+            "meeting" => "meeting",
+            "channel" => "channel",
+            _ => "unknown"
+        };
+
+    private static string SafeRecipientDisplayName(string? value, string? identityId)
+    {
+        var name = NormalizeContent(WebUtility.HtmlDecode(value), isHtml: true);
+        name = RecipientIdentifierRegex.Replace(name, string.Empty);
+        if (!string.IsNullOrWhiteSpace(identityId))
+        {
+            name = name.Replace(identityId, string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+        name = WhitespaceRegex.Replace(name, " ").Trim();
+        return name.Length <= MaxRecipientDisplayNameLength
+            ? name
+            : name[..MaxRecipientDisplayNameLength];
+    }
 
     private static bool HasParticipatedThread(
         MonitoringCursorState cursor,
@@ -4620,7 +4783,6 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         TeamsChannel channel,
         ChatMessage item,
         string rootMessageId,
-        bool isMention,
         bool isWatchlisted)
     {
         if (string.IsNullOrWhiteSpace(item.Id) ||
@@ -4650,6 +4812,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 channel.TeamDisplayName,
                 channel.DisplayName
             }.Where(value => !string.IsNullOrWhiteSpace(value)));
+        var recipientContext = CreateRecipientContext(item, "channel");
         return new Message(
             EncodeChannelMessageKey(
                 channel.TeamId,
@@ -4676,12 +4839,13 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             TeamId = channel.TeamId,
             ChannelId = channel.Id,
             RootMessageId = rootMessageId,
-            IsMention = isMention,
+            IsMention = recipientContext.Mentions.Any(mention => mention.IsCurrentUser),
+            RecipientContext = recipientContext,
             IsWatchlistedChannel = isWatchlisted
         };
     }
 
-    private static Message ToUnpagedChannelMessage(
+    private Message ToUnpagedChannelMessage(
         TeamsChannel channel,
         ChatMessage root,
         DateTimeOffset activityUtc)
@@ -4716,7 +4880,8 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             WebUrl = root.WebUrl,
             TeamId = channel.TeamId,
             ChannelId = channel.Id,
-            RootMessageId = root.Id
+            RootMessageId = root.Id,
+            RecipientContext = new("channel", _currentUserDisplayName, [], false)
         };
     }
 
@@ -4877,7 +5042,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     {
         var encodedChatId = Uri.EscapeDataString(chatId);
         var chatTask = _client.FetchAsync<Chat>(
-            $"/me/chats/{encodedChatId}?$select=id,topic,viewpoint",
+            $"/me/chats/{encodedChatId}?$select=id,topic,chatType,viewpoint",
             ct);
         var messagesTask = FetchChatMessagesAsync(
             chatId,
@@ -4897,7 +5062,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         var readAt = chat.Viewpoint?.LastMessageReadDateTime ?? DateTimeOffset.MinValue;
         var subject = NormalizeSubject(chat.Topic, "Teams chat");
         var messages = messagesTask.Result
-            .Select(message => ToTeamsMessage(chatId, subject, message, readAt))
+            .Select(message => ToTeamsMessage(chatId, subject, message, readAt, chat.ChatType))
             .Where(message => message is not null)
             .Cast<Message>()
             .OrderBy(message => message.ReceivedAt)
@@ -4949,7 +5114,6 @@ public sealed class WorkIqMessageProvider : IMessageProvider
                 channel,
                 item,
                 rootMessageId,
-                isMention: false,
                 isWatchlisted: false))
             .Where(message => message is not null)
             .Cast<Message>()
@@ -4990,7 +5154,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         try
         {
             var profile = await _client.FetchAsync<UserProfile>(
-                "/me?$select=id,mail,userPrincipalName,proxyAddresses",
+                "/me?$select=id,mail,userPrincipalName,proxyAddresses,displayName",
                 ct);
             _outlookAccount = ResolveAuthenticatedAccount(
                 profile.Mail,
@@ -5021,6 +5185,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             }
 
             _currentUserId = currentUserId;
+            _currentUserDisplayName = SafeRecipientDisplayName(profile.DisplayName, currentUserId);
             return _currentUserId;
         }
         finally
@@ -5117,7 +5282,8 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         string chatId,
         string fallbackSubject,
         ChatMessage item,
-        DateTimeOffset readAt)
+        DateTimeOffset readAt,
+        string? chatType = null)
     {
         if (string.IsNullOrWhiteSpace(item.Id) ||
             item.CreatedDateTime is null)
@@ -5134,6 +5300,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             return null;
         }
 
+        var recipientContext = CreateRecipientContext(item, chatType ?? item.ChatType);
         return new Message(
             EncodeTeamsMessageKey(
                 chatId,
@@ -5149,6 +5316,8 @@ public sealed class WorkIqMessageProvider : IMessageProvider
             GetChatActivityUtc(item) <= readAt)
         {
             IsFromMe = IsCurrentUserTeamsMessage(item),
+            IsMention = recipientContext.Mentions.Any(mention => mention.IsCurrentUser),
+            RecipientContext = recipientContext,
             WebUrl = IsCompatibleSourceUrl(
                 MessageSource.Teams,
                 item.WebUrl ?? string.Empty)
@@ -5298,6 +5467,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     {
         [JsonPropertyName("id")]
         public string? Id { get; init; }
+
+        [JsonPropertyName("displayName")]
+        public string? DisplayName { get; init; }
 
         [JsonPropertyName("mail")]
         public string? Mail { get; init; }
@@ -5455,6 +5627,9 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         [JsonPropertyName("chatId")]
         public string? ChatId { get; init; }
 
+        [JsonPropertyName("chatType")]
+        public string? ChatType { get; init; }
+
         [JsonPropertyName("channelIdentity")]
         public ChannelIdentity? ChannelIdentity { get; init; }
 
@@ -5465,7 +5640,13 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         public ItemBody? Body { get; init; }
 
         [JsonPropertyName("mentions")]
-        public List<ChatMessageMention> Mentions { get; init; } = [];
+        public JsonElement Mentions { get; init; }
+
+        [JsonPropertyName("mentions@odata.nextLink")]
+        public JsonElement MentionsNextLink { get; init; }
+
+        [JsonPropertyName("mentions@odata.count")]
+        public JsonElement MentionsCount { get; init; }
 
         [JsonPropertyName("replies")]
         public List<ChatMessage> Replies { get; init; } = [];
@@ -5641,12 +5822,6 @@ public sealed class WorkIqMessageProvider : IMessageProvider
 
         [JsonIgnore]
         public DateTimeOffset? MonitoringBaselineUtc { get; set; }
-    }
-
-    private sealed class ChatMessageMention
-    {
-        [JsonPropertyName("mentioned")]
-        public IdentitySet? Mentioned { get; init; }
     }
 
     private sealed class RemovedItem

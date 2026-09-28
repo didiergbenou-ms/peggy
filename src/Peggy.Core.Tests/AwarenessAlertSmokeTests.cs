@@ -74,6 +74,13 @@ internal static class AwarenessAlertSmokeTests
         TestAssert.True(downgrade.MaterialUpdates.Count == 0 && critical.Tier == AlertTier.Awareness &&
             !manager.GetActiveAlerts().Any(alert => alert.Id == critical.Id),
             "Filtering Awareness left a stale higher-priority alert after a real downgrade.");
+        var groupActive = Message("group-active", now);
+        var groupHidden = groupActive with { Id = "group-hidden", ReceivedAt = now.AddSeconds(1) };
+        var group = manager.Apply(
+            [Decision(groupActive, AlertTier.Attention), Decision(groupHidden, AlertTier.Awareness)],
+            [groupActive, groupHidden], now).MaterialUpdates.Single();
+        TestAssert.True(group.Tier == AlertTier.Attention && group.MessageIds.SequenceEqual([groupActive.Id]),
+            "Combining recipient decisions made a disabled Awareness message anchor a visible alert.");
 
         var always = Message("always-alert", now);
         state.State.FeedbackRules.Add(new()

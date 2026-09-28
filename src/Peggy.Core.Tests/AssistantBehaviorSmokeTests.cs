@@ -802,7 +802,7 @@ internal static class AssistantBehaviorSmokeTests
             typeof(CopilotRunner),
             "ParseAndRestoreAlertDecisions",
             """
-            {"decisions":[{"tier":"attention","summary":"Review","reason":"Deadline","sourceReference":"message-1","messageIds":["message-1"]}]}
+            {"decisions":[{"recipient":"user","recipientReason":"The current user is assigned the review.","tier":"attention","summary":"Review","reason":"Deadline","sourceReference":"message-1","messageIds":["message-1"]}]}
             """,
             aliasScope);
         TestAssert.True(

@@ -34,9 +34,7 @@ public sealed class AlertManager
             StringComparer.Ordinal);
         foreach (var decision in decisions
                      .GroupBy(item => item.ThreadId, StringComparer.Ordinal)
-                     .Select(group => group
-                         .OrderBy(item => item.Tier)
-                         .First()))
+                     .Select(group => CombineThreadDecisions(group, messageById)))
         {
             var tier = ApplyExplicitFeedback(
                 decision.ThreadId,
@@ -171,6 +169,25 @@ public sealed class AlertManager
 
     public bool IsTierEnabled(AlertTier tier)
         => tier != AlertTier.Awareness || _state.State.Settings.ReceiveAwarenessAlerts;
+
+    private AlertDecision CombineThreadDecisions(
+        IEnumerable<AlertDecision> decisions, IReadOnlyDictionary<string, Message> messages)
+    {
+        var items = decisions.ToList();
+        var eligible = items.Where(ShouldReceiveDecision).ToList();
+        // A disabled Awareness item must not become a new anchor of a visible higher-tier alert.
+        var candidates = eligible.Count > 0 ? eligible : items;
+        var top = candidates.OrderBy(item => item.Tier)
+            .ThenByDescending(item => item.MessageIds
+                .Where(messages.ContainsKey).Select(id => messages[id].ReceivedAt)
+                .DefaultIfEmpty(DateTimeOffset.MinValue).Max())
+            .First();
+        return top with
+        {
+            MessageIds = candidates.SelectMany(item => item.MessageIds)
+                .Distinct(StringComparer.Ordinal).ToList()
+        };
+    }
 
     public bool ShouldReceiveDecision(AlertDecision decision)
         => IsTierEnabled(ApplyExplicitFeedback(decision.ThreadId, decision.Tier));

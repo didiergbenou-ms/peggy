@@ -18,6 +18,7 @@ internal sealed class AlertNotificationRefresher(
 {
     private readonly Stopwatch _elapsed = Stopwatch.StartNew();
     private readonly TimeSpan _budget = budget ?? TimeSpan.FromSeconds(60);
+    private readonly Dictionary<(string ThreadId, DateTimeOffset Since), AlertThreadRefreshResult> _snapshots = [];
 
     public async Task<AlertDecision?> RefreshAsync(
         AlertDecision candidate,
@@ -37,8 +38,13 @@ internal sealed class AlertNotificationRefresher(
         timeout.CancelAfter(remaining);
         try
         {
-            var refreshed = await provider.RefreshThreadForAlertAsync(
-                candidate.ThreadId, sinceUtc, timeout.Token);
+            var key = (candidate.ThreadId, sinceUtc);
+            if (!_snapshots.TryGetValue(key, out var refreshed))
+            {
+                refreshed = await provider.RefreshThreadForAlertAsync(
+                    candidate.ThreadId, sinceUtc, timeout.Token);
+                _snapshots.Add(key, refreshed);
+            }
             timeout.Token.ThrowIfCancellationRequested();
             var thread = refreshed.Thread;
             if (!refreshed.IsComplete || thread is null ||

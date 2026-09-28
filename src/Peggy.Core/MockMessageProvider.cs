@@ -59,7 +59,8 @@ public sealed class MockMessageProvider : IMessageProvider
                 now.AddMinutes(-6), false)
             {
                 WebUrl =
-                    "https://teams.microsoft.com/l/message/mock-chat/m-2001"
+                    "https://teams.microsoft.com/l/message/mock-chat/m-2001",
+                RecipientContext = new("oneOnOne", "Morgan Sample", [], true)
             },
             new Message("m-2002", MessageSource.Teams, "t-201", "Standup Bot",
                 "Daily standup in 15 minutes",
@@ -67,7 +68,8 @@ public sealed class MockMessageProvider : IMessageProvider
                 now.AddMinutes(-3), false)
             {
                 WebUrl =
-                    "https://teams.microsoft.com/l/message/mock-chat/m-2002"
+                    "https://teams.microsoft.com/l/message/mock-chat/m-2002",
+                RecipientContext = new("group", "Morgan Sample", [], true)
             },
         };
         foreach (var m in seed) _messages[m.Id] = m;

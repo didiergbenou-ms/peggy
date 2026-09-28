@@ -34,8 +34,21 @@ public record Message(
 
     public bool IsMention { get; init; }
 
+    public TeamsRecipientContext? RecipientContext { get; init; }
+
     public bool IsWatchlistedChannel { get; init; }
 }
+
+public sealed record TeamsRecipientContext(
+    string ConversationType,
+    string CurrentUserDisplayName,
+    IReadOnlyList<TeamsMention> Mentions,
+    bool MentionsComplete);
+
+public sealed record TeamsMention(
+    string DisplayName,
+    bool IsCurrentUser,
+    string Kind);
 
 /// <summary>A conversation thread and its messages, oldest to newest.</summary>
 public record MessageThread(

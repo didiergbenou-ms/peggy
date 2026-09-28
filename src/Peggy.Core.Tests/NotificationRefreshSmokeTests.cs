@@ -184,6 +184,35 @@ internal static class NotificationRefreshSmokeTests
             TestAssert.True(due.Result?.MaterialUpdates.Single().Id == snoozed.Id &&
                 snoozed.Status == AlertStatus.Active, "Failed refresh lost a due reminder.");
 
+            state.State.Alerts.Clear();
+            var earlier = incoming with { Source = MessageSource.Teams };
+            var later = earlier with { Id = "later-request", ReceivedAt = earlier.ReceivedAt.AddSeconds(2) };
+            var firstDecision = Candidate(earlier);
+            var laterDecision = Candidate(later) with { Summary = "Newer request still needs a reply" };
+            var individual = new List<AlertDecision> { firstDecision, laterDecision };
+            var reads = 0;
+            var sharedSnapshot = new AlertNotificationRefresher(Provider((_, _, _) =>
+            {
+                reads++;
+                return Task.FromResult(Complete(earlier, Reply(earlier), later));
+            }), _ => { });
+            var snapshot = Invoke<object>(app, "CaptureAlertRevisions", individual);
+            var pending = Invoke<Task<IReadOnlyList<AlertDecision>>>(app, "RefreshPendingAlertDecisionsAsync",
+                individual, new[] { earlier, later }, sharedSnapshot, 41, snapshot);
+            SetupStepIndicatorTests.Complete(pending);
+            var surviving = pending.Result.Single();
+            TestAssert.True(surviving.MessageIds.SequenceEqual([later.Id]) && reads == 1,
+                "Acknowledging an earlier message hid the newer request, or same-thread checks duplicated WorkIQ reads.");
+            var activeLater = manager.Apply(pending.Result.ToArray(), [earlier, later], DateTimeOffset.UtcNow)
+                .MaterialUpdates.Single();
+            TestAssert.True(activeLater.MessageIds.SequenceEqual([later.Id]),
+                "The answered request was reintroduced when grouping notifications.");
+            state.State.Alerts.Clear();
+            var combined = manager.Apply(individual, [earlier, later], DateTimeOffset.UtcNow).MaterialUpdates.Single();
+            TestAssert.True(combined.MessageIds.Count == 2 && combined.Summary == laterDecision.Summary &&
+                combined.LastActivityUtc == later.ReceivedAt,
+                "Grouping per-message recipient results discarded a relevant message or picked the stale summary.");
+
             foreach (var action in new[] { "dismiss", "snooze", "resolve", "session-change", "account-switch" })
             {
                 state.State.Alerts.Clear();

@@ -67,6 +67,12 @@ if (args.Contains("--unified-setup-smoke", StringComparer.Ordinal))
     return;
 }
 
+if (args.Contains("--live-recipient-targeting", StringComparer.Ordinal))
+{
+    await RecipientTargetingSmokeTests.RunLiveAsync();
+    return;
+}
+
 var testDirectory = Path.Combine(
     Path.GetTempPath(),
     "peggy-core-tests-" + Guid.NewGuid().ToString("N"));
@@ -80,6 +86,8 @@ try
     await NotificationRefreshSmokeTests.RunAsync(testDirectory);
     await AlertThreadRefreshProviderTests.RunAsync(testDirectory);
     await AssistantBehaviorSmokeTests.RunAsync(testDirectory);
+    RecipientTargetingSmokeTests.Run(testDirectory);
+    await RecipientContextProviderTests.RunAsync(testDirectory);
     await AppIntegrationSmokeTests.RunAsync();
     await SettingsCatalogCacheSmokeTests.RunAsync();
     await SetupExperienceSmokeTests.RunAsync();
@@ -1426,6 +1434,11 @@ static bool TryRunFakeWorkIq(string[] arguments)
         : null;
     var scenario = Environment.GetEnvironmentVariable(
         "PEGGY_FAKE_WORKIQ_SCENARIO");
+    if (scenario == "recipient-context")
+    {
+        RecipientContextProviderTests.HandleFakeRequest(arguments[0], url);
+        return true;
+    }
     if (scenario == "alert-thread-refresh")
     {
         AlertThreadRefreshProviderTests.HandleFakeRequest(arguments[0], url);

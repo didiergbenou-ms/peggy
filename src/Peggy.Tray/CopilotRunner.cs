@@ -554,17 +554,39 @@ public sealed class CopilotRunner : IAsyncDisposable
             "Do not call any other tool. The gateway has scoped list_unread " +
             "to exactly the new or changed items in this monitoring batch. " +
             "Its threadId and id values are short batch-local aliases. Evaluate only " +
-            "items returned in this turn. Group related items by threadId, but do not " +
+            "items returned in this turn. Group related email items by threadId, but do not " +
             "return threadId because Peggy derives it locally from messageIds. Never " +
             "call prepare_action. " +
-            "Classify each relevant thread as critical, attention, awareness, or none. " +
+            "For each Teams message, decide who is expected to act BEFORE assigning priority. " +
+            "RecipientContext identifies the signed-in user's display name, conversation type " +
+            "(oneOnOne/group/meeting/channel/unknown) and structured mentions with IsCurrentUser. " +
+            "In a group, meeting or channel, a request clearly directed only to another person " +
+            "is recipient=other and tier=none, even if its customer impact or deadline is important. " +
+            "Membership in the chat, watching a channel, a case topic or an earlier alert does not " +
+            "make the current user responsible. Do not substitute 'someone must follow up' for " +
+            "'the current user must follow up'. A mention can reference a person rather than assign " +
+            "them the work: interpret the actual ask, including explicit assignments to the current " +
+            "user by name and requests to the whole team. Direct messages and team-wide requests " +
+            "can be relevant without any @mention; this is NOT a mentions-only filter. If mention " +
+            "metadata is missing/incomplete, do not assume the request targets someone else. " +
+            "Use recipient=user for the current user, team for a genuine request to the group " +
+            "including the user, other for work clearly assigned only to others, or unknown when " +
+            "the recipient cannot be established. Explain the evidence in recipientReason; for " +
+            "unknown, explain the missing evidence rather than inventing ownership. " +
+            "Return each Teams decision with exactly ONE messageId; never combine requests for " +
+            "different recipients or dismiss a whole conversation because one message is for " +
+            "someone else. A later request for the current user must be evaluated independently. " +
+            "Apply explicit feedback to priority, not as evidence of responsibility. " +
+            "Classify each relevant message/thread as critical, attention, awareness, or none. " +
             "Critical means immediate serious impact or a near deadline; attention " +
             "means a persistent card is warranted; awareness means useful history " +
             "without an interruption. Apply explicit feedback and avoid repeating " +
             "resolved or unchanged situations. Return JSON only in this exact shape: " +
-            "{\"decisions\":[{\"tier\":\"critical|attention|awareness|none\"," +
+            "{\"decisions\":[{\"recipient\":\"user|team|other|unknown\"," +
+            "\"recipientReason\":\"who should act and why, under 300 characters\"," +
+            "\"tier\":\"critical|attention|awareness|none\"," +
             "\"summary\":\"privacy-conscious summary under 300 characters\"," +
-            "\"reason\":\"specific reason under 300 characters\"," +
+            "\"reason\":\"specific reason including personal/team relevance under 300 characters\"," +
             "\"sourceReference\":\"message alias from messageIds or empty\"," +
             "\"messageIds\":[\"batch-local message aliases\"]}]}. Every decision must " +
             "contain at least one messageId. Copy every messageId and non-empty " +
@@ -657,6 +679,7 @@ public sealed class CopilotRunner : IAsyncDisposable
                 message.IsRead)
             {
                 IsFromMe = message.IsFromMe,
+                RecipientContext = message.RecipientContext,
                 IsMention = message.IsMention,
                 IsWatchlistedChannel = message.IsWatchlistedChannel
             };
@@ -804,6 +827,7 @@ public sealed class CopilotRunner : IAsyncDisposable
                 "Copilot's alert decision omitted the decisions array.");
         }
         var decisions = new List<AlertDecision>();
+        var assessedTeamsMessages = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in envelope.Decisions)
         {
             if (item is null)
@@ -835,6 +859,22 @@ public sealed class CopilotRunner : IAsyncDisposable
                 throw CreateAlertDecisionValidationException(
                     "cross-thread-message-alias",
                     "Copilot returned a message alias from another thread.");
+            }
+            var isTeams = allowedMessages[item.MessageIds[0]].Source == MessageSource.Teams;
+            var recipient = item.Recipient?.Trim().ToLowerInvariant();
+            if (isTeams && (item.MessageIds.Count != 1 ||
+                recipient is not ("user" or "team" or "other" or "unknown") ||
+                string.IsNullOrWhiteSpace(item.RecipientReason) || item.RecipientReason.Length > 300))
+            {
+                throw CreateAlertDecisionValidationException(
+                    "invalid-recipient-assessment",
+                    "A Teams decision must identify the recipient of one specific message with supporting evidence.");
+            }
+            if (isTeams && !assessedTeamsMessages.Add(item.MessageIds[0]))
+            {
+                throw CreateAlertDecisionValidationException(
+                    "duplicate-recipient-assessment",
+                    "A Teams message received more than one recipient assessment.");
             }
             var sourceReference = item.SourceReference?.Trim() ?? string.Empty;
             if (sourceReference.Length > 0 &&
@@ -869,7 +909,7 @@ public sealed class CopilotRunner : IAsyncDisposable
                     "invalid-tier",
                     "Copilot returned an unsupported alert tier.")
             };
-            if (tier is null)
+            if (tier is null || (isTeams && recipient == "other"))
             {
                 continue;
             }
@@ -1414,6 +1454,12 @@ public sealed class CopilotRunner : IAsyncDisposable
 
     private sealed class AlertDecisionPayload
     {
+        [JsonPropertyName("recipient")]
+        public string? Recipient { get; init; }
+
+        [JsonPropertyName("recipientReason")]
+        public string? RecipientReason { get; init; }
+
         [JsonPropertyName("tier")]
         public string? Tier { get; init; }
 
