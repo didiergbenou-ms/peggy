@@ -19,13 +19,12 @@ remain in a separate local process.
 Peggy v0.1.13 uses one **Peggy setup** window for prerequisites, installation,
 account connection, and optional voice.
 
-**Beta preview: [v0.1.14-beta.3](https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.14-beta.3).**
-This beta replaces the second LLM notification review with a reply/like check,
-reopens Peggy automatically after a verified same-account upgrade, and hardens
-release extraction with bounded recovery and retained diagnostics. It retains
-beta.2's Awareness preference, setup logging, Teams pagination and safe upgrade
-protections. To try it, download
-`peggy-v0.1.14-beta.3-win-x64-setup.exe` from the beta release page.
+**Beta preview: [v0.1.14-beta.4](https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.14-beta.4).**
+This beta makes Teams classification recipient-aware: requests clearly directed
+only to someone else are excluded, while direct, explicit and team-wide requests
+can still qualify. It retains beta.3's reply/like suppression without a second LLM
+call, verified upgrade relaunch and release-workflow recovery. To try it, download
+`peggy-v0.1.14-beta.4-win-x64-setup.exe` from the beta release page.
 The latest stable release and the installation examples below remain v0.1.13.
 
 1. **Check access and prerequisites.** You need Windows x64, GitHub Copilot
@@ -245,6 +244,22 @@ a specific `/l/message/` item rather than only a generic chat.
 - Known channel participation is retained across monitoring-window rebases.
 
 ### Alert lifecycle
+
+**Recipient relevance (beta.4):** Teams messages include conversation type,
+structured mention names, whether each mention targets the signed-in user, and
+whether mention metadata is complete. The existing classification call decides
+who is expected to act before assigning priority. Requests clearly directed only
+to another person are excluded; chat membership, a watched channel or a customer
+deadline alone does not make that work yours. Direct messages, explicit
+assignments and genuine team-wide requests can still qualify without an
+@mention. Messages are assessed individually, so an unrelated request does not
+silence a later message addressed to you in the same conversation.
+
+This uses no additional LLM call and does not alter monitoring scopes or delete
+existing alerts. The reply/like acknowledgment check still runs afterward for
+each relevant message, sharing one fresh thread snapshot within the batch.
+Remaining requests are combined into one card per conversation without
+reintroducing messages already acknowledged or addressed only to others.
 
 Bubble actions, daily clearing, and refresh before notifying described below
 are new in **v0.1.14-beta.1**.
@@ -1104,9 +1119,9 @@ For example, `v0.1.11-beta.1` uses MSI `0.1.1130` and file version
 For `v0.1.13`, MSI uses `0.1.1399` and binaries use `0.1.1399.0`, above
 beta.1's `0.1.1330.0`; the Alerts header and About dialog still display the
 semantic version `v0.1.13`.
-The `v0.1.14-beta.3` preview uses MSI `0.1.1432` and binary file version
-`0.1.1432.0`, above beta.2's `0.1.1431.0` and stable v0.1.13; its user-facing
-version retains `-beta.3`.
+The `v0.1.14-beta.4` preview uses MSI `0.1.1433` and binary file version
+`0.1.1433.0`, above beta.3's `0.1.1432.0` and stable v0.1.13; its user-facing
+version retains `-beta.4`.
 Semantic prerelease labels alone do not change .NET's default file version.
 
 WiX ICE custom actions can be blocked by policy in non-elevated build
@@ -1126,9 +1141,10 @@ identities, directories, registry entries, and shortcuts. Executable custom acti
 become inert markers so the regression cannot launch Peggy or use real account
 data. It checks exact installed hashes, product replacement, unchanged test
 settings/model/account sentinels, same-version maintenance, and a forced-failure
-rollback to the previous payload and registration. CI uses eight checksum-verified
+rollback to the previous payload and registration. CI uses nine checksum-verified
 pinned baselines: the setup EXEs from `v0.1.10`, `v0.1.11-beta.1`, `v0.1.11`,
-`v0.1.12`, `v0.1.13-beta.1`, `v0.1.13`, `v0.1.14-beta.1`, and `v0.1.14-beta.2`.
+`v0.1.12`, `v0.1.13-beta.1`, `v0.1.13`, `v0.1.14-beta.1`, `v0.1.14-beta.2`,
+and `v0.1.14-beta.3`.
 The pinned WiX extraction tool reads each checksum-verified EXE without running
 it and supplies its embedded MSI. Every baseline must pass the strict upgrade
 and rollback checks. Restart Manager, real application startup, and interactive authentication
