@@ -14,7 +14,6 @@ param(
     [switch]$InstallPrerequisites,
     [switch]$InstallSpeechModels,
     [switch]$SkipSpeechModels,
-    [switch]$NoShortcut,
     [switch]$NoLaunch
 )
 
@@ -584,24 +583,6 @@ function Stop-InstalledPeggy {
     }
 }
 
-function New-PeggyShortcut {
-    param(
-        [Parameter(Mandatory)][string]$Executable,
-        [Parameter(Mandatory)][string]$WorkingDirectory
-    )
-
-    $programs = [Environment]::GetFolderPath(
-        [Environment+SpecialFolder]::Programs
-    )
-    $shortcutPath = Join-Path $programs 'Peggy.lnk'
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($shortcutPath)
-    $shortcut.TargetPath = $Executable
-    $shortcut.WorkingDirectory = $WorkingDirectory
-    $shortcut.Description = 'Peggy Microsoft 365 assistant'
-    $shortcut.Save()
-}
-
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw 'Peggy supports Windows only.'
 }
@@ -759,13 +740,6 @@ try {
     }
 
     $installedExecutable = Join-Path $InstallDirectory 'peggy-tray.exe'
-    if (-not $NoShortcut) {
-        Write-Step 'Creating Start menu shortcut'
-        New-PeggyShortcut `
-            -Executable $installedExecutable `
-            -WorkingDirectory $InstallDirectory
-    }
-
     Write-Host ''
     Write-Host "Peggy $installedVersion installed at:" -ForegroundColor Green
     Write-Host "  $InstallDirectory"

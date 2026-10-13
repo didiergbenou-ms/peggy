@@ -61,8 +61,7 @@ internal static class DiagnosticCollectorRunner
                      collector,
                      "-OutputDirectory",
                      outputDirectory,
-                     "-RunWorkIqTests",
-                     "-NoEmail"
+                     "-RunWorkIqTests"
                  })
         {
             startInfo.ArgumentList.Add(argument);

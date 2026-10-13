@@ -19,12 +19,13 @@ remain in a separate local process.
 Peggy v0.1.13 uses one **Peggy setup** window for prerequisites, installation,
 account connection, and optional voice.
 
-**Beta preview: [v0.1.14-beta.4](https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.14-beta.4).**
-This beta makes Teams classification recipient-aware: requests clearly directed
-only to someone else are excluded, while direct, explicit and team-wide requests
-can still qualify. It retains beta.3's reply/like suppression without a second LLM
-call, verified upgrade relaunch and release-workflow recovery. To try it, download
-`peggy-v0.1.14-beta.4-win-x64-setup.exe` from the beta release page.
+**Beta preview: [v0.1.14-beta.5](https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.14-beta.5).**
+This beta removes COM automation from Peggy, routes Microsoft To Do through the
+existing WorkIQ connection, and keeps diagnostic ZIPs local instead of emailing
+them through Outlook. It retains beta.4's recipient-aware Teams classification,
+beta.3's reply/like suppression without a second LLM call, verified upgrade
+relaunch and release-workflow recovery. To try it, download
+`peggy-v0.1.14-beta.5-win-x64-setup.exe` from the beta release page.
 The latest stable release and the installation examples below remain v0.1.13.
 
 1. **Check access and prerequisites.** You need Windows x64, GitHub Copilot
@@ -478,7 +479,8 @@ Peggy opens or persists them.
    Entra tenant.
 7. **PowerShell 7** for the release installer prerequisites.
 8. `curl.exe` and `tar.exe` only for the optional speech-model installer.
-9. **Classic Outlook desktop** for Microsoft To Do task reads and actions.
+9. Microsoft To Do reads and actions require the existing WorkIQ connection to
+   permit the Microsoft Graph To Do endpoints under tenant policy.
 10. A microphone and audio output device for voice features.
 
 See the official
@@ -640,7 +642,8 @@ The installer:
 - Verifies its SHA-256 checksum before extraction.
 - Downloads and verifies about 803 MiB of local English voice models.
 - Installs for the current user under `%LOCALAPPDATA%\Programs\Peggy`.
-- Creates a Start menu shortcut and launches Peggy.
+- Launches Peggy directly from the install directory. The recommended setup EXE
+  creates the Start menu shortcut.
 - Can install PowerShell 7, Node.js LTS, and GitHub Copilot CLI through WinGet
   when `-InstallPrerequisites` is present.
 - Requires GitHub Copilot CLI 1.0.81 or later. If WinGet provides an older
@@ -701,9 +704,9 @@ powershell.exe -ExecutionPolicy Bypass -File `
     "$env:LOCALAPPDATA\Programs\Peggy\uninstall.ps1"
 ```
 
-The uninstaller removes Peggy's application files, Start menu shortcut, and
-optional startup entry. It preserves encrypted settings and local speech models
-so they remain available after a reinstall. To remove those files and Peggy's
+The uninstaller removes Peggy's application files, a verifiable Peggy shortcut,
+and the optional startup entry. It preserves encrypted settings and local speech
+models so they remain available after a reinstall. To remove those files and Peggy's
 temporary runtime data and synchronized account preference too, add
 `-PurgeData`:
 
@@ -1119,9 +1122,9 @@ For example, `v0.1.11-beta.1` uses MSI `0.1.1130` and file version
 For `v0.1.13`, MSI uses `0.1.1399` and binaries use `0.1.1399.0`, above
 beta.1's `0.1.1330.0`; the Alerts header and About dialog still display the
 semantic version `v0.1.13`.
-The `v0.1.14-beta.4` preview uses MSI `0.1.1433` and binary file version
-`0.1.1433.0`, above beta.3's `0.1.1432.0` and stable v0.1.13; its user-facing
-version retains `-beta.4`.
+The `v0.1.14-beta.5` preview uses MSI `0.1.1434` and binary file version
+`0.1.1434.0`, above beta.4's `0.1.1433.0`, beta.3's `0.1.1432.0` and stable
+v0.1.13; its user-facing version retains `-beta.5`.
 Semantic prerelease labels alone do not change .NET's default file version.
 
 WiX ICE custom actions can be blocked by policy in non-elevated build
@@ -1141,10 +1144,10 @@ identities, directories, registry entries, and shortcuts. Executable custom acti
 become inert markers so the regression cannot launch Peggy or use real account
 data. It checks exact installed hashes, product replacement, unchanged test
 settings/model/account sentinels, same-version maintenance, and a forced-failure
-rollback to the previous payload and registration. CI uses nine checksum-verified
+rollback to the previous payload and registration. CI uses ten checksum-verified
 pinned baselines: the setup EXEs from `v0.1.10`, `v0.1.11-beta.1`, `v0.1.11`,
 `v0.1.12`, `v0.1.13-beta.1`, `v0.1.13`, `v0.1.14-beta.1`, `v0.1.14-beta.2`,
-and `v0.1.14-beta.3`.
+`v0.1.14-beta.3`, and `v0.1.14-beta.4`.
 The pinned WiX extraction tool reads each checksum-verified EXE without running
 it and supplies its embedded MSI. Every baseline must pass the strict upgrade
 and rollback checks. Restart Manager, real application startup, and interactive authentication
@@ -1426,26 +1429,22 @@ This does not change setup behavior or reconstruct details absent from older log
 ### Collect a diagnostic ZIP
 
 Use **Help → Troubleshooting → Create diagnostic ZIP** for the packaged
-read-only collector. To run it directly without offering to send email:
+read-only collector. To run it directly:
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File `
     "$env:LOCALAPPDATA\Programs\Peggy\scripts\Collect-PeggyDiagnostics.ps1" `
-    -RunConnectivityTests -NoEmail
+    -RunConnectivityTests
 ```
 
 For a custom installation, adjust the installation path. Developers with a
 source checkout can run `.\scripts\Collect-PeggyDiagnostics.ps1` instead;
 installed users do not need source-repository access.
 
-The script creates `Peggy-Diagnostics-<timestamp>.zip` on the user's Desktop.
-Without `-NoEmail`, it displays the configured support recipient and asks the
-user to type `SEND` before emailing the ZIP through classic Outlook.
-For approved automation, use `-SendWithoutPrompt`; `-EmailTo` can override the recipient.
+The script creates `Peggy-Diagnostics-<timestamp>.zip` on the user's Desktop
+and leaves it there for review and sharing.
 Use `-WorkIqAccount` only when Peggy's encrypted state cannot supply its pinned
 Microsoft 365 account.
-If Outlook cannot send the message, the ZIP remains on the Desktop for manual
-review and sharing.
 
 The bundle includes Peggy versions, selected installation hashes, process and
 startup details, the collector script hash and source Git commit, a decrypted
@@ -1496,7 +1495,8 @@ team.
 - English-only local speech.
 - Source publishes are framework-dependent by default; release downloads are
   self-contained.
-- Microsoft To Do actions target only the default `Tasks` list.
+- Microsoft To Do reads and actions use the existing WorkIQ connection and target
+  only the default `Tasks` list. They do not require Classic Outlook desktop.
 - Monitoring is polling-based, not real-time.
 - The All Teams activity scope depends on the freshness and availability of
   WorkIQ structured search.

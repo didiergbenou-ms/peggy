@@ -9,6 +9,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'The real bootstrapper layout smoke test requires Windows.' }
 . (Join-Path $PSScriptRoot 'PeggyInstallerVersion.ps1')
+. (Join-Path $PSScriptRoot 'PeggyMsiNative.ps1')
 $versionInfo = ConvertTo-PeggyInstallerVersion $Version
 $bundle = (Resolve-Path -LiteralPath (
     Join-Path $ArtifactDirectory $versionInfo.AssetNames.Bundle)).Path
@@ -24,25 +25,14 @@ $layout = Join-Path $root 'layout'
 $log = Join-Path $root 'layout.log'
 
 function Get-InstallationSnapshot {
-    $installer = New-Object -ComObject WindowsInstaller.Installer
-    $list = $null
-    try {
-        $list = $installer.GetType().InvokeMember('RelatedProducts', 'GetProperty',
-            $null, $installer, @('{D661EFB2-155E-51B2-9951-C35E621D9E11}'))
-        $count = $list.GetType().InvokeMember('Count', 'GetProperty', $null, $list, $null)
-        $codes = @($versionInfo.ProductCode)
-        for ($index = 0; $index -lt $count; $index++) {
-            $codes += [string]$list.GetType().InvokeMember('Item', 'GetProperty', $null, $list, @($index))
-        }
-        $products = @(foreach ($code in $codes | Sort-Object -Unique) {
-            $state = $installer.GetType().InvokeMember('ProductState', 'GetProperty', $null, $installer, @([string]$code))
-            "$code=$state"
-        })
-    } finally {
-        foreach ($item in @($list, $installer)) {
-            if ($null -ne $item) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($item) }
-        }
-    }
+    $codes = @($versionInfo.ProductCode) + @(
+        [PeggyMsiNative]::RelatedProducts(
+            '{D661EFB2-155E-51B2-9951-C35E621D9E11}')
+    )
+    $products = @(foreach ($code in $codes | Sort-Object -Unique) {
+        $state = [PeggyMsiNative]::ProductState([string]$code)
+        "$code=$state"
+    })
     $registrations = @(foreach ($hive in @(
             'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall',
             'Registry::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Uninstall',

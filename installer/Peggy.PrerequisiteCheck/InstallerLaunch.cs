@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
 
 namespace Peggy.PrerequisiteCheck;
 
@@ -61,32 +60,20 @@ internal static class InstallerLaunch
 
     private static void LaunchFromDesktop(string target)
     {
-        // Use the existing desktop's automation object, never a newly-created
-        // Shell.Application that could inherit an elevated installer identity.
-        object? windows = null;
-        object? desktop = null;
-        object? document = null;
-        object? application = null;
-        try
+        var explorer = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+            "explorer.exe");
+        var startInfo = new ProcessStartInfo(explorer)
         {
-            windows = Activator.CreateInstance(Type.GetTypeFromCLSID(
-                new Guid("9BA05972-F6A8-11CF-A442-00A0C90A8F39"), throwOnError: true)!);
-            dynamic collection = windows!;
-            object location = 0;
-            object root = 0;
-            int window;
-            desktop = collection.FindWindowSW(ref location, ref root, 8, out window, 1);
-            if (desktop is null) throw new InvalidOperationException("The desktop shell is unavailable.");
-            document = ((dynamic)desktop).Document;
-            application = ((dynamic)document!).Application;
-            ((dynamic)application!).ShellExecute(target, "", Path.GetDirectoryName(target), "open", 1);
-        }
-        finally
+            UseShellExecute = false,
+            WorkingDirectory = Path.GetDirectoryName(target)!
+        };
+        startInfo.ArgumentList.Add(target);
+        using var process = Process.Start(startInfo);
+        if (process is null)
         {
-            foreach (var item in new[] { application, document, desktop, windows })
-            {
-                if (item is not null && Marshal.IsComObject(item)) Marshal.ReleaseComObject(item);
-            }
+            throw new InvalidOperationException(
+                "The interactive desktop shell did not accept the Peggy launch.");
         }
     }
 

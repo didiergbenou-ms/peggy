@@ -2978,6 +2978,9 @@ internal static class CoreBehaviorSmokeTests
             "PEGGY_FAKE_WORKIQ_LOG");
         var previousMail = Environment.GetEnvironmentVariable(
             "PEGGY_FAKE_WORKIQ_MAIL");
+        var previousTodoPagingScenario =
+            Environment.GetEnvironmentVariable(
+                "PEGGY_FAKE_TODO_PAGING_SCENARIO");
         var logPath = Path.Combine(
             Path.GetTempPath(),
             $"peggy-action-requests-{Guid.NewGuid():N}.log");
@@ -2992,8 +2995,65 @@ internal static class CoreBehaviorSmokeTests
             Environment.SetEnvironmentVariable(
                 "PEGGY_FAKE_WORKIQ_MAIL",
                 "mailbox@example.com");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_TODO_PAGING_SCENARIO",
+                null);
             var provider = new WorkIqMessageProvider(
                 executablePath: executable);
+            var incompleteTasks = await provider.ListTasksAsync(
+                includeCompleted: false,
+                limit: 20);
+            TestAssert.True(
+                incompleteTasks.Count == 1 &&
+                incompleteTasks[0].Title == "Open task" &&
+                !incompleteTasks[0].IsCompleted &&
+                incompleteTasks[0].ListName == "Tasks" &&
+                incompleteTasks[0].DueDate == new DateOnly(2030, 1, 3),
+                "WorkIQ did not list the incomplete default Tasks list.");
+            var allTasks = await provider.ListTasksAsync(
+                includeCompleted: true,
+                limit: 20);
+            TestAssert.True(
+                allTasks.Count == 2 &&
+                allTasks.Any(task =>
+                    task.Title == "Completed task" && task.IsCompleted),
+                "WorkIQ did not include completed To Do tasks when requested.");
+            TestAssert.True(
+                File.ReadAllLines(logPath).Any(line =>
+                    line.Contains(
+                        "/me/todo/lists/todo-default-list/tasks?%24skiptoken=page-2",
+                        StringComparison.Ordinal)),
+                "WorkIQ did not follow the same-resource To Do continuation.");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_TODO_PAGING_SCENARIO",
+                "cross-resource");
+            await TestAssert.ThrowsAsync<InvalidDataException>(
+                () => provider.ListTasksAsync(
+                    includeCompleted: false,
+                    limit: 20),
+                "To Do accepted a continuation that changed Graph resources.");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_TODO_PAGING_SCENARIO",
+                "repeat");
+            await TestAssert.ThrowsAsync<InvalidDataException>(
+                () => provider.ListTasksAsync(
+                    includeCompleted: false,
+                    limit: 20),
+                "To Do accepted a repeated continuation page.");
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_TODO_PAGING_SCENARIO",
+                null);
+            await TestAssert.ThrowsAsync<InvalidOperationException>(
+                () => provider.ExecuteActionAsync(
+                    new WorkActionRequest
+                    {
+                        Kind = WorkActionKind.UpdateTask,
+                        TargetId = WorkIqTaskClient.EncodeTaskId(
+                            "another-list",
+                            "todo-open"),
+                        Subject = "Must not update"
+                    }),
+                "WorkIQ task actions accepted a task from another list.");
             var actions = new[]
             {
                 new WorkActionRequest
@@ -3088,6 +3148,37 @@ internal static class CoreBehaviorSmokeTests
                     TargetId = OpaqueIdentifier.Encode(
                         "email-message:",
                         "delete-id")
+                },
+                new WorkActionRequest
+                {
+                    Kind = WorkActionKind.CreateTask,
+                    Subject = "Created To Do",
+                    Body = "Created note",
+                    DueDate = new DateOnly(2030, 1, 3)
+                },
+                new WorkActionRequest
+                {
+                    Kind = WorkActionKind.UpdateTask,
+                    TargetId = WorkIqTaskClient.EncodeTaskId(
+                        "todo-default-list",
+                        "todo-updated"),
+                    Subject = "Updated To Do",
+                    Body = "Updated note",
+                    DueDate = new DateOnly(2030, 1, 4)
+                },
+                new WorkActionRequest
+                {
+                    Kind = WorkActionKind.CompleteTask,
+                    TargetId = WorkIqTaskClient.EncodeTaskId(
+                        "todo-default-list",
+                        "todo-completed")
+                },
+                new WorkActionRequest
+                {
+                    Kind = WorkActionKind.DeleteTask,
+                    TargetId = WorkIqTaskClient.EncodeTaskId(
+                        "todo-default-list",
+                        "todo-deleted")
                 }
             };
 
@@ -3141,7 +3232,7 @@ internal static class CoreBehaviorSmokeTests
                     line.StartsWith("delete ", StringComparison.Ordinal))
                 .ToList();
             TestAssert.Equal(
-                12,
+                16,
                 mutations.Count,
                 "The fake action suite observed a missing or duplicate mutation.");
             TestAssert.Equal(
@@ -3164,6 +3255,20 @@ internal static class CoreBehaviorSmokeTests
                 mutations.Count(line => line ==
                     "delete /me/messages/delete-id") == 1,
                 "A user-approved external mutation was not one-shot.");
+            TestAssert.True(
+                mutations.Count(line =>
+                    line == "create /me/todo/lists/todo-default-list/tasks") == 1 &&
+                mutations.Count(line =>
+                    line.StartsWith(
+                        "update /me/todo/lists/todo-default-list/tasks/todo-updated",
+                        StringComparison.Ordinal)) == 1 &&
+                mutations.Count(line =>
+                    line.StartsWith(
+                        "update /me/todo/lists/todo-default-list/tasks/todo-completed",
+                        StringComparison.Ordinal)) == 1 &&
+                mutations.Count(line =>
+                    line == "delete /me/todo/lists/todo-default-list/tasks/todo-deleted") == 1,
+                "A Microsoft To Do mutation was missing, duplicated, or used an invalid route.");
         }
         finally
         {
@@ -3176,6 +3281,9 @@ internal static class CoreBehaviorSmokeTests
             Environment.SetEnvironmentVariable(
                 "PEGGY_FAKE_WORKIQ_MAIL",
                 previousMail);
+            Environment.SetEnvironmentVariable(
+                "PEGGY_FAKE_TODO_PAGING_SCENARIO",
+                previousTodoPagingScenario);
             File.Delete(logPath);
         }
     }
@@ -3390,24 +3498,6 @@ internal static class CoreBehaviorSmokeTests
             "Reply-To or sender",
             reply.ExactDescription,
             "Reply approval misstated its recipients.");
-
-        var taskClient = typeof(WorkIqMessageProvider).Assembly.GetType(
-            "Peggy.Core.OutlookTaskClient")
-            ?? throw new InvalidOperationException(
-                "Outlook task client type was not found.");
-        var bodyMatches = taskClient.GetMethod(
-            "TaskBodyMatches",
-            BindingFlags.NonPublic | BindingFlags.Static)
-            ?? throw new InvalidOperationException(
-                "Task body verifier was not found.");
-        TestAssert.True(
-            (bool)(bodyMatches.Invoke(
-                null,
-                ["line one\r\nline two", "line one\nline two"]) ?? false) &&
-            !(bool)(bodyMatches.Invoke(
-                null,
-                ["different", "expected"]) ?? true),
-            "Task note verification is not exact.");
 
         var contentMatches = typeof(WorkIqMessageProvider).GetMethod(
             "ContentEquals",

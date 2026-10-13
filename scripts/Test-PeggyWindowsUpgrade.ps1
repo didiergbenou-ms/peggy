@@ -36,6 +36,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'This regression requires Windows and Windows Installer.' }
+. (Join-Path $PSScriptRoot 'PeggyMsiNative.ps1')
 
 if (-not ('PeggyUpgradeTest.PathSafety' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -76,44 +77,43 @@ function Assert-Upgrade {
     if (-not $Condition) { throw "Upgrade regression: $Message" }
 }
 
-function Release-Com {
-    param($Object)
-    if ($null -ne $Object) {
-        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Object)
+function Close-MsiHandle {
+    param([IntPtr]$Handle)
+    if ($Handle -ne [IntPtr]::Zero) {
+        [PeggyMsiNative]::Close($Handle)
     }
-}
-
-function Get-ComProperty {
-    param($Object, [string]$Name, [object[]]$Arguments = @())
-    return ,($Object.GetType().InvokeMember($Name, 'GetProperty', $null, $Object, $Arguments))
 }
 
 function Get-MsiRows {
     param($Database, [string]$Query)
-    $view = $Database.OpenView($Query)
+    $view = [PeggyMsiNative]::OpenView($Database, $Query)
     try {
-        [void]$view.Execute()
-        while ($record = $view.Fetch()) {
+        [PeggyMsiNative]::ExecuteView($view)
+        while ($true) {
+            $record = [IntPtr]::Zero
+            if (-not [PeggyMsiNative]::Fetch($view, [ref]$record)) {
+                break
+            }
             try {
                 $values = @()
-                for ($index = 1; $index -le (Get-ComProperty $record FieldCount); $index++) {
-                    $values += [string](Get-ComProperty $record StringData @($index))
+                for ($index = 1; $index -le [PeggyMsiNative]::FieldCount($record); $index++) {
+                    $values += [PeggyMsiNative]::RecordString($record, $index)
                 }
                 ,$values
-            } finally { Release-Com $record }
+            } finally { Close-MsiHandle $record }
         }
     } finally {
-        [void]$view.Close()
-        Release-Com $view
+        Close-MsiHandle $view
     }
 }
 
 function Invoke-MsiSql {
     param($Database, [string]$Query)
-    $view = $Database.OpenView($Query)
-    try { [void]$view.Execute() } finally {
-        [void]$view.Close()
-        Release-Com $view
+    $view = [PeggyMsiNative]::OpenView($Database, $Query)
+    try {
+        [PeggyMsiNative]::ExecuteView($view)
+    } finally {
+        Close-MsiHandle $view
     }
 }
 
@@ -252,27 +252,31 @@ function Get-CabinetHashes {
     $hashes = @{}
     foreach ($media in @(Get-MsiRows $Database 'SELECT * FROM `Media`')) {
         $name = $media[3].Substring(1)
-        $view = $Database.OpenView(
+        $view = [PeggyMsiNative]::OpenView(
+            $Database,
             'SELECT `Data` FROM `_Streams` WHERE `Name` = ' + (ConvertTo-SqlLiteral $name))
-        $record = $null
+        $record = [IntPtr]::Zero
         $hash = [Security.Cryptography.IncrementalHash]::CreateHash(
             [Security.Cryptography.HashAlgorithmName]::SHA256)
         try {
-            [void]$view.Execute()
-            $record = $view.Fetch()
-            Assert-Upgrade ($null -ne $record) "Missing embedded cabinet '$name'."
+            [PeggyMsiNative]::ExecuteView($view)
+            if (-not [PeggyMsiNative]::Fetch($view, [ref]$record)) {
+                throw "Missing embedded cabinet '$name'."
+            }
             do {
-                # msiReadStreamBytes returns one byte per BSTR character; Latin1 is lossless.
-                $chunk = [string]$record.GetType().InvokeMember(
-                    'ReadStream', 'InvokeMethod', $null, $record, @(1, 1048576, 1))
-                if ($chunk.Length) { $hash.AppendData([Text.Encoding]::Latin1.GetBytes($chunk)) }
-            } while ($chunk.Length)
+                $chunk = [PeggyMsiNative]::ReadStreamChunk(
+                    $record,
+                    1,
+                    1048576)
+                if ($chunk.Length -gt 0) {
+                    $hash.AppendData($chunk)
+                }
+            } while ($chunk.Length -gt 0)
             $hashes[$name] = [Convert]::ToHexString($hash.GetHashAndReset())
         } finally {
             $hash.Dispose()
-            Release-Com $record
-            [void]$view.Close()
-            Release-Com $view
+            Close-MsiHandle $record
+            Close-MsiHandle $view
         }
     }
     return $hashes
@@ -322,12 +326,14 @@ $stableUpgradeCode = '{D661EFB2-155E-51B2-9951-C35E621D9E11}'
 
 function Assert-MsiScope {
     param($Database, [switch]$Fixture)
-    $summary = Get-ComProperty $Database SummaryInformation @(0)
+    $summary = [PeggyMsiNative]::OpenSummary($Database, 0)
     try {
-        Assert-Upgrade ((Get-ComProperty $summary Property @(7)) -eq 'x64;1033' -and
-            (Get-ComProperty $summary Property @(15)) -eq 10) `
+        Assert-Upgrade (
+            [PeggyMsiNative]::SummaryProperty($summary, 7) -eq 'x64;1033' -and
+            [PeggyMsiNative]::SummaryProperty($summary, 15) -eq 10
+        ) `
             'Only the known compressed, non-elevating x64 per-user package is supported.'
-    } finally { Release-Com $summary }
+    } finally { Close-MsiHandle $summary }
     $tables = @(Get-MsiRows $Database 'SELECT `Name` FROM `_Tables`')
     foreach ($row in $tables) {
         Assert-Upgrade ($row[0] -in $allowedTables) "Unsupported MSI table '$($row[0])'; refusing to execute."
@@ -470,7 +476,7 @@ function New-MsiFixture {
     param([string]$Original, [string]$Destination)
     $originalHash = (Get-FileHash -LiteralPath $Original -Algorithm SHA256).Hash
     Copy-Item -LiteralPath $Original -Destination $Destination
-    $database = $installer.OpenDatabase($Destination, 1)
+    $database = [PeggyMsiNative]::OpenDatabase($Destination, 1)
     try {
         $scope = Assert-MsiScope $database
         $snapshots = @{}
@@ -517,23 +523,26 @@ function New-MsiFixture {
                 'UPDATE `CustomAction` SET `Type` = 51, `Source` = {0}, `Target` = {1} WHERE `Action` = {2}' -f
                 (ConvertTo-SqlLiteral "PEGGY_TEST_$action"), "'observed'", (ConvertTo-SqlLiteral $action))
         }
-        $summary = Get-ComProperty $database SummaryInformation @(20)
+        $summary = [PeggyMsiNative]::OpenSummary($database, 20)
         try {
-            $packageCode = Get-NamespacedGuid package (Get-ComProperty $summary Property @(9))
-            $summary.GetType().InvokeMember('Property', 'SetProperty', $null, $summary, @(9, $packageCode)) | Out-Null
-            [void]$summary.Persist()
-        } finally { Release-Com $summary }
-        [void]$database.Commit()
-    } finally { Release-Com $database }
+            $packageCode = Get-NamespacedGuid package (
+                [string][PeggyMsiNative]::SummaryProperty($summary, 9))
+            [PeggyMsiNative]::SetSummaryString($summary, 9, $packageCode)
+            [PeggyMsiNative]::PersistSummary($summary)
+        } finally { Close-MsiHandle $summary }
+        [PeggyMsiNative]::Commit($database)
+    } finally { Close-MsiHandle $database }
     # Reopen the committed copy: validate the actual file that msiexec will consume.
-    $database = $installer.OpenDatabase($Destination, 0)
+    $database = [PeggyMsiNative]::OpenDatabase($Destination, 0)
     try {
         $fixtureScope = Assert-MsiScope $database -Fixture
         Assert-Upgrade ($fixtureScope.Properties.ProductCode -eq $productCode) 'Product identity mapping failed.'
-        $summary = Get-ComProperty $database SummaryInformation @(0)
+        $summary = [PeggyMsiNative]::OpenSummary($database, 0)
         try {
-            Assert-Upgrade ((Get-ComProperty $summary Property @(9)) -eq $packageCode) 'Package identity mapping failed.'
-        } finally { Release-Com $summary }
+            Assert-Upgrade (
+                [PeggyMsiNative]::SummaryProperty($summary, 9) -eq $packageCode
+            ) 'Package identity mapping failed.'
+        } finally { Close-MsiHandle $summary }
         foreach ($component in $fixtureScope.Components.Values) {
             Assert-Upgrade ($component[1] -eq (Get-NamespacedGuid component $scope.Components[$component[0]][1])) `
                 "Component identity mapping failed for '$($component[0])'."
@@ -549,7 +558,7 @@ function New-MsiFixture {
         Assert-Upgrade ((ConvertTo-Json -InputObject $mappedUpgrade -Compress) -ceq
             (ConvertTo-Json -InputObject $originalUpgrade -Compress)) 'Upgrade ranges or conditions changed.'
         Assert-Hashes $cabinets (Get-CabinetHashes $database) 'Embedded cabinets'
-    } finally { Release-Com $database }
+    } finally { Close-MsiHandle $database }
     Assert-Upgrade ((Get-FileHash -LiteralPath $Original -Algorithm SHA256).Hash -eq $originalHash) `
         'Original MSI changed during fixture preparation.'
     return [pscustomobject]@{
@@ -563,7 +572,7 @@ function New-MsiFixture {
 
 function Add-RollbackProbe {
     param($Fixture)
-    $database = $installer.OpenDatabase($Fixture.Path, 1)
+    $database = [PeggyMsiNative]::OpenDatabase($Fixture.Path, 1)
     try {
         $originalActions = @(Get-MsiRows $database 'SELECT * FROM `CustomAction`')
         $originalSequence = @(Get-MsiRows $database 'SELECT * FROM `InstallExecuteSequence`')
@@ -610,9 +619,9 @@ function Add-RollbackProbe {
         Invoke-MsiSql $database (
             'INSERT INTO `InstallExecuteSequence` (`Action`, `Condition`, `Sequence`) ' +
             "VALUES ('PeggyTestFailUpgrade', 'PEGGY_TEST_FORCEFAIL = `"1`" AND WIX_UPGRADE_DETECTED', $failureSequence)")
-        [void]$database.Commit()
-    } finally { Release-Com $database }
-    $database = $installer.OpenDatabase($Fixture.Path, 0)
+        [PeggyMsiNative]::Commit($database)
+    } finally { Close-MsiHandle $database }
+    $database = [PeggyMsiNative]::OpenDatabase($Fixture.Path, 0)
     try {
         $actions = @(Get-MsiRows $database 'SELECT * FROM `CustomAction`')
         $probe = @($actions | Where-Object { $_[0] -eq 'PeggyTestFailUpgrade' })
@@ -638,17 +647,12 @@ function Add-RollbackProbe {
             })
         Assert-Upgrade ((ConvertTo-Json -InputObject $retained -Compress) -ceq
             (ConvertTo-Json -InputObject $originalSequence -Compress)) 'Probe modified a production schedule or condition.'
-    } finally { Release-Com $database }
+    } finally { Close-MsiHandle $database }
     $Fixture.Hash = (Get-FileHash -LiteralPath $Fixture.Path -Algorithm SHA256).Hash
 }
 
 function Get-RelatedFixtureProducts {
-    $list = Get-ComProperty $installer RelatedProducts @($fixtureUpgradeCode)
-    try {
-        for ($index = 0; $index -lt (Get-ComProperty $list Count); $index++) {
-            [string](Get-ComProperty $list Item @($index))
-        }
-    } finally { Release-Com $list }
+    [PeggyMsiNative]::RelatedProducts($fixtureUpgradeCode)
 }
 
 function Assert-RegisteredProduct {
@@ -656,13 +660,22 @@ function Assert-RegisteredProduct {
     $related = @(Get-RelatedFixtureProducts)
     Assert-Upgrade ($related.Count -eq 1 -and $related[0] -eq $Expected.ProductCode) `
         "Expected exactly the registered fixture $($Expected.ProductCode); found: $($related -join ', ')."
-    Assert-Upgrade ((Get-ComProperty $installer ProductState @($Expected.ProductCode)) -eq 5) `
+    Assert-Upgrade (
+        [PeggyMsiNative]::ProductState($Expected.ProductCode) -eq 5
+    ) `
         'Expected fixture is not fully installed.'
-    Assert-Upgrade ((Get-ComProperty $installer ProductState @($Absent.ProductCode)) -eq -1) `
+    Assert-Upgrade (
+        [PeggyMsiNative]::ProductState($Absent.ProductCode) -eq -1
+    ) `
         "Unexpected registration remains for $($Absent.ProductCode)."
-    Assert-Upgrade ((Get-ComProperty $installer ProductInfo @($Expected.ProductCode, 'VersionString')) -eq
-        $Expected.Version) 'Registered version differs from the MSI.'
-    $location = [string](Get-ComProperty $installer ProductInfo @($Expected.ProductCode, 'InstallLocation'))
+    Assert-Upgrade (
+        [PeggyMsiNative]::ProductInfo(
+            $Expected.ProductCode,
+            'VersionString') -eq $Expected.Version
+    ) 'Registered version differs from the MSI.'
+    $location = [string][PeggyMsiNative]::ProductInfo(
+        $Expected.ProductCode,
+        'InstallLocation')
     Assert-Upgrade ($location.TrimEnd('\') -eq $installRoot) 'Registered installation location is not isolated.'
 }
 
@@ -744,7 +757,6 @@ $dataRoot = Join-Path $runRoot 'user-data'
 $registryKey = "Software\PeggyUpgradeTests\$namespace"
 $fixtureUpgradeCode = Get-NamespacedGuid upgrade $stableUpgradeCode
 $manifestPath = Join-Path $runRoot 'manifest.json'
-$installer = $null
 $previous = $null
 $candidate = $null
 $manifest = [ordered]@{
@@ -759,7 +771,6 @@ try {
     $previousHashes = if ($PreviousPayloadDirectory) {
         Get-TreeHashes (Resolve-Path -LiteralPath $PreviousPayloadDirectory).Path
     } else { $null }
-    $installer = New-Object -ComObject WindowsInstaller.Installer
     Assert-Upgrade (@(Get-RelatedFixtureProducts).Count -eq 0) 'Generated fixture UpgradeCode is already registered.'
     $previous = New-MsiFixture $previousPath (Join-Path $runRoot 'previous-fixture.msi')
     $candidate = New-MsiFixture $candidatePath (Join-Path $runRoot 'candidate-fixture.msi')
@@ -883,6 +894,4 @@ try {
         }
     }
     throw $failure
-} finally {
-    Release-Com $installer
 }

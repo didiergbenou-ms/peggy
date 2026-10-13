@@ -47,7 +47,7 @@ NONNEGOTIABLE DECISIONS
 - Peggy invokes the standalone WorkIQ executable as a child process.
 - Peggy production code does not call Microsoft Graph directly.
 - WorkIQ performs Microsoft 365 and Graph access behind its CLI and MCP tools.
-- Microsoft To Do uses Classic Outlook COM locally.
+- Microsoft To Do uses the existing WorkIQ connection.
 - Automatic Teams discovery must not use WorkIQ ask as an authoritative feed.
 - Alerts require an exact, compatible source message link.
 - Unverified, stale, or ambiguous Teams results must be withheld.

@@ -81,6 +81,17 @@ internal static class SetupLogCollectorSmokeTests
         $ast = [Management.Automation.Language.Parser]::ParseFile(
             $CollectorPath, [ref]$tokens, [ref]$errors)
         Assert-SetupLog ($errors.Count -eq 0) 'Collector script must parse.'
+        $comActivation = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -eq 'New-Object' -and
+                @($node.CommandElements | Where-Object {
+                    $_ -is [Management.Automation.Language.CommandParameterAst] -and
+                        $_.ParameterName -ieq 'ComObject'
+                }).Count -gt 0
+        }, $true))
+        Assert-SetupLog ($comActivation.Count -eq 0) `
+            'Collector must not use COM object activation.'
         $functions = @{}
         foreach ($name in @(
             'Protect-Text', 'Remove-CredentialText', 'Write-TextFile', 'Write-JsonFile',

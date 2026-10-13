@@ -2605,6 +2605,184 @@ static object CreateFakeActionResponse(
             userPrincipalName = PeggyDefaults.ConfiguredWorkIqAccount
         };
     }
+    else if (command == "fetch" &&
+             url.StartsWith(
+                 "/me/todo/lists?",
+                 StringComparison.Ordinal))
+    {
+        response = new
+        {
+            value = new[]
+            {
+                new
+                {
+                    id = "todo-default-list",
+                    displayName = "Tasks",
+                    wellknownListName = "defaultList"
+                }
+            }
+        };
+    }
+    else if (command == "fetch" &&
+             url.StartsWith(
+                 "/me/todo/lists/todo-default-list/tasks?",
+                 StringComparison.Ordinal))
+    {
+        var pagingScenario = Environment.GetEnvironmentVariable(
+            "PEGGY_FAKE_TODO_PAGING_SCENARIO");
+        if (string.Equals(
+                pagingScenario,
+                "cross-resource",
+                StringComparison.Ordinal))
+        {
+            response = FakeTodoPage(
+                [
+                    FakeTodoTask(
+                        "todo-open",
+                        "Open task",
+                        "notStarted",
+                        "2030-01-03T00:00:00.0000000")
+                ],
+                "https://graph.microsoft.com/v1.0/me/messages");
+        }
+        else if (string.Equals(
+                     pagingScenario,
+                     "repeat",
+                     StringComparison.Ordinal))
+        {
+            response = FakeTodoPage(
+                [],
+                "https://graph.microsoft.com/v1.0/me/todo/lists/" +
+                "todo-default-list/tasks?$top=100&$select=id,title,status,dueDateTime");
+        }
+        else if (url.Contains("%24skiptoken=page-2", StringComparison.Ordinal))
+        {
+            response = new
+            {
+                value = new[]
+                {
+                    FakeTodoTask(
+                        "todo-done",
+                        "Completed task",
+                        "completed",
+                        null)
+                }
+            };
+        }
+        else
+        {
+            response = FakeTodoPage(
+                [
+                    FakeTodoTask(
+                        "todo-open",
+                        "Open task",
+                        "notStarted",
+                        "2030-01-03T00:00:00.0000000")
+                ],
+                "https://graph.microsoft.com/v1.0/me/todo/lists/" +
+                "todo-default-list/tasks?$skiptoken=page-2");
+        }
+    }
+    else if (command == "create" &&
+             string.Equals(
+                 url,
+                 "/me/todo/lists/todo-default-list/tasks",
+                 StringComparison.Ordinal))
+    {
+        RequireFakeBody(
+            body,
+            "\"title\":\"Created To Do\"",
+            "\"content\":\"Created note\"",
+            "\"dateTime\":\"2030-01-03T00:00:00.0000000\"");
+        response = new { id = "todo-created" };
+    }
+    else if (command == "fetch" &&
+             url.StartsWith(
+                 "/me/todo/lists/todo-default-list/tasks/todo-created?",
+                 StringComparison.Ordinal))
+    {
+        response = FakeTodoTask(
+            "todo-created",
+            "Created To Do",
+            "notStarted",
+            "2030-01-03T00:00:00.0000000",
+            "Created note");
+    }
+    else if (command == "update" &&
+             url.StartsWith(
+                 "/me/todo/lists/todo-default-list/tasks/todo-updated",
+                 StringComparison.Ordinal))
+    {
+        RequireFakeBody(
+            body,
+            "\"title\":\"Updated To Do\"",
+            "\"content\":\"Updated note\"",
+            "\"dateTime\":\"2030-01-04T00:00:00.0000000\"");
+        response = new { };
+    }
+    else if (command == "fetch" &&
+             url.StartsWith(
+                 "/me/todo/lists/todo-default-list/tasks/todo-updated?",
+                 StringComparison.Ordinal))
+    {
+        response = FakeTodoTask(
+            "todo-updated",
+            "Updated To Do",
+            "notStarted",
+            "2030-01-04T00:00:00.0000000",
+            "Updated note");
+    }
+    else if (command == "update" &&
+             url.StartsWith(
+                 "/me/todo/lists/todo-default-list/tasks/todo-completed",
+                 StringComparison.Ordinal))
+    {
+        RequireFakeBody(body, "\"status\":\"completed\"");
+        response = new { };
+    }
+    else if (command == "fetch" &&
+             url.StartsWith(
+                 "/me/todo/lists/todo-default-list/tasks/todo-completed?",
+                 StringComparison.Ordinal))
+    {
+        response = FakeTodoTask(
+            "todo-completed",
+            "Completed by action",
+            "completed",
+            null);
+    }
+    else if (command == "delete" &&
+             url.StartsWith(
+                 "/me/todo/lists/todo-default-list/tasks/todo-deleted",
+                 StringComparison.Ordinal))
+    {
+        if (!string.IsNullOrWhiteSpace(body))
+        {
+            throw new InvalidOperationException(
+                "To Do delete unexpectedly included a request body.");
+        }
+        response = new { };
+    }
+    else if (command == "fetch" &&
+             url.StartsWith(
+                 "/me/todo/lists/todo-default-list/tasks/todo-deleted?",
+                 StringComparison.Ordinal))
+    {
+        response = new
+        {
+            results = new[]
+            {
+                new
+                {
+                    statusCode = 404,
+                    error = new
+                    {
+                        message = "ErrorItemNotFound"
+                    }
+                }
+            }
+        };
+    }
     else if (command == "update" &&
              url.StartsWith(
                  "/me/messages/mark-id",
@@ -3658,4 +3836,40 @@ static object FakeCalendarEvent(
             }
         }),
         isCancelled
+    };
+
+static object FakeTodoTask(
+    string id,
+    string title,
+    string status,
+    string? dueDateTime,
+    string? body = null)
+    => new
+    {
+        id,
+        title,
+        status,
+        body = body is null
+            ? null
+            : new
+            {
+                content = body,
+                contentType = "text"
+            },
+        dueDateTime = dueDateTime is null
+            ? null
+            : new
+            {
+                dateTime = dueDateTime,
+                timeZone = "UTC"
+            }
+    };
+
+static object FakeTodoPage(
+    object[] value,
+    string nextLink)
+    => new Dictionary<string, object?>
+    {
+        ["value"] = value,
+        ["@odata.nextLink"] = nextLink
     };

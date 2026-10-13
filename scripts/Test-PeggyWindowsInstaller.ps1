@@ -18,6 +18,7 @@ Add-Type -AssemblyName System.Drawing
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'PeggyInstallerVersion.ps1')
+. (Join-Path $PSScriptRoot 'PeggyMsiNative.ps1')
 $versionInfo = ConvertTo-PeggyInstallerVersion -Version $Version
 $assetNames = $versionInfo.AssetNames
 $artifactRoot = (Resolve-Path -LiteralPath $ArtifactDirectory).Path
@@ -96,58 +97,31 @@ function Get-MsiRows {
         [Parameter(Mandatory)][string]$Query
     )
 
-    $view = $Database.GetType().InvokeMember(
-        'OpenView',
-        'InvokeMethod',
-        $null,
-        $Database,
-        @($Query))
+    $view = [PeggyMsiNative]::OpenView($Database, $Query)
     try {
-        $view.GetType().InvokeMember(
-            'Execute',
-            'InvokeMethod',
-            $null,
-            $view,
-            $null) | Out-Null
+        [PeggyMsiNative]::ExecuteView($view)
         $rows = @()
-        while ($record = $view.GetType().InvokeMember(
-                'Fetch',
-                'InvokeMethod',
-                $null,
-                $view,
-                $null)) {
-            $fieldCount = $record.GetType().InvokeMember(
-                'FieldCount',
-                'GetProperty',
-                $null,
-                $record,
-                $null)
-            $values = @()
-            for ($index = 1; $index -le $fieldCount; $index++) {
-                $values += [string]$record.GetType().InvokeMember(
-                    'StringData',
-                    'GetProperty',
-                    $null,
-                    $record,
-                    @($index))
+        while ($true) {
+            $record = [IntPtr]::Zero
+            if (-not [PeggyMsiNative]::Fetch($view, [ref]$record)) {
+                break
             }
-            $rows += ,$values
-            [Runtime.InteropServices.Marshal]::FinalReleaseComObject(
-                $record) | Out-Null
+            $values = @()
+            try {
+                $fieldCount = [PeggyMsiNative]::FieldCount($record)
+                for ($index = 1; $index -le $fieldCount; $index++) {
+                    $values += [PeggyMsiNative]::RecordString(
+                        $record,
+                        $index)
+                }
+                $rows += ,$values
+            } finally {
+                [PeggyMsiNative]::Close($record)
+            }
         }
         return $rows
     } finally {
-        try {
-            $view.GetType().InvokeMember(
-                'Close',
-                'InvokeMethod',
-                $null,
-                $view,
-                $null) | Out-Null
-        } finally {
-            [Runtime.InteropServices.Marshal]::FinalReleaseComObject(
-                $view) | Out-Null
-        }
+        [PeggyMsiNative]::Close($view)
     }
 }
 
@@ -279,19 +253,17 @@ foreach ($binary in @($peggyBinaries) + @($helperBinaries)) {
         "Release binary '$($binary.FullName)' does not have FileVersion $($versionInfo.FileVersion)."
 }
 
-$installer = New-Object -ComObject WindowsInstaller.Installer
-$summary = $installer.SummaryInformation([string]$msiPath, 0)
+$database = [PeggyMsiNative]::OpenDatabase([string]$msiPath, 0)
 try {
-    Assert-Installer `
-        ($summary.Property(7) -eq 'x64;1033' -and
-            [int]$summary.Property(14) -eq 500) `
-        'MSI summary is not Windows x64 with InstallerVersion 500.'
-} finally {
-    [Runtime.InteropServices.Marshal]::FinalReleaseComObject(
-        $summary) | Out-Null
-}
-$database = $installer.OpenDatabase([string]$msiPath, 0)
-try {
+    $summary = [PeggyMsiNative]::OpenSummary($database, 0)
+    try {
+        Assert-Installer `
+            ([PeggyMsiNative]::SummaryProperty($summary, 7) -eq 'x64;1033' -and
+                [int][PeggyMsiNative]::SummaryProperty($summary, 14) -eq 500) `
+            'MSI summary is not Windows x64 with InstallerVersion 500.'
+    } finally {
+        [PeggyMsiNative]::Close($summary)
+    }
     $properties = @{}
     foreach ($row in Get-MsiRows `
             -Database $database `
@@ -565,10 +537,7 @@ try {
         }).Count -eq 0) `
         'MSI contains an unsafe broad directory removal.'
 } finally {
-    [Runtime.InteropServices.Marshal]::FinalReleaseComObject(
-        $database) | Out-Null
-    [Runtime.InteropServices.Marshal]::FinalReleaseComObject(
-        $installer) | Out-Null
+    [PeggyMsiNative]::Close($database)
 }
 
 $validationRoot = Join-Path $artifactRoot 'validation'

@@ -781,13 +781,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
         CancellationToken ct = default)
     {
         await GetCurrentUserIdAsync(ct);
-        if (!OperatingSystem.IsWindows())
-        {
-            throw new PlatformNotSupportedException(
-                "Microsoft To Do task access requires Windows.");
-        }
-
-        return await new OutlookTaskClient(_outlookAccount).ListAsync(
+        return await new WorkIqTaskClient(_client).ListAsync(
             includeCompleted,
             limit,
             ct);
@@ -1399,17 +1393,7 @@ public sealed class WorkIqMessageProvider : IMessageProvider
     private async Task<WorkActionExecutionResult> ExecuteTaskActionAsync(
         WorkActionRequest request,
         CancellationToken ct)
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            throw new PlatformNotSupportedException(
-                "Microsoft To Do task actions require Windows.");
-        }
-
-        return await new OutlookTaskClient(_outlookAccount).ExecuteAsync(
-            request,
-            ct);
-    }
+        => await new WorkIqTaskClient(_client).ExecuteAsync(request, ct);
 
     private async Task<WorkActionExecutionResult> DeleteEmailMessageAsync(
         WorkActionRequest request,

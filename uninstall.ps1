@@ -70,6 +70,37 @@ function Test-SamePath {
     }
 }
 
+function Test-ShortcutTargetsExecutable {
+    param(
+        [Parameter(Mandatory)][string]$ShortcutPath,
+        [Parameter(Mandatory)][string]$Executable
+    )
+
+    $bytes = [IO.File]::ReadAllBytes($ShortcutPath)
+    foreach ($encoding in @(
+            [Text.Encoding]::Unicode,
+            [Text.Encoding]::Default
+        )) {
+        $needle = $encoding.GetBytes($Executable)
+        if ($needle.Length -eq 0 -or $needle.Length -gt $bytes.Length) {
+            continue
+        }
+        for ($offset = 0; $offset -le $bytes.Length - $needle.Length; $offset++) {
+            $matches = $true
+            for ($index = 0; $index -lt $needle.Length; $index++) {
+                if ($bytes[$offset + $index] -ne $needle[$index]) {
+                    $matches = $false
+                    break
+                }
+            }
+            if ($matches) {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
 function Test-PathInsideDirectory {
     param(
         [string]$Path,
@@ -285,9 +316,9 @@ $programsDirectory = [Environment]::GetFolderPath(
 )
 $shortcutPath = Join-Path $programsDirectory 'Peggy.lnk'
 if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcutTarget = $shell.CreateShortcut($shortcutPath).TargetPath
-    if (Test-SamePath -Left $shortcutTarget -Right $installedExecutable) {
+    if (Test-ShortcutTargetsExecutable `
+            -ShortcutPath $shortcutPath `
+            -Executable $installedExecutable) {
         $targetsFound++
         if ($PSCmdlet.ShouldProcess($shortcutPath, 'Remove Start menu shortcut')) {
             Write-Step 'Removing Start menu shortcut'
@@ -297,8 +328,8 @@ if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
         }
     } else {
         Write-Warning (
-            'The Peggy Start menu shortcut targets another executable and was ' +
-            'preserved.'
+            'The Peggy Start menu shortcut could not be verified without shell ' +
+            'automation and was preserved.'
         )
     }
 }

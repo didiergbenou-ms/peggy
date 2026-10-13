@@ -105,7 +105,8 @@ jobs:
             @{ Tag = "v0.1.13"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.13").AssetNames.Bundle },
             @{ Tag = "v0.1.14-beta.1"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.14-beta.1").AssetNames.Bundle },
             @{ Tag = "v0.1.14-beta.2"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.14-beta.2").AssetNames.Bundle },
-            @{ Tag = "v0.1.14-beta.3"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.14-beta.3").AssetNames.Bundle }
+            @{ Tag = "v0.1.14-beta.3"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.14-beta.3").AssetNames.Bundle },
+            @{ Tag = "v0.1.14-beta.4"; Bundle = (ConvertTo-PeggyInstallerVersion -Version "v0.1.14-beta.4").AssetNames.Bundle }
           )
           foreach ($baselineRelease in $baselines) {
             $baselineTag = $baselineRelease.Tag

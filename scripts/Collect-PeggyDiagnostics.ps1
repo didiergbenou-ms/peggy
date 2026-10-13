@@ -9,10 +9,6 @@ param(
     [switch]$RunWorkIqTests,
     [ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')]
     [string]$WorkIqAccount,
-    [ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')]
-    [string]$EmailTo = 'didiergbenou@microsoft.com',
-    [switch]$NoEmail,
-    [switch]$SendWithoutPrompt,
     [ValidateRange(100, 10000)]
     [int]$LogTailLines = 2000
 )
@@ -1233,82 +1229,6 @@ function Invoke-WorkIqDiagnosticProbe {
     }
 }
 
-function Send-DiagnosticEmail {
-    param(
-        [Parameter(Mandatory)][string]$AttachmentPath,
-        [Parameter(Mandatory)][string]$Recipient,
-        [Parameter(Mandatory)][string]$CollectedAt,
-        [switch]$WithoutPrompt
-    )
-
-    if (-not $WithoutPrompt) {
-        Write-Host ''
-        Write-Host (
-            'The ZIP contains detailed Peggy and WorkIQ diagnostics, ' +
-            'including account identifiers, folder metadata, and raw ' +
-            'technical output. Credentials and tokens are excluded.'
-        )
-        Write-Host "Recipient: $Recipient"
-        $confirmation = Read-Host (
-            "Type SEND to email the diagnostic ZIP, or press Enter to keep " +
-            'it locally'
-        )
-        if ($confirmation -cne 'SEND') {
-            Write-Host 'Diagnostic email was not sent.'
-            return $false
-        }
-    }
-
-    $outlook = $null
-    $mail = $null
-    $attachments = $null
-    $attachment = $null
-    try {
-        $outlook = New-Object -ComObject Outlook.Application
-        $mail = $outlook.CreateItem(0)
-        $mail.To = $Recipient
-        $mail.Subject = "Peggy diagnostics $CollectedAt"
-        $mail.Body = @(
-            'Hello,'
-            ''
-            "Attached is a Peggy diagnostic bundle generated at $CollectedAt."
-            ''
-            'The collector includes detailed account, configuration, folder, ' +
-                'and raw technical error information. Credentials, tokens, ' +
-                'customer message bodies, and files are excluded.'
-        ) -join [Environment]::NewLine
-        $attachments = $mail.Attachments
-        $attachment = $attachments.Add(
-            (Resolve-Path -LiteralPath $AttachmentPath).Path
-        )
-        $mail.Send()
-        Write-Host "Diagnostic ZIP emailed to $Recipient."
-        return $true
-    }
-    catch {
-        throw (
-            "The diagnostic ZIP was created, but classic Outlook could not " +
-            "email it to $Recipient. The ZIP remains at '$AttachmentPath'. " +
-            "Error: $($_.Exception.Message)"
-        )
-    }
-    finally {
-        foreach ($comObject in @(
-                $attachment,
-                $attachments,
-                $mail,
-                $outlook
-            )) {
-            if ($null -ne $comObject -and
-                [Runtime.InteropServices.Marshal]::IsComObject($comObject)) {
-                [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject(
-                    $comObject
-                )
-            }
-        }
-    }
-}
-
 function Get-CollectorMetadata {
     $metadata = [ordered]@{
         SchemaVersion = 2
@@ -2175,12 +2095,4 @@ Write-Host ''
 Write-Host 'Peggy diagnostic ZIP created:'
 Write-Host "  $zipPath"
 Write-Host ''
-Write-Host 'Review the ZIP before sharing it.'
-
-if (-not $NoEmail) {
-    [void](Send-DiagnosticEmail `
-        -AttachmentPath $zipPath `
-        -Recipient $EmailTo `
-        -CollectedAt $timestamp `
-        -WithoutPrompt:$SendWithoutPrompt)
-}
+Write-Host 'The ZIP remains local. Review it before sharing.'

@@ -189,8 +189,7 @@ public static class WorkActionPolicy
                 "Delete the selected Outlook message. Outlook may retain it in " +
                 "Deleted Items according to mailbox policy.",
             WorkActionKind.DeleteTask =>
-                "Delete the selected Microsoft To Do task. Outlook may retain it " +
-                "in Deleted Items according to mailbox policy.",
+                "Delete the selected Microsoft To Do task.",
             _ => throw new InvalidOperationException(
                 $"Unsupported work action '{request.Kind}'.")
         };

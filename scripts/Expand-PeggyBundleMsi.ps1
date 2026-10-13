@@ -83,6 +83,7 @@ function Invoke-PeggyBundleExtraction {
 
 if (-not $IsWindows) { throw 'Bundle inspection requires Windows and Windows Installer.' }
 . (Join-Path $PSScriptRoot 'PeggyInstallerVersion.ps1')
+. (Join-Path $PSScriptRoot 'PeggyMsiNative.ps1')
 $versionInfo = ConvertTo-PeggyInstallerVersion -Version $Version
 $bundle = Get-Item -LiteralPath $BundlePath
 if ($bundle.PSIsContainer -or $bundle.Extension -ine '.exe') {
@@ -112,19 +113,25 @@ if ($msis.Count -ne 1 -or $msis[0].Name -cne 'peggy-win-x64.msi') {
     throw 'The setup bundle must contain exactly one MSI named peggy-win-x64.msi.'
 }
 
-$installer = $database = $view = $null
+$database = [IntPtr]::Zero
+$view = [IntPtr]::Zero
 try {
-    $installer = New-Object -ComObject WindowsInstaller.Installer
-    $database = $installer.OpenDatabase($msis[0].FullName, 0)
-    $view = $database.OpenView('SELECT `Property`, `Value` FROM `Property`')
-    [void]$view.Execute()
+    $database = [PeggyMsiNative]::OpenDatabase($msis[0].FullName, 0)
+    $view = [PeggyMsiNative]::OpenView(
+        $database,
+        'SELECT `Property`, `Value` FROM `Property`')
+    [PeggyMsiNative]::ExecuteView($view)
     $properties = @{}
-    while ($record = $view.Fetch()) {
+    while ($true) {
+        $record = [IntPtr]::Zero
+        if (-not [PeggyMsiNative]::Fetch($view, [ref]$record)) {
+            break
+        }
         try {
-            $name = $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, @(1))
-            $properties[$name] = $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, @(2))
+            $name = [PeggyMsiNative]::RecordString($record, 1)
+            $properties[$name] = [PeggyMsiNative]::RecordString($record, 2)
         } finally {
-            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record)
+            [PeggyMsiNative]::Close($record)
         }
     }
     $expected = @{
@@ -139,14 +146,11 @@ try {
         }
     }
 } finally {
-    try {
-        if ($null -ne $view) { [void]$view.Close() }
-    } finally {
-        foreach ($object in @($view, $database, $installer)) {
-            if ($null -ne $object) {
-                [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($object)
-            }
-        }
+    if ($view -ne [IntPtr]::Zero) {
+        [PeggyMsiNative]::Close($view)
+    }
+    if ($database -ne [IntPtr]::Zero) {
+        [PeggyMsiNative]::Close($database)
     }
 }
 
