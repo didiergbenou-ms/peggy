@@ -16,17 +16,15 @@ remain in a separate local process.
 
 ## Get started
 
-Peggy v0.1.13 uses one **Peggy setup** window for prerequisites, installation,
+Peggy v0.1.14 uses one **Peggy setup** window for prerequisites, installation,
 account connection, and optional voice.
 
-**Beta preview: [v0.1.14-beta.5](https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.14-beta.5).**
-This beta removes COM automation from Peggy, routes Microsoft To Do through the
+**Latest release: [v0.1.14](https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.14).**
+This release removes COM automation from Peggy, routes Microsoft To Do through the
 existing WorkIQ connection, and keeps diagnostic ZIPs local instead of emailing
-them through Outlook. It retains beta.4's recipient-aware Teams classification,
+them through Outlook. It includes beta.4's recipient-aware Teams classification,
 beta.3's reply/like suppression without a second LLM call, verified upgrade
-relaunch and release-workflow recovery. To try it, download
-`peggy-v0.1.14-beta.5-win-x64-setup.exe` from the beta release page.
-The latest stable release and the installation examples below remain v0.1.13.
+relaunch and release-workflow recovery.
 
 1. **Check access and prerequisites.** You need Windows x64, GitHub Copilot
    access, and a Microsoft 365 work account with a Work IQ usage-based billing
@@ -36,9 +34,9 @@ The latest stable release and the installation examples below remain v0.1.13.
 2. **Download and install Peggy.** Open the
    [latest release](https://github.com/didiergbenou-ms/peggy/releases/latest)
    with a GitHub account that can access this private repository. Download
-   `peggy-v0.1.13-win-x64-setup.exe` (or the corresponding filename for your
-   chosen release). For stable v0.1.13, quit Peggy first; beta.2 can close it safely
-   when you choose **Install / update**. Run setup normally from your desktop,
+   `peggy-v0.1.14-win-x64-setup.exe` (or the corresponding filename for your
+   chosen release). Peggy can close a verified running installation safely when
+   you choose **Install / update**. Run setup normally from your desktop,
    not as administrator. Its prerequisite checklist offers explicit
    install/update actions. Packages are **not Authenticode-signed**; Windows
    SmartScreen may warn about an unknown publisher. Follow your organization's
@@ -499,9 +497,10 @@ Peggy resolves standalone WorkIQ in this order:
 
 #### One-window setup
 
-Run `peggy-v0.1.13-win-x64-setup.exe` normally from your own Windows
-desktop, not **Run as administrator**. Quit a running Peggy instance before
-continuing; the setup window offers Retry instead of stopping Peggy for you.
+Run `peggy-v0.1.14-win-x64-setup.exe` normally from your own Windows
+desktop, not **Run as administrator**. You may leave Peggy running while setup
+checks requirements; choosing **Install / update Peggy** requests a verified,
+graceful shutdown before installation.
 
 The same Peggy window stays open through:
 
@@ -537,9 +536,9 @@ the unified installation window belongs to the setup EXE.
 The
 [latest GitHub Release](https://github.com/didiergbenou-ms/peggy/releases/latest)
 offers two current-user installation paths. All download filenames include
-the release tag; the examples below use `v0.1.13` (substitute your chosen release):
+the release tag; the examples below use `v0.1.14` (substitute your chosen release):
 
-1. **`peggy-v0.1.13-win-x64-setup.exe` (recommended)** opens the unified Peggy
+1. **`peggy-v0.1.14-win-x64-setup.exe` (recommended)** opens the unified Peggy
    setup window
    for PowerShell 7, Node.js 18 with npm, and GitHub Copilot CLI 1.0.81 or later
    before installing the embedded MSI. Each requirement shows its status,
@@ -547,8 +546,8 @@ the release tag; the examples below use `v0.1.13` (substitute your chosen releas
    **Install/Update/Repair** actions. Vendor consent and elevation remain
    visible; dependencies are never installed silently. If WinGet is unavailable,
    use the shown official download address or
-   `peggy-v0.1.13-install.ps1 -InstallPrerequisites`.
-2. **`peggy-v0.1.13-install.ps1`** retains the existing checksum-verified ZIP path, optional
+   `peggy-v0.1.14-install.ps1 -InstallPrerequisites`.
+2. **`peggy-v0.1.14-install.ps1`** retains the existing checksum-verified ZIP path, optional
    WinGet prerequisite installation, and optional speech-model download.
 
 The setup EXE is the downloadable Windows installer. The standalone MSI and its
@@ -620,19 +619,19 @@ retain the installer logs and seek support if an upgrade fails.
 Interactive installation:
 
 ```powershell
-.\peggy-v0.1.13-win-x64-setup.exe
+.\peggy-v0.1.14-win-x64-setup.exe
 ```
 
 Unattended installation:
 
 ```powershell
-.\peggy-v0.1.13-win-x64-setup.exe /quiet /norestart
+.\peggy-v0.1.14-win-x64-setup.exe /quiet /norestart
 ```
 
-For the script path, download `peggy-v0.1.13-install.ps1`, then run:
+For the script path, download `peggy-v0.1.14-install.ps1`, then run:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\peggy-v0.1.13-install.ps1 `
+powershell.exe -ExecutionPolicy Bypass -File .\peggy-v0.1.14-install.ps1 `
     -InstallPrerequisites
 ```
 
@@ -655,7 +654,7 @@ Add `-SkipSpeechModels` to install without the local voice models, or
 `-NoLaunch` to install without starting Peggy. The former
 `-InstallSpeechModels` switch remains accepted for compatibility. Use
 `-Version <release-tag>` to install a specific published release (for example,
-`-Version v0.1.13`). The script still defaults to the latest stable release,
+`-Version v0.1.14`). The script still defaults to the latest stable release,
 regardless of its own filename. It selects the ZIP and checksum together from
 the resolved release, including authenticated GitHub CLI retries. Older tags
 with the legacy `peggy-win-x64.zip` / `peggy-win-x64.sha256` pair remain supported;
@@ -669,9 +668,9 @@ the token.
 The package and checksum can also be downloaded manually:
 
 ```powershell
-.\peggy-v0.1.13-install.ps1 `
-    -PackagePath .\peggy-v0.1.13-win-x64.zip `
-    -ChecksumPath .\peggy-v0.1.13-win-x64.sha256
+.\peggy-v0.1.14-install.ps1 `
+    -PackagePath .\peggy-v0.1.14-win-x64.zip `
+    -ChecksumPath .\peggy-v0.1.14-win-x64.sha256
 ```
 
 When `-ChecksumPath` is omitted, the script uses the ZIP's basename with a
@@ -684,7 +683,7 @@ directories are unchanged.
 Use **Installed Apps**, or uninstall a setup-EXE installation unattended:
 
 ```powershell
-.\peggy-v0.1.13-win-x64-setup.exe /uninstall /quiet /norestart
+.\peggy-v0.1.14-win-x64-setup.exe /uninstall /quiet /norestart
 ```
 
 For an existing direct-MSI installation, use **Installed Apps**.
@@ -718,7 +717,7 @@ powershell.exe -ExecutionPolicy Bypass -File `
 Use `-WhatIf` to preview the cleanup. Shared prerequisites such as PowerShell 7,
 Node.js, GitHub Copilot CLI, and WorkIQ are not removed. An uninstaller run from
 a custom installation directory detects that directory automatically; a
-standalone release copy (`peggy-v0.1.13-uninstall.ps1`) can target it with
+standalone release copy (`peggy-v0.1.14-uninstall.ps1`) can target it with
 `-InstallDirectory`.
 
 ### First-run setup
@@ -790,7 +789,7 @@ tray icon or the desktop mascot opens the same menu. Double-clicking the tray
 icon opens the Alert Center.
 
 The Alerts header shows the semantic release version beside Peggy. **Help →
-About** shows the same version (for example, `v0.1.13`) and lets you copy it.
+About** shows the same version (for example, `v0.1.14`) and lets you copy it.
 
 ### Tray menu
 
@@ -1079,14 +1078,14 @@ git push origin v0.1.0
 The release workflow runs the regression suite, builds with pinned WiX Toolset
 6.0.2 packages, performs MSI database and administrative-image validation, and
 requires isolated in-place upgrade and rollback regressions before publishing
-six versioned assets (shown for `v0.1.13`):
+six versioned assets (shown for `v0.1.14`):
 
-- `peggy-v0.1.13-win-x64.zip`, a self-contained package for Windows x64.
-- `peggy-v0.1.13-win-x64.sha256`, the package checksum used by `install.ps1`.
-- `peggy-v0.1.13-win-x64-setup.exe` and `peggy-v0.1.13-win-x64-setup.exe.sha256`, the WiX Burn
+- `peggy-v0.1.14-win-x64.zip`, a self-contained package for Windows x64.
+- `peggy-v0.1.14-win-x64.sha256`, the package checksum used by `install.ps1`.
+- `peggy-v0.1.14-win-x64-setup.exe` and `peggy-v0.1.14-win-x64-setup.exe.sha256`, the WiX Burn
   prerequisite-checking bootstrapper and its checksum.
-- `peggy-v0.1.13-install.ps1`, the current-user bootstrap installer.
-- `peggy-v0.1.13-uninstall.ps1`, the current-user uninstaller.
+- `peggy-v0.1.14-install.ps1`, the current-user bootstrap installer.
+- `peggy-v0.1.14-uninstall.ps1`, the current-user uninstaller.
 
 The MSI and its checksum are still generated locally for validation and bundling,
 but are excluded from published assets. The setup EXE embeds the validated MSI.
@@ -1122,9 +1121,9 @@ For example, `v0.1.11-beta.1` uses MSI `0.1.1130` and file version
 For `v0.1.13`, MSI uses `0.1.1399` and binaries use `0.1.1399.0`, above
 beta.1's `0.1.1330.0`; the Alerts header and About dialog still display the
 semantic version `v0.1.13`.
-The `v0.1.14-beta.5` preview uses MSI `0.1.1434` and binary file version
-`0.1.1434.0`, above beta.4's `0.1.1433.0`, beta.3's `0.1.1432.0` and stable
-v0.1.13; its user-facing version retains `-beta.5`.
+For `v0.1.14`, MSI uses `0.1.1499` and binaries use `0.1.1499.0`, above
+beta.4's `0.1.1433.0` and stable v0.1.13; its user-facing version is
+`v0.1.14`.
 Semantic prerelease labels alone do not change .NET's default file version.
 
 WiX ICE custom actions can be blocked by policy in non-elevated build
