@@ -92,6 +92,15 @@ internal static class SetupLogCollectorSmokeTests
         }, $true))
         Assert-SetupLog ($comActivation.Count -eq 0) `
             'Collector must not use COM object activation.'
+        $copilotArguments = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.StringConstantExpressionAst] -and
+                $node.Value -in @('--no-remote', '--no-remote-export')
+        }, $true) | ForEach-Object Value)
+        Assert-SetupLog ($copilotArguments -notcontains '--no-remote') `
+            'Collector must not pass the removed Copilot --no-remote option.'
+        Assert-SetupLog ($copilotArguments -contains '--no-remote-export') `
+            'Collector must disable remote Copilot session export.'
         $functions = @{}
         foreach ($name in @(
             'Protect-Text', 'Remove-CredentialText', 'Write-TextFile', 'Write-JsonFile',

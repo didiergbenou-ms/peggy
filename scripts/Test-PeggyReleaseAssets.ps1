@@ -106,7 +106,7 @@ function gh {
 $scratch = Join-Path $repoRoot ('artifacts\release-assets-test-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch -Force | Out-Null
 try {
-    foreach ($version in @('v0.1.11', '0.1.11', 'v0.1.12', 'v0.1.14-beta.1', 'v0.1.14-beta.2', 'v0.1.14-beta.3', 'v0.1.14-beta.4', 'v0.1.14', 'v1.2.3-beta.2')) {
+    foreach ($version in @('v0.1.11', '0.1.11', 'v0.1.12', 'v0.1.14-beta.1', 'v0.1.14-beta.2', 'v0.1.14-beta.3', 'v0.1.14-beta.4', 'v0.1.14', 'v0.1.15', 'v1.2.3-beta.2')) {
         $info = ConvertTo-PeggyInstallerVersion -Version $version
         $names = $info.AssetNames
         $tag = if ($version.StartsWith('v')) { $version } else { "v$version" }

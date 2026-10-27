@@ -1841,7 +1841,6 @@ try {
                         '--silent',
                         '--disable-builtin-mcps',
                         '--no-custom-instructions',
-                        '--no-remote',
                         '--no-remote-export'
                     ) `
                     -OverrideVariable 'PEGGY_COPILOT_PATH' `

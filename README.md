@@ -16,15 +16,15 @@ remain in a separate local process.
 
 ## Get started
 
-Peggy v0.1.14 uses one **Peggy setup** window for prerequisites, installation,
+Peggy v0.1.15 uses one **Peggy setup** window for prerequisites, installation,
 account connection, and optional voice.
 
-**Latest release: [v0.1.14](https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.14).**
-This release removes COM automation from Peggy, routes Microsoft To Do through the
-existing WorkIQ connection, and keeps diagnostic ZIPs local instead of emailing
-them through Outlook. It includes beta.4's recipient-aware Teams classification,
-beta.3's reply/like suppression without a second LLM call, verified upgrade
-relaunch and release-workflow recovery.
+**Latest release: [v0.1.15](https://github.com/didiergbenou-ms/peggy/releases/tag/v0.1.15).**
+This hotfix restores monitoring and Copilot-backed actions with GitHub Copilot
+CLI 1.0.103 or later by no longer passing its removed `--no-remote` option. It
+retains all v0.1.14 features, including WorkIQ-backed Microsoft To Do,
+recipient-aware Teams classification, local acknowledgment checks, verified
+upgrade relaunch, and local-only diagnostic ZIPs.
 
 1. **Check access and prerequisites.** You need Windows x64, GitHub Copilot
    access, and a Microsoft 365 work account with a Work IQ usage-based billing
@@ -34,7 +34,7 @@ relaunch and release-workflow recovery.
 2. **Download and install Peggy.** Open the
    [latest release](https://github.com/didiergbenou-ms/peggy/releases/latest)
    with a GitHub account that can access this private repository. Download
-   `peggy-v0.1.14-win-x64-setup.exe` (or the corresponding filename for your
+   `peggy-v0.1.15-win-x64-setup.exe` (or the corresponding filename for your
    chosen release). Peggy can close a verified running installation safely when
    you choose **Install / update**. Run setup normally from your desktop,
    not as administrator. Its prerequisite checklist offers explicit
@@ -497,7 +497,7 @@ Peggy resolves standalone WorkIQ in this order:
 
 #### One-window setup
 
-Run `peggy-v0.1.14-win-x64-setup.exe` normally from your own Windows
+Run `peggy-v0.1.15-win-x64-setup.exe` normally from your own Windows
 desktop, not **Run as administrator**. You may leave Peggy running while setup
 checks requirements; choosing **Install / update Peggy** requests a verified,
 graceful shutdown before installation.
@@ -536,9 +536,9 @@ the unified installation window belongs to the setup EXE.
 The
 [latest GitHub Release](https://github.com/didiergbenou-ms/peggy/releases/latest)
 offers two current-user installation paths. All download filenames include
-the release tag; the examples below use `v0.1.14` (substitute your chosen release):
+the release tag; the examples below use `v0.1.15` (substitute your chosen release):
 
-1. **`peggy-v0.1.14-win-x64-setup.exe` (recommended)** opens the unified Peggy
+1. **`peggy-v0.1.15-win-x64-setup.exe` (recommended)** opens the unified Peggy
    setup window
    for PowerShell 7, Node.js 18 with npm, and GitHub Copilot CLI 1.0.81 or later
    before installing the embedded MSI. Each requirement shows its status,
@@ -546,8 +546,8 @@ the release tag; the examples below use `v0.1.14` (substitute your chosen releas
    **Install/Update/Repair** actions. Vendor consent and elevation remain
    visible; dependencies are never installed silently. If WinGet is unavailable,
    use the shown official download address or
-   `peggy-v0.1.14-install.ps1 -InstallPrerequisites`.
-2. **`peggy-v0.1.14-install.ps1`** retains the existing checksum-verified ZIP path, optional
+   `peggy-v0.1.15-install.ps1 -InstallPrerequisites`.
+2. **`peggy-v0.1.15-install.ps1`** retains the existing checksum-verified ZIP path, optional
    WinGet prerequisite installation, and optional speech-model download.
 
 The setup EXE is the downloadable Windows installer. The standalone MSI and its
@@ -619,19 +619,19 @@ retain the installer logs and seek support if an upgrade fails.
 Interactive installation:
 
 ```powershell
-.\peggy-v0.1.14-win-x64-setup.exe
+.\peggy-v0.1.15-win-x64-setup.exe
 ```
 
 Unattended installation:
 
 ```powershell
-.\peggy-v0.1.14-win-x64-setup.exe /quiet /norestart
+.\peggy-v0.1.15-win-x64-setup.exe /quiet /norestart
 ```
 
-For the script path, download `peggy-v0.1.14-install.ps1`, then run:
+For the script path, download `peggy-v0.1.15-install.ps1`, then run:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\peggy-v0.1.14-install.ps1 `
+powershell.exe -ExecutionPolicy Bypass -File .\peggy-v0.1.15-install.ps1 `
     -InstallPrerequisites
 ```
 
@@ -654,7 +654,7 @@ Add `-SkipSpeechModels` to install without the local voice models, or
 `-NoLaunch` to install without starting Peggy. The former
 `-InstallSpeechModels` switch remains accepted for compatibility. Use
 `-Version <release-tag>` to install a specific published release (for example,
-`-Version v0.1.14`). The script still defaults to the latest stable release,
+`-Version v0.1.15`). The script still defaults to the latest stable release,
 regardless of its own filename. It selects the ZIP and checksum together from
 the resolved release, including authenticated GitHub CLI retries. Older tags
 with the legacy `peggy-win-x64.zip` / `peggy-win-x64.sha256` pair remain supported;
@@ -668,9 +668,9 @@ the token.
 The package and checksum can also be downloaded manually:
 
 ```powershell
-.\peggy-v0.1.14-install.ps1 `
-    -PackagePath .\peggy-v0.1.14-win-x64.zip `
-    -ChecksumPath .\peggy-v0.1.14-win-x64.sha256
+.\peggy-v0.1.15-install.ps1 `
+    -PackagePath .\peggy-v0.1.15-win-x64.zip `
+    -ChecksumPath .\peggy-v0.1.15-win-x64.sha256
 ```
 
 When `-ChecksumPath` is omitted, the script uses the ZIP's basename with a
@@ -683,7 +683,7 @@ directories are unchanged.
 Use **Installed Apps**, or uninstall a setup-EXE installation unattended:
 
 ```powershell
-.\peggy-v0.1.14-win-x64-setup.exe /uninstall /quiet /norestart
+.\peggy-v0.1.15-win-x64-setup.exe /uninstall /quiet /norestart
 ```
 
 For an existing direct-MSI installation, use **Installed Apps**.
@@ -717,7 +717,7 @@ powershell.exe -ExecutionPolicy Bypass -File `
 Use `-WhatIf` to preview the cleanup. Shared prerequisites such as PowerShell 7,
 Node.js, GitHub Copilot CLI, and WorkIQ are not removed. An uninstaller run from
 a custom installation directory detects that directory automatically; a
-standalone release copy (`peggy-v0.1.14-uninstall.ps1`) can target it with
+standalone release copy (`peggy-v0.1.15-uninstall.ps1`) can target it with
 `-InstallDirectory`.
 
 ### First-run setup
@@ -789,7 +789,7 @@ tray icon or the desktop mascot opens the same menu. Double-clicking the tray
 icon opens the Alert Center.
 
 The Alerts header shows the semantic release version beside Peggy. **Help →
-About** shows the same version (for example, `v0.1.14`) and lets you copy it.
+About** shows the same version (for example, `v0.1.15`) and lets you copy it.
 
 ### Tray menu
 
@@ -1078,14 +1078,14 @@ git push origin v0.1.0
 The release workflow runs the regression suite, builds with pinned WiX Toolset
 6.0.2 packages, performs MSI database and administrative-image validation, and
 requires isolated in-place upgrade and rollback regressions before publishing
-six versioned assets (shown for `v0.1.14`):
+six versioned assets (shown for `v0.1.15`):
 
-- `peggy-v0.1.14-win-x64.zip`, a self-contained package for Windows x64.
-- `peggy-v0.1.14-win-x64.sha256`, the package checksum used by `install.ps1`.
-- `peggy-v0.1.14-win-x64-setup.exe` and `peggy-v0.1.14-win-x64-setup.exe.sha256`, the WiX Burn
+- `peggy-v0.1.15-win-x64.zip`, a self-contained package for Windows x64.
+- `peggy-v0.1.15-win-x64.sha256`, the package checksum used by `install.ps1`.
+- `peggy-v0.1.15-win-x64-setup.exe` and `peggy-v0.1.15-win-x64-setup.exe.sha256`, the WiX Burn
   prerequisite-checking bootstrapper and its checksum.
-- `peggy-v0.1.14-install.ps1`, the current-user bootstrap installer.
-- `peggy-v0.1.14-uninstall.ps1`, the current-user uninstaller.
+- `peggy-v0.1.15-install.ps1`, the current-user bootstrap installer.
+- `peggy-v0.1.15-uninstall.ps1`, the current-user uninstaller.
 
 The MSI and its checksum are still generated locally for validation and bundling,
 but are excluded from published assets. The setup EXE embeds the validated MSI.
@@ -1124,6 +1124,8 @@ semantic version `v0.1.13`.
 For `v0.1.14`, MSI uses `0.1.1499` and binaries use `0.1.1499.0`, above
 beta.4's `0.1.1433.0` and stable v0.1.13; its user-facing version is
 `v0.1.14`.
+For `v0.1.15`, MSI uses `0.1.1599` and binaries use `0.1.1599.0`; its
+user-facing version is `v0.1.15`.
 Semantic prerelease labels alone do not change .NET's default file version.
 
 WiX ICE custom actions can be blocked by policy in non-elevated build
@@ -1143,10 +1145,10 @@ identities, directories, registry entries, and shortcuts. Executable custom acti
 become inert markers so the regression cannot launch Peggy or use real account
 data. It checks exact installed hashes, product replacement, unchanged test
 settings/model/account sentinels, same-version maintenance, and a forced-failure
-rollback to the previous payload and registration. CI uses ten checksum-verified
+rollback to the previous payload and registration. CI uses eleven checksum-verified
 pinned baselines: the setup EXEs from `v0.1.10`, `v0.1.11-beta.1`, `v0.1.11`,
 `v0.1.12`, `v0.1.13-beta.1`, `v0.1.13`, `v0.1.14-beta.1`, `v0.1.14-beta.2`,
-`v0.1.14-beta.3`, and `v0.1.14-beta.4`.
+`v0.1.14-beta.3`, `v0.1.14-beta.4`, and `v0.1.14`.
 The pinned WiX extraction tool reads each checksum-verified EXE without running
 it and supplies its embedded MSI. Every baseline must pass the strict upgrade
 and rollback checks. Restart Manager, real application startup, and interactive authentication
@@ -1465,8 +1467,7 @@ The ZIP can contain account identifiers, folder metadata, process command
 lines, and raw CLI output. It still excludes credentials, tokens,
 authentication caches, customer message bodies, files, calendar contents,
 Copilot session data, temporary scope-file contents, and speech-model binaries.
-Review it carefully before typing `SEND` or sharing it outside the support
-team.
+Review it carefully before sharing it outside the support team.
 
 | Symptom | Resolution |
 | --- | --- |
@@ -1475,7 +1476,8 @@ team.
 | WorkIQ not found | Select **Install WorkIQ with npm**, run `npm install -g @microsoft/workiq`, or set `PEGGY_WORKIQ_PATH` |
 | WorkIQ terms error | Open Settings, select **Change or reconnect**, then review and accept the current terms |
 | WorkIQ consent fails | Ask a Microsoft Entra administrator to grant the Work IQ application permissions required by your tenant |
-| Monitoring classification repeatedly fails after installation | Run `copilot --version` and confirm version 1.0.81 or later. Run `copilot update stable`, restart Peggy, or rerun `install.ps1 -InstallPrerequisites` |
+| Monitoring classification reports that `--no-remote` was removed | Upgrade Peggy to v0.1.15 or later; Copilot CLI 1.0.103 removed that startup option |
+| Monitoring classification repeatedly fails after installation | Run `copilot --version` and confirm version 1.0.81 or later. Upgrade Peggy to the latest stable release, restart it, or rerun `install.ps1 -InstallPrerequisites` |
 | Monitoring interrupted | Open the Alert Center and select **Troubleshoot** to inspect the original failure and replay retrieval without changing state |
 | Speech models missing | Open Settings and select **Install voice models**, or run `.\scripts\Install-SpeechModels.ps1` |
 | Incomplete model directory | Rerun the installer with `-Force` |

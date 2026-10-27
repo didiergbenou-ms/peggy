@@ -496,7 +496,8 @@ public sealed class CopilotRunner : IAsyncDisposable
         startInfo.ArgumentList.Add("--no-ask-user");
         startInfo.ArgumentList.Add("--no-color");
         startInfo.ArgumentList.Add("--no-custom-instructions");
-        startInfo.ArgumentList.Add("--no-remote");
+        // Prompt mode does not enable incoming remote control. Keep the
+        // export-off alias for compatibility across supported CLI versions.
         startInfo.ArgumentList.Add("--no-remote-export");
         startInfo.ArgumentList.Add("--log-level");
         startInfo.ArgumentList.Add("error");

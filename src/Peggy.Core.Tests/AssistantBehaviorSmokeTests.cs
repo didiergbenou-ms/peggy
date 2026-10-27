@@ -16,7 +16,7 @@ internal static class AssistantBehaviorSmokeTests
         await TestAlertLifecycleAsync(directory);
         await TestMcpToolsAsync(directory);
         await TestMonitoringTroubleshooterAsync();
-        TestCopilotParsing(directory);
+        await TestCopilotParsingAsync(directory);
         TestSingleInstanceGuard();
         TestPrivacyGuard();
     }
@@ -711,7 +711,7 @@ internal static class AssistantBehaviorSmokeTests
             "MCP accepted an invalid ISO timestamp.");
     }
 
-    private static void TestCopilotParsing(string directory)
+    private static async Task TestCopilotParsingAsync(string directory)
     {
         var message = new Message(
             "message-1",
@@ -1244,6 +1244,39 @@ internal static class AssistantBehaviorSmokeTests
                     typeof(CopilotRunner),
                     "ResolveCopilot"),
                 "The explicit Copilot executable override was ignored.");
+            await using (var runner = new CopilotRunner(
+                new PeggySettings
+                {
+                    CopilotModel = PeggyDefaults.CopilotModel
+                },
+                Guid.NewGuid().ToString(),
+                account: "account@example.invalid"))
+            {
+                var method = typeof(CopilotRunner).GetMethod(
+                    "BuildStartInfo",
+                    BindingFlags.NonPublic | BindingFlags.Instance)
+                    ?? throw new InvalidOperationException(
+                        "CopilotRunner.BuildStartInfo was not found.");
+                var startInfo = (ProcessStartInfo?)(method.Invoke(
+                    runner,
+                    [
+                        "test prompt",
+                        Path.Combine(directory, "mcp.json"),
+                        Path.Combine(directory, "usage.json"),
+                        Guid.NewGuid().ToString()
+                    ]))
+                    ?? throw new InvalidOperationException(
+                        "CopilotRunner.BuildStartInfo returned null.");
+                var arguments = startInfo.ArgumentList.ToArray();
+                TestAssert.True(
+                    !arguments.Contains("--no-remote", StringComparer.Ordinal),
+                    "Peggy passed the removed --no-remote option to Copilot CLI.");
+                TestAssert.True(
+                    arguments.Contains(
+                        "--no-remote-export",
+                        StringComparer.Ordinal),
+                    "Peggy did not disable remote session export.");
+            }
             Environment.SetEnvironmentVariable(
                 "PEGGY_COPILOT_PATH",
                 Path.Combine(directory, "missing-copilot.exe"));
